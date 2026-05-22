@@ -18,3 +18,4 @@ __pycache__
 .pnpm-store/
 .env
 .env.local
+python/config.json
