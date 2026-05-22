@@ -4,7 +4,7 @@
 Hi my name is Hafidz Ihza Pratama, 
 and OpenChad was my open-source project. 
 
-I am open to collaboration and consulting opportunities for teams and individuals looking to integrate AI into their products. Feel free to reach out — I'd be happy to discuss your project.
+I am open to collaboration and consulting opportunities for teams and individuals looking to integrate AI into their products. Feel free to reach out, I'd be happy to discuss your project.
 
 **Email:** serigaladankupukupu@gmail.com
 
