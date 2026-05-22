@@ -1,0 +1,18 @@
+python-interpreter-path = "python/.venv/Scripts/python.exe"
+site-package-path = ["python/.venv/Lib/site-packages"]
+search_path = [
+    "openchadpy/src",
+    "ModelProvider",
+    "Pipeline",
+    "Tools",
+    "Backend",
+    "python",
+]
+extraPaths = [
+    "openchadpy/src",
+    "ModelProvider",
+    "Pipeline",
+    "Tools",
+    "Backend",
+    "python",
+]
