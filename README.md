@@ -15,7 +15,6 @@ OpenChad enables you to build AI-driven applications with a customizable tool th
 [nodejs#link]: https://nodejs.org/en/about/previous-releases
 [requires-python]: https://img.shields.io/python/required-version-toml?tomlFilePath=https%3A%2F%2Fraw.githubusercontent.com%2Fopenchad%2Fopenchadpy%2Frefs%2Fheads%2Fmain%2Fpyproject.toml&logo=python
 [requires-python#link]: https://packaging.python.org/en/latest/specifications/core-metadata/#requires-python
----
 
 ## Quick Start
 
