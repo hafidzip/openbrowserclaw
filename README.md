@@ -1,6 +1,12 @@
 # OpenChad 
 
 ![banner.png](https://raw.githubusercontent.com/openchad/docs/refs/heads/main/public/banner.png)
+Hi my name is Hafidz Ihza Pratama, 
+and OpenChad was my open-source project. 
+
+I am open to collaboration and consulting opportunities for teams and individuals looking to integrate AI into their products. Feel free to reach out — I'd be happy to discuss your project.
+
+**Email:** serigaladankupukupu@gmail.com
 
 OpenChad enables you to build AI-driven applications with a customizable tool that accessible across the frontend, AI inference pipeline, and MCP clients.
 
