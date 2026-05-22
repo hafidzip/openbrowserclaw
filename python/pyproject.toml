@@ -22,4 +22,4 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-openchadpy = { path = 'C:\Users\cimon\OneDrive\Dokumen\Tauri\openchad\openchadpy', editable = true }
+openchadpy = { path = '..\openchadpy', editable = true }
