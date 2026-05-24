@@ -1,0 +1,7 @@
+{
+    "name": "LiteLLM Model Provider",
+    "version": "1.0.0",
+    "description": "Scans local Models for available models.",
+    "author": "openchad",
+    "requirements": ["litellm"]
+}
