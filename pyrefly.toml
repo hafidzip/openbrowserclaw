@@ -7,6 +7,8 @@ search_path = [
     "Tools",
     "Backend",
     "python",
+
+    "Pipeline/openchad/chat",
 ]
 extraPaths = [
     "openchadpy/src",
@@ -15,4 +17,6 @@ extraPaths = [
     "Tools",
     "Backend",
     "python",
+
+    "Pipeline/openchad/chat",
 ]
