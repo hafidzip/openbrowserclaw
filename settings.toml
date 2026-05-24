@@ -1,0 +1,5 @@
+[settings]
+allowed_models = [
+    "litellm/gpt-oss-120b",
+    "litellm/gpt-oss-120b",
+]
