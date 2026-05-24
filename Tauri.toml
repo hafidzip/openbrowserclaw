@@ -1,6 +1,6 @@
 "$schema" = "https://schema.tauri.app/config/2"
 productName = "openchad"
-version = "0.1.15"
+version = "0.1.17"
 identifier = "com.openchad.app"
 [build]
 frontendDist = "./frontend"
