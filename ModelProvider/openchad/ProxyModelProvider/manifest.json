@@ -1,0 +1,7 @@
+{
+    "name": "Proxy Model Provider",
+    "version": "1.0.0",
+    "description": "Scans for proxy models from settings.",
+    "author": "openchad",
+    "requirements": ["litellm", "httpx"]
+}
