@@ -1,0 +1,16 @@
+{
+    "name": "LiteLLM",
+    "version": "1.0.0",
+    "description": "Unified interface for various LLM providers using LiteLLM.",
+    "capabilities": [
+        "LLM",
+        "EMBEDDING",
+        "RERANKER"
+    ],
+    "author": "openchad",
+    "main_class": "LiteLLMManager",
+    "requirements": [
+        "litellm",
+        "numpy"
+    ]
+}
