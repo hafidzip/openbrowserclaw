@@ -24,7 +24,7 @@ import LocalModel from './components/localmodel'
 import Credentials from './components/credentials'
 import CustomEndpoint from './components/customendpoint'
 import McpServers from './components/mcp'
-import { useGlobal } from '.'
+import { useGlobal } from './components/useGlobal'
 
 export default function ContainerSingleApp({ App, enableWorkspace = false }: { App: React.ComponentType, enableWorkspace?: boolean }) {
     const { pyInvoke } = usePython();
