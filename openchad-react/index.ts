@@ -9,6 +9,10 @@ import useElementSize from "./components/hooks/useElementSize";
 import { useGlobal as useGlobalImpl } from "./components/useGlobal";
 import { MessageState } from "./components/default-page";
 import { OpenChadIcon } from "./components/open-chad-icon";
+import ContainerSingleApp from "./ContainerSingleApp";
+import ContainerOverlayApp from "./ContainerOverlayApp";
+import { useSnapshot } from "valtio";
+import { Theme } from "./utils/state";
 
 function generateIdFromString(input: string): string {
     /**
@@ -62,8 +66,14 @@ const useGlobal = <T = Record<string, unknown>>(
     return useGlobalImpl<T>(tb, options);
 };
 
+const useTheme = () => {
+    return useSnapshot(Theme)
+}
+
 
 export {
+    ContainerOverlayApp,
+    ContainerSingleApp,
     Container,
     useDatabase,
     useTool,
@@ -74,6 +84,7 @@ export {
     generateIdFromString,
     usePython,
     OpenChadIcon,
+    useTheme,
     type AppInfo,
     type Project,
     type MessageState

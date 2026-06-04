@@ -230,6 +230,7 @@ export default function App(appInfo: AppInfo) {
             </div>
           </div>
           <button
+            data-tauri-cursor-region
             className="g-btn border border-accent/50"
             style={{
               fontSize: 12,
@@ -263,6 +264,7 @@ export default function App(appInfo: AppInfo) {
         {/*  Feature cards  */}
         <div className={`oc-fade-in oc-delay-3 oc-cards ${isMobile ? 'flex-col' : ''}`}>
           <button
+            data-tauri-cursor-region
             className="flex-1 bg-accent/5 hover:bg-radial hover:from-accent/5 dark:hover:from-accent/25 hover:from-0% hover:to-accent/15 dark:hover:to-accent/5 hover:border-accent oc-card"
             onClick={
               (e) => {
@@ -286,6 +288,7 @@ export default function App(appInfo: AppInfo) {
             </div>
           </button>
           <button
+            data-tauri-cursor-region
             className="flex-1 bg-accent/5 hover:bg-radial hover:from-accent/5 dark:hover:from-accent/25 hover:from-0% hover:to-accent/15 dark:hover:to-accent/5 hover:border-accent oc-card"
             onClick={
               (e) => {
@@ -313,6 +316,7 @@ export default function App(appInfo: AppInfo) {
             </div>
           </button>
           <button
+            data-tauri-cursor-region
             className="flex-1 bg-accent/5 hover:bg-radial hover:from-accent/5 dark:hover:from-accent/25 hover:from-0% hover:to-accent/15 dark:hover:to-accent/5 hover:border-accent oc-card"
             onClick={
               (e) => {

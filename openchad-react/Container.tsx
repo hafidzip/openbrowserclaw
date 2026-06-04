@@ -83,6 +83,7 @@ export interface Project {
 }
 import { hideSplashScreen } from "vite-plugin-splash-screen/runtime";
 import { generateIdFromString } from './index'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 
 export default function Container({ Apps }: { Apps: Project }) {
   if (Apps.defaultTab.tabs.length === 0) {
@@ -118,6 +119,21 @@ export default function Container({ Apps }: { Apps: Project }) {
   const currentLayout = snaptheme.layout;
   const [intialzeTheme, setInitialzeTheme] = useState(false);
   const isFirstSave = useRef(true);
+
+  useEffect(() => {
+    if (!mounted || !isTauri) return;
+
+    const handleKeyDown = async (e: KeyboardEvent) => {
+      if (e.key !== 'F11') return;
+      e.preventDefault();
+      const win = getCurrentWindow();
+      await win.setFullscreen(!(await win.isFullscreen()));
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [mounted]);
+
   useEffect(() => {
     (async () => {
       const res = await pyInvoke<{ os: string }>('os', {});
@@ -494,13 +510,13 @@ export default function Container({ Apps }: { Apps: Project }) {
       return hasChanges ? nextTabs : prevTabs;
     });
   }, [snaptabs]);
-  
+
   useEffect(() => {
     setMounted(true);
   }, []);
 
   useEffect(() => {
-    (async ()=> {
+    (async () => {
       await pyInvoke('set_active', {
         workspace: workspace || "global",
         tab_id: active.length > 0 ? active : "global",

@@ -60,7 +60,8 @@ interface SortableTabItemProps {
 }
 
 const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
-async function selectModel() {
+
+export async function selectModel() {
   // Open a selection dialog for image files
   const file = await open({
     multiple: true,
@@ -658,6 +659,7 @@ export default function Sidebar({
     }
     setShowPopup(true);
   };
+  
   const addLocalModel = useCallback(async (paths: string[]): Promise<void> => {
     let modelsArr: string[] = Array.isArray(s.settings["openchad/LocalModelProvider/local.model"]) ? s.settings["openchad/LocalModelProvider/local.model"] : [];
     await s.updateSetting("openchad/LocalModelProvider/local.model", [...new Set([...modelsArr, ...paths])])
@@ -674,6 +676,7 @@ export default function Sidebar({
     let modelsArr: string[] = Array.isArray(s.settings["openchad/ProxyModelProvider/custom.endpoints"]) ? s.settings["openchad/ProxyModelProvider/custom.endpoints"] : [];
     await s.updateSetting("openchad/ProxyModelProvider/custom.endpoints", modelsArr.filter((model) => model !== endpoint))
   }, [s]);
+
   const [mcpStatuses, setMcpStatuses] = useState<Record<string, "connected" | "disconnected" | "disconnecting" | "connecting" | "error">>({});
   usePythonEvent('mcp_statuses', (data: any) => {
     setMcpStatuses(data);
