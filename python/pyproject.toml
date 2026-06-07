@@ -10,8 +10,8 @@ dependencies = [
     "beautifulsoup4>=4.14.3",
     "chromadb>=1.5.9",
     "ffmpeg>=1.4",
-    "litellm>=1.82.6",
-    "llama-cpp-python>=0.3.16",
+    "litellm>=1.88.0",
+    "llama-cpp-python>=0.3.27",
     "markdownify>=1.2.2",
     "rlms>=0.1.1",
     "silero-vad>=6.2.0",
@@ -23,3 +23,4 @@ dependencies = [
 
 [tool.uv.sources]
 openchadpy = { path = '..\openchadpy', editable = true }
+openchad-webview = { path = '..\openchad-webview\dist\openchad_webview-0.8.0-cp313-cp313-win_amd64.whl' }

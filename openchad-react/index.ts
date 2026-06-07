@@ -7,12 +7,13 @@ import { useFileImpl } from "./components/useFile";
 import { useFolderImpl } from "./components/useFolder";
 import useElementSize from "./components/hooks/useElementSize";
 import { useGlobal as useGlobalImpl } from "./components/useGlobal";
-import { MessageState } from "./components/default-page";
+import type { MessageState } from "./components/default-page";
 import { OpenChadIcon } from "./components/open-chad-icon";
 import ContainerSingleApp from "./ContainerSingleApp";
 import ContainerOverlayApp from "./ContainerOverlayApp";
 import { useSnapshot } from "valtio";
-import { Theme } from "./utils/state";
+import { Theme, Workspace } from "./utils/state";
+import { useEffect } from "react";
 
 function generateIdFromString(input: string): string {
     /**
@@ -24,18 +25,19 @@ function generateIdFromString(input: string): string {
 
 const useTool = <T,>() => {
     const { pyInvoke } = usePython()
-    const workspace = "global";
+    const { workspace } = useSnapshot(Workspace);
     const tabId = "global";
     return (tool: string, parameters: Record<string, any>) => {
-        return pyInvoke<T>("tools/execute", { tool, workspace, tabId, ...parameters });
+        return pyInvoke<T>("tools/execute", { tool, workspace: workspace ?? "global", tabId, ...parameters });
     }
 }
 
 const useDatabase = <T,>(tb: string, options?: { initialValue?: T }) => {
-    const hashed = generateIdFromString("global/" + tb);
+    const { workspace } = useSnapshot(Workspace);
+    const hashed = generateIdFromString(`${workspace ?? "global"}/${tb}`);
     return (options?.initialValue !== undefined)
-        ? useDatabaseImplBase<T>("global", hashed, options.initialValue)
-        : useDatabaseImplBase<T>("global", hashed);
+        ? useDatabaseImplBase<T>(workspace ?? "global", hashed, options.initialValue)
+        : useDatabaseImplBase<T>(workspace ?? "global", hashed);
 }
 
 const useFile = (filename: string, options?: {
@@ -70,6 +72,16 @@ const useTheme = () => {
     return useSnapshot(Theme)
 }
 
+const useEvent = <T,>(event: string, callback: (data: T) => void) => {
+    useEffect(() => {
+        const wrappedCallback = (e: Event) => callback(e as T)
+        window.addEventListener(event, wrappedCallback)
+        return () => {
+            window.removeEventListener(event, wrappedCallback)
+        }
+    }, [event, callback])
+}
+
 
 export {
     ContainerOverlayApp,
@@ -85,6 +97,7 @@ export {
     usePython,
     OpenChadIcon,
     useTheme,
+    useEvent,
     type AppInfo,
     type Project,
     type MessageState

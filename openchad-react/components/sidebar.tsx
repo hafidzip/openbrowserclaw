@@ -393,6 +393,7 @@ export default function Sidebar({
   layout,
   theme,
   settings,
+  repository
 }: {
   projectName: string;
   ProjectIcon: React.ComponentType;
@@ -413,6 +414,7 @@ export default function Sidebar({
   layout: string;
   theme: string;
   settings: Record<string, SettingItem>;
+  repository?: string;
 }) {
   const allTabs = useSnapshot(TabState);
   // Record<string, { title: string; layout: string; group: string | null; childrenProps: Record<string, { title: string; path: string; icon: string; }> }>>
@@ -908,9 +910,9 @@ export default function Sidebar({
               separator: false,
               trigger: () => {
                 if (isTauri) {
-                  openUrl('https://github.com/openchad/openchad')
+                  openUrl(repository || 'https://github.com/openchad/openchad')
                 } else {
-                  window.open('https://github.com/openchad/openchad', '_blank')
+                  window.open(repository || 'https://github.com/openchad/openchad', '_blank')
                 }
               }
             },

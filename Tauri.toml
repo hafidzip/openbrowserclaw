@@ -7,22 +7,25 @@ frontendDist = "./frontend"
 [app]
 withGlobalTauri = true
 security.capabilities = ["default"]
-[[app.windows]]
-title = "openchad"
-width = 1680
-height = 945
 
+[[app.windows]]
+width = 1280
+height = 720
+title = "openchad"
+center = true
 decorations = false
 
 # Overlay-specific settings
+# resizable = false
 # transparent = true
 # alwaysOnTop = true
 # skipTaskbar = true
 # focusable = false       
 # shadow = false
-
+# contentProtected = true
 
 maximized = true
+
 [bundle]
 icon = [
     "icons/icon.png",

@@ -60,7 +60,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
         if (mounted) {
             (async () => {
                 const check = await pyInvoke("v1/check");
-                if (check.result) {
+                if (!check.result) {
                     const tb = generateIdFromString(tabId + "/" + "message_state");
                     await pyInvoke('sqlite', {
                         command: 'query',

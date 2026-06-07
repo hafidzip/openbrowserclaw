@@ -80,6 +80,7 @@ export interface Project {
   projectName: string;
   projectIcon: React.ComponentType;
   size?: number[];
+  repository?: string;
 }
 import { hideSplashScreen } from "vite-plugin-splash-screen/runtime";
 import { generateIdFromString } from './index'
@@ -725,6 +726,7 @@ export default function Container({ Apps }: { Apps: Project }) {
             layout={snaptheme.layout}
             theme={snaptheme.theme}
             settings={settings}
+            {...(Apps.repository && {repository: Apps.repository})}
           />
         </aside>
         <div
@@ -994,9 +996,9 @@ export default function Container({ Apps }: { Apps: Project }) {
                   separator: false,
                   trigger: () => {
                     if (isTauri) {
-                      openUrl('https://github.com/openchad/openchad')
+                      openUrl(Apps.repository || 'https://github.com/openchad/openchad')
                     } else {
-                      window.open('https://github.com/openchad/openchad', '_blank')
+                      window.open(Apps.repository || 'https://github.com/openchad/openchad', '_blank')
                     }
                   }
                 },

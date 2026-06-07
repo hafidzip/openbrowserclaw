@@ -3,14 +3,14 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
-// ─── Paths ────────────────────────────────────────────────────────────────────
+// Paths
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // scripts/build.mjs lives one level below the project root
 const PROJECT_ROOT = path.resolve(__dirname, "..");
 const RELEASE_DIR  = path.join(PROJECT_ROOT, "Release");
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
+// Helpers
 function log(msg)  { console.log(`\x1b[36m[build]\x1b[0m ${msg}`); }
 function ok(msg)   { console.log(`\x1b[32m[build]\x1b[0m ${msg}`); }
 function warn(msg) { console.warn(`\x1b[33m[build]\x1b[0m ${msg}`); }
@@ -37,7 +37,7 @@ function copyDirSync(src, dest) {
   }
 }
 
-// ─── 1. Read package.json ─────────────────────────────────────────────────────
+// 1. Read package.json
 const pkgPath = path.join(PROJECT_ROOT, "package.json");
 if (!fs.existsSync(pkgPath)) die(`package.json not found at: ${pkgPath}`);
 
@@ -47,11 +47,11 @@ if (!name) die("package.json is missing a 'name' field.");
 
 log(`Project name: ${name}`);
 
-// ─── 2. Ensure Release/ exists ────────────────────────────────────────────────
+// 2. Ensure Release/ exists
 log(`Creating Release directory: ${RELEASE_DIR}`);
 fs.mkdirSync(RELEASE_DIR, { recursive: true });
 
-// ─── 3. Resolve uv / uvx executable ─────────────────────────────────────────
+// 3. Resolve uv / uvx executable
 /**
  * Resolution order:
  *   1. `uvx` on PATH  (standard install)
@@ -109,7 +109,7 @@ function resolveUvx() {
 
 const { bin: uvBin, args: uvArgs } = resolveUvx();
 
-// ─── 4. Run PyInstaller via uvx ───────────────────────────────────────────────
+// 4. Run PyInstaller via uvx
 const launcherPath = path.join(PROJECT_ROOT, "launcher.py");
 if (!fs.existsSync(launcherPath)) die(`launcher.py not found at: ${launcherPath}`);
 
@@ -136,7 +136,6 @@ try {
   die(`PyInstaller failed: ${err.message}`);
 }
 
-// ─── 5. Copy project directories into Release/ ────────────────────────────────
 const DIRS_TO_COPY = [
   "Backend",
   "ModelProvider",
@@ -145,6 +144,8 @@ const DIRS_TO_COPY = [
   "python",
   "Settings",
   "frontend",
+  "icons",
+  "capabilities"
 ];
 
 log("Copying project directories into Release/ …");
@@ -154,6 +155,12 @@ for (const dir of DIRS_TO_COPY) {
   const dest = path.join(RELEASE_DIR,  dir);
   log(`  ${dir}  →  Release/${dir}`);
   copyDirSync(src, dest);
+}
+
+const tauriToml = path.join(PROJECT_ROOT, "Tauri.toml");
+if (fs.existsSync(tauriToml)) {
+  fs.copyFileSync(tauriToml, path.join(RELEASE_DIR, "Tauri.toml"));
+  log("  Tauri.toml  →  Release/Tauri.toml");
 }
 
 ok("All directories copied.");

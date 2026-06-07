@@ -2,6 +2,10 @@ node_modules
 downloads
 Workspaces
 Models
+Release
+python/uv.exe
+python/uvw.exe
+python/uvx.exe
 frontend
 build
 bin

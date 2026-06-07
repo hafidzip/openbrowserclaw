@@ -1,9 +1,16 @@
-import { ArrowUp, Plus, Mic, Square, FileCode, Video, Volume2, FileText, File as FileIcon } from 'lucide-react'
+import { ArrowUp, Plus, Mic, Square, FileCode, Video, Volume2, FileText, File as FileIcon, ChevronDown, Unplug } from 'lucide-react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { useState, useRef, useEffect, useCallback, useMemo, type CSSProperties } from 'react'
+import { useState, useRef, useEffect, useCallback, useMemo, memo, type CSSProperties } from 'react'
 import clsx from 'clsx'
 import Record from './record'
 import { open } from '@tauri-apps/plugin-dialog'
+import { usePython } from './usePython'
+import { Dropdown } from './dropdown'
+import type { DropdownMenuItemProps } from './dropdown'
+import { Spinner } from './ui'
+import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
+import { TooltipProvider } from '@radix-ui/react-tooltip'
+import type { Model } from '../utils/utils'
 
 
 export interface ContentBlock {
@@ -47,15 +54,125 @@ function getMimeType(ext: string): string {
   return MIME_MAP[ext] ?? 'application/octet-stream'
 }
 
-export const FILE_REF_RE = /\[file:([^\]]+)\]/g
+export const FILE_REF_RE = /\[file\=([^\]]+)\]/g
 
 export function blocksToPlain(blocks: ContentBlock[]): string {
   return blocks.map(b => {
     if (b.type === 'text') return b.value ?? ''
     const filepath = (b.url ?? '').replace('/file/', '')
-    return `[file:${filepath}]`
+    return `[file=${filepath}]`
   }).join('')
 }
+
+function truncate(text: string, maxLength = 16): string {
+  if (text.length > maxLength) {
+    return text.slice(0, maxLength - 1) + '…'
+  }
+  return text
+}
+
+// ─── Model-selection helpers ──────────────────────────────────────────────────
+
+const MODEL_SLICE = 14
+const MODEL_DEBOUNCE_MS = 150
+
+function truncateModel(name: string | null | undefined): string {
+  if (!name) return 'Select Model'
+  return name.length > MODEL_SLICE ? `${name.slice(0, MODEL_SLICE)}…` : name
+}
+
+function isLLMorVLM(m: Model): boolean {
+  return (
+    (m.modelType?.includes('llm') || m.modelType?.includes('vlm')) === true &&
+    m.backend != null
+  )
+}
+
+function useDebounce<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState<T>(value)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  useEffect(() => {
+    if (timerRef.current) clearTimeout(timerRef.current)
+    timerRef.current = setTimeout(() => setDebounced(value), delay)
+    return () => { if (timerRef.current) clearTimeout(timerRef.current) }
+  }, [value, delay])
+  return debounced
+}
+
+function parseModelsFromConfig(raw: string): Model[] {
+  const parsed = JSON.parse(raw)
+  if (!parsed.available_models) return []
+  return (Object.entries(parsed.available_models) as [string, Record<string, unknown>][])
+    .map(([id, m]) => ({
+      id,
+      name: (m.name as string) ?? 'Unknown',
+      backend: (m.backend as string) ?? undefined,
+      modelType: (m.model_type as string[]) ?? undefined,
+      modelPath: (m.model_path as string) ?? undefined,
+      mmproj: (m.mmproj as string) ?? null,
+      fileName: (m.filename as string) ?? null,
+      apiBase: (m.api_base as string) ?? null,
+      isLocal: (m.is_local as boolean) ?? false,
+      isLoaded:
+        parsed.models &&
+        Object.prototype.hasOwnProperty.call(parsed.models, id) &&
+        !(parsed.models as Record<string, { last_error?: unknown }>)[id].last_error,
+      lastError:
+        (parsed.models as Record<string, { last_error?: unknown }>)?.[id]?.last_error
+          ? String((parsed.models as Record<string, { last_error?: unknown }>)[id].last_error)
+          : null,
+    } satisfies Model))
+    .filter(isLLMorVLM)
+}
+
+interface ModelItemProps {
+  model: Model
+  onUnload: (id: string) => void
+}
+
+const ModelItem = memo(function ModelItem({ model, onUnload }: ModelItemProps) {
+  const backendLabel = model.backend?.split(':').pop()
+  const handleUnload = useCallback(() => {
+    if (model.id) onUnload(model.id)
+  }, [model.id, onUnload])
+  return (
+    <div className="selectmodel flex items-center w-full gap-2">
+      <Tooltip disableHoverableContent>
+        <TooltipTrigger>
+          <span className="flex items-center">{truncateModel(model.name)}</span>
+        </TooltipTrigger>
+        <TooltipContent sideOffset={10}><p>{model.name}</p></TooltipContent>
+      </Tooltip>
+      <div className="flex-1" />
+      {backendLabel && (
+        <Tooltip disableHoverableContent>
+          <TooltipTrigger>
+            <p className="px-1 text-[8pt] rounded-xl bg-accent/10">{backendLabel}</p>
+          </TooltipTrigger>
+          <TooltipContent><p>{backendLabel} will perform the inference.</p></TooltipContent>
+        </Tooltip>
+      )}
+      {model.isLoaded && (
+        <Tooltip disableHoverableContent>
+          <TooltipTrigger>
+            <div className="w-2 h-2 rounded-full bg-green-500" />
+          </TooltipTrigger>
+          <TooltipContent><p>Model is loaded.</p></TooltipContent>
+        </Tooltip>
+      )}
+      {model.isLoaded && model.isLocal && (
+        <Tooltip disableHoverableContent>
+          <TooltipTrigger>
+            <div onClick={handleUnload} className="flex items-center opacity-50 hover:opacity-100 cursor-pointer">
+              <Unplug size={14} />
+            </div>
+          </TooltipTrigger>
+          <TooltipContent><p>Unload model.</p></TooltipContent>
+        </Tooltip>
+      )}
+    </div>
+  )
+})
 
 export function plainToBlocks(text: string): ContentBlock[] {
   const blocks: ContentBlock[] = []
@@ -183,6 +300,10 @@ export default function Composer({
   ref,
   width,
   height,
+  maxHeight = '200px',
+  showModelSelection,
+  model,
+  setModel,
   isStreaming,
 }: {
   workspace: string
@@ -192,6 +313,10 @@ export default function Composer({
   ref: React.RefObject<HTMLElement | null>
   width: number
   height: number
+  maxHeight?: string
+  showModelSelection?: boolean
+  model?: Model
+  setModel?: (model: Model) => void
   isStreaming: boolean
 }) {
   const [isEmpty, setIsEmpty] = useState(true)
@@ -206,8 +331,74 @@ export default function Composer({
   }, [ref])
   useEffect(() => {
     const w = width || 0
-    maxCharsRef.current = w > 800 ? w / 28 : w / 14
+    maxCharsRef.current = w > 800 ? w / ( showModelSelection ? 36: 28) : w > 400 ? w / 14 : w / 11
   }, [width, height])
+
+  // ─── Model selection state ──────────────────────────────────────────────────
+  const { pyInvoke } = usePython()
+  const [modelDropOpen, setModelDropOpen] = useState(false)
+  const [availableModels, setAvailableModels] = useState<Model[]>([])
+  const [modelSearch, setModelSearch] = useState('')
+  const debouncedModelSearch = useDebounce(modelSearch, MODEL_DEBOUNCE_MS)
+  const [isScanning, setIsScanning] = useState(false)
+
+  useEffect(() => {
+    if (!modelDropOpen) return
+    setIsScanning(true)
+    setModelSearch('')
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res: any = await pyInvoke<{ data?: Record<string, unknown> }>('file', {
+          command: 'read',
+          filename: 'config.json',
+          base_dir: 'python',
+        })
+        if (cancelled) return
+        const config = res?.data?.content as string | undefined
+        if (!config) return
+        setAvailableModels(parseModelsFromConfig(config))
+        setIsScanning(false)
+      } catch (e) {
+        if (!cancelled) console.error('Failed to load models:', e)
+      }
+    })()
+    return () => { cancelled = true }
+  }, [modelDropOpen, pyInvoke])
+
+  const unloadModel = useCallback(async (id: string) => {
+    await pyInvoke('v1/models/unload', { model_id: id })
+  }, [pyInvoke])
+
+  const filteredModels = useMemo(() => {
+    const q = debouncedModelSearch.trim().toLowerCase()
+    if (!q) return availableModels
+    return availableModels.filter(m => (m.name ?? '').toLowerCase().includes(q))
+  }, [availableModels, debouncedModelSearch])
+
+  const modelDropdownContent: DropdownMenuItemProps[] = useMemo(() => {
+    const isFiltering = modelSearch !== debouncedModelSearch
+    if (isFiltering || (filteredModels.length === 0 && debouncedModelSearch.trim().length === 0)) {
+      return [{
+        content: (
+          (isScanning || isFiltering)
+            ? <div className="flex items-center justify-center gap-3"><Spinner /><span>Searching…</span></div>
+            : <div className="flex items-center justify-center gap-3"><span>No models found.</span></div>
+        ),
+      }]
+    }
+    if (filteredModels.length === 0) {
+      return [{ content: <div className="flex items-center justify-center gap-3"><span>No models found.</span></div> }]
+    }
+    return filteredModels.map(m => ({
+      content: <ModelItem key={m.id} model={m} onUnload={unloadModel} />,
+      text: m.name ?? undefined,
+      shortcut: null,
+      children: null,
+      separator: false,
+      trigger: () => setModel?.(m),
+    }))
+  }, [filteredModels, modelSearch, debouncedModelSearch, isScanning, unloadModel, setModel])
   const syncState = useCallback(() => {
     const div = editorRef.current
     if (!div) return
@@ -597,42 +788,49 @@ export default function Composer({
       ? 'py-3 text-xs rounded-[20px]'
       : isExpanded ? 'py-4.5 rounded-[30px]' : 'py-3.5 rounded-[30px]',
   ), [small, isExpanded])
+
   const editorCls = useMemo(() => clsx(
-    'relative w-[92.5%] bg-transparent focus:outline-none',
-    'max-h-[200px] overflow-y-auto',
+    'relative w-[96.5%] bg-transparent focus:outline-none overflow-y-auto',
     'leading-normal break-all whitespace-pre-wrap',
     'transition-[margin-left,margin-right,margin-bottom] duration-100 ease-out',
     isExpanded ? 'mb-[35px]' : 'mb-0',
     isStreaming && 'cursor-not-allowed opacity-0 select-none',
   ), [isExpanded, isStreaming])
+
   const editorStyle = useMemo(() => ({
     marginLeft: isExpanded ? '10px' : padH,
     marginRight: isExpanded ? '10px' : padH,
     wordBreak: 'normal' as const,
     overflowWrap: 'anywhere' as const,
-  }), [isExpanded])
+    maxHeight: maxHeight,
+  }), [isExpanded, maxHeight])
+  
   const plusCls = useMemo(() => clsx(
     isExpanded ? bottomExpanded : centerY,
     'focus:outline-none h-5 w-5 absolute flex items-center justify-center opacity-70 hover:opacity-100 transition-opacity',
     small ? 'scale-[0.75] left-2' : 'left-3',
   ), [isExpanded, bottomExpanded, centerY, small])
+
   const sendCls = useMemo(() => clsx(
     isExpanded ? bottomSend : centerY,
     isEmpty ? 'opacity-25 dark:opacity-50' : 'opacity-100',
     'absolute h-9 w-9 bg-accent text-accent-foreground rounded-full flex items-center justify-center',
     small ? 'scale-[0.75] origin-right right-2' : 'right-3',
   ), [isExpanded, bottomSend, centerY, isEmpty, small])
+
   const stopCls = useMemo(() => clsx(
     isExpanded ? bottomSend : centerY,
     'absolute h-9 w-9 bg-black/10 dark:bg-[hsl(var(--float))] text-accent rounded-full flex items-center justify-center',
     small ? 'scale-[0.75] origin-right right-2' : 'right-3',
   ), [isExpanded, bottomSend, centerY, small])
+
   const micCls = useMemo(() => (isRecording: boolean) => clsx(
     isExpanded ? bottomExpanded : centerY,
     'h-5 w-5 absolute flex items-center justify-center',
     small ? 'scale-[0.75] right-10' : 'right-14',
     isRecording ? 'text-red-500' : 'text-accent',
   ), [isExpanded, bottomExpanded, centerY, small])
+
   return (
     <div style={style} className={className}>
       <div className={wrapperCls}>
@@ -657,7 +855,30 @@ export default function Composer({
           onPointerDown={handlePointerDown}
           className={editorCls}
           style={editorStyle}
+          data-tauri-cursor-region={true}
         />
+        {showModelSelection && (
+          <TooltipProvider>
+            <div className={clsx(
+              'absolute flex right-20 bottom-0 h-full',
+              isExpanded ? 'items-end pb-4' : 'items-center'
+            )}>
+              <Dropdown
+                open={modelDropOpen}
+                onOpenChange={setModelDropOpen}
+                search={modelSearch}
+                setSearch={setModelSearch}
+                className="max-w-none min-w-70 max-h-[345px] flex flex-col"
+                content={modelDropdownContent}
+                align="end"
+              >
+                <button className='bg-accent/5 text-xs p-2 rounded-xl flex items-center gap-1 justify-center w-32 overflow-hidden cursor-pointer'>
+                  {truncateModel(model?.name)} <ChevronDown className='w-3 h-3 relative top-0.5 shrink-0'/>
+                </button>
+              </Dropdown>
+            </div>
+          </TooltipProvider>
+        )}
         <button onClick={handlePlusClick} className={plusCls}>
           <Plus />
         </button>

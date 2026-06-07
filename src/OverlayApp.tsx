@@ -1,11 +1,33 @@
-import { useDatabase } from "openchad-react";
+import { useDatabase, useEvent } from "openchad-react";
+import { useState } from "react";
+import { Dialog as DialogUI, DialogContent, DialogHeader, DialogTitle } from "openchad-react/components/ui/dialog";
+import { useGlobal } from "openchad-react/components/useGlobal";
+
 export default function OverlayApp() {
     const [counter, setCounter] = useDatabase("counter", {
         initialValue: { currentValue: 0 },
     });
 
+    const [dialog, setDialog] = useGlobal<string>("overlay-app-dialog", { initialValue: '' })
+
+    useEvent("open-counter-dialog", () => {
+        setDialog("open-counter-dialog");
+    })
+
     return (
             <div className="bg-bg w-fit h-fit border border-[hsl(var(--border))] p-4" data-tauri-cursor-region={true}>
+
+                <DialogUI open={dialog === "open-counter-dialog"} onOpenChange={(open) => {
+                    if(!open) {
+                        setDialog('') 
+                    }
+                }}>
+                    <DialogContent>
+                        <DialogHeader>
+                            <DialogTitle></DialogTitle>
+                        </DialogHeader>
+                    </DialogContent>
+                </DialogUI>
 
                 {/* Header */}
                 <div className="mb-8 border-b border-zinc-800 pb-4">

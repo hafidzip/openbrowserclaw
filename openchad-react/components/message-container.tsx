@@ -53,7 +53,7 @@ interface QueryBlock {
     fileType?: string
 }
 
-const _FILE_REF_RE = /\[file:([^\]]+)\]/g
+const _FILE_REF_RE = /\[file\=([^\]]+)\]/g
 
 function parseQueryBlocks(text: string): QueryBlock[] {
     const blocks: QueryBlock[] = []
@@ -83,7 +83,7 @@ function blocksToPlain(blocks: QueryBlock[]): string {
     return blocks.map(b => {
         if (b.type === 'text') return b.value ?? ''
         const filepath = (b.url ?? '').replace('/file/', '')
-        return `[file:${filepath}]`
+        return `[file=${filepath}]`
     }).join('')
 }
 
@@ -717,9 +717,26 @@ export default function MessageContainer({ request, tabId, activeId, branch, ind
                             style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word' }}
                             className="flex flex-col gap-2 group">
                             <div ref={containerRef} className={editingContainerCls}>
-                                <span>
-                                    <QueryContent key="display" query={message.content[b].query} />
-                                </span>
+                                {(isEditing && !isStreaming) ? (
+                                    <div
+                                        key="editing"
+                                        ref={queryRef}
+                                        className="w-full min-h-[80px]"
+                                        spellCheck={false}
+                                        contentEditable
+                                        suppressContentEditableWarning
+                                        onPointerDown={handleEditorPointerDown}
+                                        onCopy={handleCopy}
+                                        onCut={handleCut}
+                                        onPaste={handlePaste}
+                                        onKeyDown={handleEditorKeyDown}
+                                    />
+                                ) : (
+                                    <span key="display">
+                                        <QueryContent query={message.content[b].query} />
+                                    </span>
+                                )}
+                                {isEditing && EditingToolbar}
                                 {!isEditing && isOverflowing && (
                                     <div
                                         onClick={(e) => {
@@ -734,6 +751,33 @@ export default function MessageContainer({ request, tabId, activeId, branch, ind
                                         {isExpanded && <ChevronUp size={12} />}
                                     </div>
                                 )}
+                            </div>
+                            <div className="ml-auto flex gap-2 items-center pr-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                                {!isEditing && !isStreaming &&
+                                    <>
+                                        {!isCopied ? <Copy className="w-4 h-4 transform translate-y-[2px] cursor-pointer" onClick={() => {
+                                            navigator.clipboard.writeText(message.content[b].query);
+                                            setIsCopied(true);
+                                            setTimeout(() => { setIsCopied(false); }, 500);
+                                        }} /> : <Check className="w-4 h-4 transform translate-y-[2px]" />}
+                                        <Pencil className="w-4 h-4 transform translate-y-[2px] cursor-pointer" onClick={() => { setIsEditing(true); }} />
+                                        {Object.keys(message.content).length > 1 && <>
+                                            <ChevronLeft className={clsx(
+                                                message.branch === 0 ? "opacity-50" : "opacity-100 cursor-pointer",
+                                                "w-4 h-4"
+                                            )} onClick={() => {
+                                                setMessage(prev => ({ ...prev, branch: Math.max(0, prev.branch - 1) }))
+                                            }} />
+                                            <span>{message.branch + 1} / {Object.keys(message.content).length}</span>
+                                            <ChevronRight className={clsx(
+                                                message.branch === Object.keys(message.content).length - 1 ? "opacity-50" : "opacity-100 cursor-pointer",
+                                                "w-4 h-4"
+                                            )} onClick={() => {
+                                                setMessage(prev => ({ ...prev, branch: Math.min(Object.keys(prev.content).length - 1, prev.branch + 1) }))
+                                            }} />
+                                        </>}
+                                    </>
+                                }
                             </div>
                         </div>
                     </div>
@@ -805,14 +849,14 @@ export default function MessageContainer({ request, tabId, activeId, branch, ind
                                             {Object.keys(message.content).length > 1 && <>
                                                 <ChevronLeft className={clsx(
                                                     message.branch === 0 ? "opacity-50" : "opacity-100 cursor-pointer",
-                                                    "w-4 h-4 transform translate-y-[2px]"
+                                                    "w-4 h-4"
                                                 )} onClick={() => {
                                                     setMessage(prev => ({ ...prev, branch: Math.max(0, prev.branch - 1) }))
                                                 }} />
                                                 <span>{message.branch + 1} / {Object.keys(message.content).length}</span>
                                                 <ChevronRight className={clsx(
                                                     message.branch === Object.keys(message.content).length - 1 ? "opacity-50" : "opacity-100 cursor-pointer",
-                                                    "w-4 h-4 transform translate-y-[2px]"
+                                                    "w-4 h-4"
                                                 )} onClick={() => {
                                                     setMessage(prev => ({ ...prev, branch: Math.min(Object.keys(prev.content).length - 1, prev.branch + 1) }))
                                                 }} />
@@ -828,14 +872,14 @@ export default function MessageContainer({ request, tabId, activeId, branch, ind
                                 id={tabId + "_response_" + b + "_" + message.content[b].response_branch + "_" + index}
                                 activeId={activeId}
                             />
-                            {!getIsStreaming(message.content[b].responses[message.content[b].response_branch]) && (
+                            {!isStreaming && (
                                 <div className="flex items-center gap-2 py-3">
                                     {!isEditing &&
                                         <>
                                             {Object.keys(message.content[b].responses).length > 1 && <>
                                                 <ChevronLeft className={clsx(
                                                     message.content[b].response_branch === 0 ? "opacity-50" : "opacity-100 cursor-pointer",
-                                                    "w-4 h-4 transform translate-y-[2px]"
+                                                    "w-4 h-4"
                                                 )} onClick={() => {
                                                     setMessage(prev => ({
                                                         ...prev,
@@ -848,7 +892,7 @@ export default function MessageContainer({ request, tabId, activeId, branch, ind
                                                 <span>{message.content[b].response_branch + 1} / {Object.keys(message.content[b].responses).length}</span>
                                                 <ChevronRight className={clsx(
                                                     message.content[b].response_branch === Object.keys(message.content[b].responses).length - 1 ? "opacity-50" : "opacity-100 cursor-pointer",
-                                                    "w-4 h-4 transform translate-y-[2px]"
+                                                    "w-4 h-4"
                                                 )} onClick={() => {
                                                     setMessage(prev => ({
                                                         ...prev,

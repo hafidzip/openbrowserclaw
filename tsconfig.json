@@ -1,5 +1,7 @@
 {
   "compilerOptions": {
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
     "target": "ES2020",
     "useDefineForClassFields": true,
     "module": "ESNext",
@@ -19,10 +21,7 @@
     "noEmit": true,
     /* Linting */
     "strict": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
     "baseUrl": ".",
-    "ignoreDeprecations": "6.0",
     "paths": {
       "openchad-react": [
         "openchad-react/index.ts"

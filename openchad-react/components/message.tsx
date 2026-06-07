@@ -1,11 +1,13 @@
-import { type ReactNode, type FC, type HTMLAttributes, useState, useEffect, useMemo, memo, createContext, useContext } from "react";
+import React, { type ReactNode, type FC, type HTMLAttributes, useState, useEffect, useMemo, memo, createContext, useContext } from "react";
 import { evaluate } from '@mdx-js/mdx'
 import remarkGfm from 'remark-gfm'
 import * as runtime from 'react/jsx-runtime'
 import { MessageParser } from "../utils/message-parser";
-import { ChevronRight, Lightbulb, Plug } from "lucide-react";
+import { ChevronRight, Lightbulb, Plug, Copy, Check } from "lucide-react";
 import clsx from "clsx";
 import { useGlobal } from "./useGlobal/useGlobal";
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 // ============================================
 // Component Props Types
 // ============================================
@@ -167,11 +169,71 @@ interface CodeBlockProps {
 
 const CodeBlock: FC<CodeBlockProps> = memo(({ children, id }) => {
   return (
-    <div id={id} className="">
+    <div id={id}>
       {children}
     </div>
   );
 });
+
+// Intercepts MDX's <pre><code className="language-xxx"> output from fenced code blocks
+const PreBlock: FC<{ children?: ReactNode }> = ({ children }) => {
+  const [copied, setCopied] = useState(false);
+
+  // Extract language and raw code text from the nested <code> element
+  let language = 'text';
+  let codeString = '';
+  if (children && typeof children === 'object' && 'props' in (children as any)) {
+    const codeEl = children as React.ReactElement<{ className?: string; children?: ReactNode }>;
+    const cls: string = codeEl.props?.className ?? '';
+    const match = cls.match(/language-(\S+)/);
+    if (match) language = match[1];
+    const raw = codeEl.props?.children;
+    codeString = typeof raw === 'string' ? raw : String(raw ?? '');
+  }
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(codeString).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <div className="code-block-wrapper relative group/code my-3 rounded-lg overflow-hidden border border-white/10">
+      {/* Header bar */}
+      <div className="code-block-header flex items-center justify-between px-3 py-1.5 text-xs text-white/50 select-none">
+        <span className="font-mono">{language}</span>
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1 opacity-0 group-hover/code:opacity-100 transition-opacity hover:text-white/90"
+          title="Copy code"
+        >
+          {copied ? <Check size={12} /> : <Copy size={12} />}
+          <span>{copied ? 'Copied!' : 'Copy'}</span>
+        </button>
+      </div>
+      {/* Syntax highlighted code */}
+      <SyntaxHighlighter
+        language={language}
+        style={oneDark}
+        PreTag="div"
+        customStyle={{
+          margin: 0,
+          borderRadius: 0,
+          background: "none",
+          fontSize: '0.8rem',
+          lineHeight: '1.6',
+          padding: '12px 16px',
+        }}
+        codeTagProps={{ style: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' } }}
+        showLineNumbers={codeString.split('\n').length > 4}
+        wrapLongLines
+      >
+        {codeString.trimEnd()}
+      </SyntaxHighlighter>
+    </div>
+  );
+};
 // ============================================
 // Contexts for Message-wide state (split for performance)
 // ============================================
@@ -190,7 +252,7 @@ const Think: FC<ThinkProps> = ({ children }) => {
   return (
     <div id={`think-${id}`} className={clsx(
       "thinkel overflow-hidden flex flex-col",
-      open ? "pb-4" : "pb-1"
+      open ? "pb-2" : "pb-1"
     )}>
       {/* Clickable header toggles state */}
       <button
@@ -228,6 +290,8 @@ export default function Message({ response, id, activeId }: MessageProps) {
   // Components Registry
   // ============================================
   const components = useMemo(() => ({
+    // MDX maps fenced code blocks to <pre><code> — override 'pre' to apply syntax highlighting
+    pre: PreBlock,
     // Support both PascalCase and lowercase
     Alert: AlertBox,
     alert: AlertBox,

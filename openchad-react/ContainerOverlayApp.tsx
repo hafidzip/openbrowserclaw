@@ -15,7 +15,8 @@ import {
 const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
 
 import { register, unregister, isRegistered } from "@tauri-apps/plugin-global-shortcut"
-import { getCurrentWindow, cursorPosition } from '@tauri-apps/api/window';
+import { getCurrentWindow, cursorPosition, currentMonitor } from '@tauri-apps/api/window';
+import { LogicalSize, LogicalPosition } from '@tauri-apps/api/dpi';
 
 let shortcutPromiseChain = Promise.resolve();
 
@@ -29,7 +30,7 @@ import CustomEndpoint from './components/customendpoint'
 import McpServers from './components/mcp'
 import { useGlobal } from './components/useGlobal'
 import { Button } from './ui'
-import { Check, Code, GitBranch, Globe, HardDrive, Key, Plus, Settings, X } from 'lucide-react'
+import { AlarmCheck, Check, Code, GitBranch, Globe, HardDrive, Key, Plus, Search, Settings, X } from 'lucide-react'
 import clsx from 'clsx'
 import { Dropdown } from './components/dropdown'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -37,9 +38,19 @@ import uuidv4 from './utils/uuid'
 import Markdown from 'react-markdown'
 import rehypeRaw from 'rehype-raw'
 import remarkGfm from 'remark-gfm'
+import Composer from './components/composer'
+import { AnimatePresence, motion, type Variants } from 'motion/react'
+import Tasks from './components/Tasks'
+import { useDatabase, generateIdFromString } from '.'
+import Chat from './components/chat'
+import type { Model } from './utils'
+import { useDatabaseImpl } from './components/useDatabase'
+import { sha256 } from 'js-sha256'
 
 
 export type OverlayApps = {
+    dialogLabel?: string,
+    dialogEvent?: string,
     id: string;
     App: React.ComponentType;
     pos: {
@@ -50,6 +61,8 @@ export type OverlayApps = {
     scale: number;
     html?: string;
     mdx?: string;
+    appname?: string;
+    data?: any;
 }
 
 // ---------------------------------------------------------------------------
@@ -63,12 +76,12 @@ function parseStyleString(styleStr: string): React.CSSProperties {
         if (parts.length < 2) return;
         const key = parts[0].trim();
         let value = parts.slice(1).join(':').trim();
-        
+
         // Strip wrapping quotes if present
         if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
             value = value.slice(1, -1).trim();
         }
-        
+
         if (!key) return;
         // Convert CSS property name to camelCase (e.g., background-color -> backgroundColor)
         const camelCaseKey = key.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase());
@@ -131,7 +144,6 @@ interface OverlayAppItemProps {
     isSelected: boolean;
     onSelect: () => void;
     onUpdate: (id: string, patch: Partial<Pick<OverlayApps, 'pos' | 'rotation' | 'scale'>>) => void;
-    onMenuAction: (id: string, action: string) => void;
 }
 
 const handles = [
@@ -152,7 +164,6 @@ const OverlayAppItem = React.memo(function OverlayAppItem({
     isSelected,
     onSelect,
     onUpdate,
-    onMenuAction,
 }: OverlayAppItemProps) {
     const containerRef = useRef<HTMLDivElement>(null);
     const [isHovered, setIsHovered] = useState(false);
@@ -178,8 +189,7 @@ const OverlayAppItem = React.memo(function OverlayAppItem({
     // ---- Drag (default pointer) & Rotate (Alt+drag shortcut) ----
     const onPointerDown = useCallback((e: React.PointerEvent) => {
         if (!isEditing) return;
-        e.preventDefault();
-        e.stopPropagation();
+        if (e.button == 2) return;
 
         // Select this source on interaction
         onSelect();
@@ -226,6 +236,8 @@ const OverlayAppItem = React.memo(function OverlayAppItem({
             }
         };
 
+
+
         window.addEventListener('pointermove', onMove);
         window.addEventListener('pointerup', onUp);
     }, [isEditing, app.id, onSelect, onUpdate, applyTransform]);
@@ -234,6 +246,7 @@ const OverlayAppItem = React.memo(function OverlayAppItem({
     const onRotateHandlePointerDown = useCallback((e: React.PointerEvent) => {
         e.preventDefault();
         e.stopPropagation();
+
 
         const rect = containerRef.current?.getBoundingClientRect();
         if (!rect) return;
@@ -324,9 +337,7 @@ const OverlayAppItem = React.memo(function OverlayAppItem({
             ref={containerRef}
             onPointerDown={onPointerDown}
             onContextMenu={(e) => {
-                if (isEditing) {
-                    onSelect();
-                }
+                onSelect();
             }}
             onMouseEnter={() => isEditing && setIsHovered(true)}
             onMouseLeave={() => setIsHovered(false)}
@@ -418,74 +429,6 @@ const OverlayAppItem = React.memo(function OverlayAppItem({
             </div>
         </div>
     );
-
-    if (isEditing) {
-        return (
-            <ContextMenu>
-                <ContextMenuTrigger asChild>
-                    {content}
-                </ContextMenuTrigger>
-                <ContextMenuContent className="w-48 bg-zinc-950/95 border border-zinc-800 text-zinc-300 font-sans backdrop-blur-md">
-                    {(app.html || app.mdx) && (
-                        <>
-                            <ContextMenuItem
-                                className="cursor-pointer focus:bg-zinc-850 focus:text-white"
-                                onSelect={() => onMenuAction(app.id, 'edit')}
-                            >
-                                Edit Source
-                            </ContextMenuItem>
-                            <ContextMenuSeparator className="bg-zinc-800" />
-                        </>
-                    )}
-                    <ContextMenuItem
-                        className="cursor-pointer focus:bg-zinc-850 focus:text-white"
-                        onSelect={() => onMenuAction(app.id, 'bring-to-front')}
-                    >
-                        Bring to Front
-                    </ContextMenuItem>
-                    <ContextMenuItem
-                        className="cursor-pointer focus:bg-zinc-850 focus:text-white"
-                        onSelect={() => onMenuAction(app.id, 'send-to-back')}
-                    >
-                        Send to Back
-                    </ContextMenuItem>
-                    <ContextMenuSeparator className="bg-zinc-800" />
-                    <ContextMenuItem
-                        className="cursor-pointer focus:bg-zinc-850 focus:text-white"
-                        onSelect={() => onMenuAction(app.id, 'center')}
-                    >
-                        Center Source
-                    </ContextMenuItem>
-                    <ContextMenuItem
-                        className="cursor-pointer focus:bg-zinc-850 focus:text-white"
-                        onSelect={() => onMenuAction(app.id, 'reset-scale')}
-                    >
-                        Reset Scale
-                    </ContextMenuItem>
-                    <ContextMenuItem
-                        className="cursor-pointer focus:bg-zinc-850 focus:text-white"
-                        onSelect={() => onMenuAction(app.id, 'reset-rotation')}
-                    >
-                        Reset Rotation
-                    </ContextMenuItem>
-                    <ContextMenuItem
-                        className="cursor-pointer focus:bg-zinc-850 focus:text-white"
-                        onSelect={() => onMenuAction(app.id, 'reset-transform')}
-                    >
-                        Reset Transform
-                    </ContextMenuItem>
-                    <ContextMenuSeparator className="bg-zinc-800" />
-                    <ContextMenuItem
-                        className="cursor-pointer text-red-400 focus:bg-red-950/40 focus:text-red-300"
-                        onSelect={() => onMenuAction(app.id, 'delete')}
-                    >
-                        Delete Source
-                    </ContextMenuItem>
-                </ContextMenuContent>
-            </ContextMenu>
-        );
-    }
-
     return content;
 }, (prev, next) => {
     // Custom comparator: only re-render when this item's data actually changed
@@ -499,22 +442,57 @@ const OverlayAppItem = React.memo(function OverlayAppItem({
         prev.isEditing === next.isEditing &&
         prev.isSelected === next.isSelected &&
         prev.onSelect === next.onSelect &&
-        prev.onUpdate === next.onUpdate &&
-        prev.onMenuAction === next.onMenuAction
+        prev.onUpdate === next.onUpdate
     );
 });
 
 export type AppRegistry = {
     name: string;
+    dialogLabel?: string;
+    dialogEvent?: string;
     App: React.ComponentType,
     Icon: React.JSX.Element,
 }
 
-export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = [] }: { Apps: OverlayApps[], AppRegistry?: AppRegistry[], CustomMenu?: React.JSX.Element }) {
+const composerVariants: Variants = {
+    initial: { opacity: 0, y: -20, scale: 0.95 },
+    animate: { opacity: 1, y: 0, scale: 1 },
+    exit: (custom: boolean) => custom
+        ? { opacity: [1, 1, 0], y: 500, x: 750, scale: 0.85, transition: { duration: 0.3, ease: 'easeOut' } }
+        : { opacity: 0, transition: { duration: 0 } }
+};
+
+export type Task = {
+    id: string,
+    query: string,
+    title: string | null
+}
+
+export default function ContainerOverlayApp(
+    {
+        Repository,
+        Apps,
+        CustomMenu,
+        AppRegistry = []
+    }
+        :
+        {
+            Repository?: string,
+            Apps: OverlayApps[],
+            AppRegistry?: AppRegistry[],
+            CustomMenu?: React.JSX.Element
+        }) {
 
     const { pyInvoke } = usePython();
     const { settings, updateSetting } = useSettings();
     const [mounted, setMounted] = useState(false);
+    const [searchQuery, setSearchQuery] = useState('');
+
+    const [chatId, setChatId] = useGlobal<string | null>('chatId', { initialValue: null })
+    const [dialog, setDialog] = useGlobal<string>("overlay-app-dialog", { initialValue: '' })
+    const [model, setModel] = useDatabaseImpl<Model>("model", { initialValue: { name: null, id: null } });
+    const [openWithY, setOpenWithY] = useState(false)
+    const [showTaskDialog, setShowTaskDialog] = useGlobal('showTaskDialog', { initialValue: false })
     const [showMcpDialog, setShowMcpDialog] = useGlobal('showMcpDialog', { initialValue: false })
     const [showCredentialsDialog, setShowCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false })
     const [showLocalModelDialog, setShowLocalModelDialog] = useGlobal('showLocalModelDialog', { initialValue: false })
@@ -522,10 +500,17 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
     const [setupModel, setSetupModel] = useState(false);
     const [appsState, setAppsState] = useGlobal("overlay-apps", { initialValue: Apps });
     const [isLoaded, setIsLoaded] = useState(false);
+    const composerRef = useRef<HTMLTextAreaElement>(null);
 
     useEffect(() => {
+        (window as any).checkricek = JSON.stringify(appsState)
+    }, [appsState])
+
+    useEffect(() => {
+
         if (!isTauri) {
             setIsLoaded(true);
+
             return;
         }
         (async () => {
@@ -554,14 +539,7 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
 
                 // Helper to serialize defaults (excluding ComponentType `App`)
                 const serializeDefaults = (appsList: OverlayApps[]) => {
-                    return JSON.stringify(appsList.map(a => ({
-                        id: a.id,
-                        pos: a.pos,
-                        rotation: a.rotation,
-                        scale: a.scale,
-                        html: a.html,
-                        mdx: a.mdx
-                    })));
+                    return JSON.stringify(appsList.map(({ App, ...rest }) => rest));
                 };
 
                 const currentDefaultsStr = serializeDefaults(Apps);
@@ -595,6 +573,15 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
                                 ...item,
                                 App: defaultApp.App
                             };
+                        }
+                        if (item.appname) {
+                            const registryApp = AppRegistry.find(r => r.name === item.appname);
+                            if (registryApp) {
+                                return {
+                                    ...item,
+                                    App: registryApp.App
+                                };
+                            }
                         }
                         if (item.html) {
                             return {
@@ -642,9 +629,11 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
     }, [appsState, isLoaded]);
 
     const [isEditing, setIsEditing] = useGlobal('overlay-editing', { initialValue: false });
+    const [isCreateTask, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: false });
     const [selectedAppId, setSelectedAppId] = useGlobal('overlay-selected-app-id', { initialValue: '' });
+    const [animateExit, setAnimateExit] = useState(true);
 
-    // State for the "Add Source" dialog (HTML / MDX code editor)
+    // State for the "Add Source" dialog (HTML / MDX code editor)f
     const [addSourceType, setAddSourceType] = useState<'html' | 'mdx' | null>(null);
     const [addSourceContent, setAddSourceContent] = useState('');
     const [editingAppId, setEditingAppId] = useState<string | null>(null);
@@ -654,6 +643,83 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
     useEffect(() => {
         appsStateRef.current = appsState;
     }, [appsState]);
+
+    // Undo/Redo history tracking state & refs
+    const pastRef = useRef<OverlayApps[][]>([]);
+    const futureRef = useRef<OverlayApps[][]>([]);
+    const lastStateRef = useRef<OverlayApps[]>(appsState);
+    const isUndoRedoingRef = useRef(false);
+    const [, setCanUndo] = useState(false);
+    const [, setCanRedo] = useState(false);
+
+    const undo = useCallback(() => {
+        if (pastRef.current.length === 0) return;
+        const previous = pastRef.current.pop();
+        if (!previous) return;
+
+        futureRef.current.push(appsStateRef.current);
+        isUndoRedoingRef.current = true;
+        setAppsState(previous);
+        setCanUndo(pastRef.current.length > 0);
+        setCanRedo(true);
+    }, [setAppsState]);
+
+    const redo = useCallback(() => {
+        if (futureRef.current.length === 0) return;
+        const next = futureRef.current.pop();
+        if (!next) return;
+
+        pastRef.current.push(appsStateRef.current);
+        isUndoRedoingRef.current = true;
+        setAppsState(next);
+        setCanUndo(true);
+        setCanRedo(futureRef.current.length > 0);
+    }, [setAppsState]);
+
+    const duplicateApp = useCallback((id: string) => {
+        const originalApp = appsStateRef.current.find(a => a.id === id);
+        if (!originalApp) return;
+
+        const newId = uuidv4();
+        const duplicatedApp = {
+            ...originalApp,
+            id: newId,
+            pos: {
+                x: originalApp.pos.x + 20,
+                y: originalApp.pos.y + 20
+            }
+        };
+
+        setAppsState((prev: OverlayApps[]) => [...prev, duplicatedApp]);
+        setSelectedAppId(newId);
+    }, [setAppsState, setSelectedAppId]);
+
+    useEffect(() => {
+        if (!isEditing) {
+            pastRef.current = [];
+            futureRef.current = [];
+            lastStateRef.current = appsState;
+            setCanUndo(false);
+            setCanRedo(false);
+            return;
+        }
+
+        if (isUndoRedoingRef.current) {
+            isUndoRedoingRef.current = false;
+            lastStateRef.current = appsState;
+            setCanUndo(pastRef.current.length > 0);
+            setCanRedo(futureRef.current.length > 0);
+            return;
+        }
+
+        if (JSON.stringify(lastStateRef.current) !== JSON.stringify(appsState)) {
+            pastRef.current.push(lastStateRef.current);
+            futureRef.current = [];
+            lastStateRef.current = appsState;
+            setCanUndo(true);
+            setCanRedo(false);
+        }
+    }, [appsState, isEditing]);
 
     const closeDialog = () => {
         setAddSourceType(null);
@@ -711,7 +777,7 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
         let intervalId: any = null;
         let lastIgnore: boolean | null = null;
 
-        if (isEditing) {
+        if (isEditing || isCreateTask) {
             lastIgnore = false;
             win.setIgnoreCursorEvents(false).catch(err => console.error(err));
             win.setFocusable(true).catch(err => console.error(err));
@@ -728,14 +794,11 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
                             document.activeElement.getAttribute('contenteditable') === 'true'
                         )
                     );
-                    // Get current global cursor coordinates
-                    const cursor = await cursorPosition();
 
-                    // Convert to logical pixels relative to the window client area
+                    const cursor = await cursorPosition();
                     const localX = (cursor.x - winPos.x) / scale;
                     const localY = (cursor.y - winPos.y) / scale;
 
-                    // Query elements with [data-tauri-cursor-region]
                     const elements = document.querySelectorAll('[data-tauri-cursor-region=true]');
 
                     let overRegion = isInputFocused;
@@ -760,13 +823,16 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
                         lastIgnore = nextIgnore;
                         await win.setIgnoreCursorEvents(nextIgnore);
                         await win.setFocusable(!nextIgnore);
-                    } else {
-                        win.setFocusable(false)
+                        if (!nextIgnore) {
+                            // Cursor just entered an interactive region — steal focus so
+                            // clicks land on the overlay instead of the app beneath.
+                            await win.setFocus();
+                        }
                     }
                 } catch (err) {
                     console.error("Error in hit-testing loop:", err);
                 }
-            }, 50); // check every 50ms
+            }, 50);
         }
 
         return () => {
@@ -774,7 +840,7 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
             if (intervalId) clearInterval(intervalId);
             cleanups.forEach(unlisten => unlisten());
         };
-    }, [isEditing]);
+    }, [isEditing, isCreateTask]);
 
     // Stable callback: update a single app's transform without replacing the whole array reference for siblings
     const handleAppUpdate = useCallback((id: string, patch: Partial<Pick<OverlayApps, 'pos' | 'rotation' | 'scale'>>) => {
@@ -831,6 +897,13 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
                     setSelectedAppId('');
                 }
                 break;
+            default:
+                if (action.startsWith('trigger-dialog:')) {
+                    const dialogName = action.replace('trigger-dialog:', '');
+                    setSelectedAppId('');
+                    setDialog(dialogName);
+                }
+                break;
         }
     }, [setAppsState, handleAppUpdate, selectedAppId, setSelectedAppId]);
 
@@ -873,18 +946,79 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
     }, [])
 
     useEffect(() => {
-        if (!mounted || !isTauri) return;
+        if (!mounted) return;
 
-        const handleKeyDown = async (e: KeyboardEvent) => {
-            if (e.key !== 'F11') return;
-            e.preventDefault();
-            const win = getCurrentWindow();
-            await win.setFullscreen(!(await win.isFullscreen()));
+        const handleKeyDown = (e: KeyboardEvent) => {
+            // Check if user is typing in an input/textarea/editable element
+            const active = document.activeElement;
+            const isInputActive = active && (
+                active.tagName.toLowerCase() === 'input' ||
+                active.tagName.toLowerCase() === 'textarea' ||
+                active.getAttribute('contenteditable') === 'true'
+            );
+            if (isInputActive) return;
+
+            // Block edit shortcuts when a custom dialog is active
+            if (dialog !== '') return;
+
+            if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "p") {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+            }
+
+            if (isEditing && selectedAppId !== '' && (e.key.toLowerCase() === "delete" || e.key.toLowerCase() === "backspace")) {
+                handleMenuAction(selectedAppId, "delete");
+            }
+
+            if (isEditing && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'd') {
+                e.preventDefault();
+                if (selectedAppId !== '') {
+                    duplicateApp(selectedAppId);
+                }
+            }
+
+            if (isEditing) {
+                const isUndo = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey;
+                const isRedo =
+                    ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') ||
+                    ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && e.shiftKey);
+
+                if (isUndo) {
+                    e.preventDefault();
+                    undo();
+                } else if (isRedo) {
+                    e.preventDefault();
+                    redo();
+                }
+            }
         };
 
+        const handleClick = (e: MouseEvent) => {
+            const anchor = (e.target as Element).closest("a");
+            if (!anchor) return;
+
+            const href = anchor.getAttribute("href");
+            if (href?.startsWith("http") || href?.startsWith("//")) {
+                e.preventDefault();
+                openUrl(href); // open in system browser
+            }
+        }
+
         window.addEventListener('keydown', handleKeyDown);
-        return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [mounted]);
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+        }
+    }, [mounted, isEditing, selectedAppId, handleMenuAction, undo, redo, duplicateApp, dialog]);
+
+
+    useEffect(() => {
+        const handler = (e: MouseEvent) => {
+            e.preventDefault()
+            e.stopPropagation()
+        };
+        window.addEventListener("click", handler);
+        return () => window.removeEventListener("click", handler);
+    }, []);
 
     const checkModel = async () => {
         const res: any = await pyInvoke<{ data?: Record<string, unknown> }>('file', {
@@ -959,6 +1093,24 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
 
     useEffect(() => {
         setMounted(true);
+        if (isTauri) {
+            const win = getCurrentWindow();
+            currentMonitor().then((monitor) => {
+                if (monitor) {
+                    const { width, height } = monitor.size;
+                    console.warn("width",width,"height",height);
+                    // First set size and position
+                    win.setSize(new LogicalSize(width, height))
+                        .then(() => win.setPosition(new LogicalPosition(0, 0)))
+                        .then(() => {
+                            // Toggle decorations to force Windows to redraw without the frame
+                            return win.setDecorations(true);
+                        })
+                        .then(() => win.setDecorations(false))
+                        .catch(err => console.error("Error setting window size/decorations:", err));
+                }
+            }).catch(err => console.error("Error getting monitor:", err));
+        }
     }, []);
 
     useEffect(() => {
@@ -968,9 +1120,39 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
                 try {
                     if (!(await isRegistered("CmdOrCtrl+Shift+E"))) {
                         await register("CmdOrCtrl+Shift+E", async () => {
-                            const win = getCurrentWindow();
                             setIsEditing(!isEditing);
-                            win.setFocus();
+                            setOpenWithY(false);
+                            setDialog('')
+                            setIsCreateTask(false);
+                        })
+                    }
+
+                    if (!(await isRegistered("CmdOrCtrl+Shift+T"))) {
+                        await register("CmdOrCtrl+Shift+T", async () => {
+
+                            setAnimateExit(true);
+                            setIsCreateTask(true);
+                            setOpenWithY(false);
+                            setIsEditing(false);
+                            setDialog('')
+                            setShowTaskDialog(false);
+                            setShowMcpDialog(false);
+                            setShowCredentialsDialog(false);
+                            setShowCustomEndpointDialog(false);
+                            setShowLocalModelDialog(false);
+                        })
+                    }
+                    if (!(await isRegistered("CmdOrCtrl+Shift+Y"))) {
+                        await register("CmdOrCtrl+Shift+Y", async () => {
+                            setOpenWithY(true);
+                            setIsEditing(true);
+                            setDialog('')
+                            setShowTaskDialog(true);
+                            setIsCreateTask(false);
+                            setShowMcpDialog(false);
+                            setShowCredentialsDialog(false);
+                            setShowCustomEndpointDialog(false);
+                            setShowLocalModelDialog(false);
                         })
                     }
                 } catch (err) {
@@ -979,8 +1161,12 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
                 try {
                     if (!(await isRegistered("esc"))) {
                         await register("esc", async () => {
+                            setOpenWithY(false);
+                            setAnimateExit(false);
+                            setDialog('')
                             setIsEditing(false);
-                            setSetupModel(false);
+                            setShowTaskDialog(false);
+                            setIsCreateTask(false);
                             setShowMcpDialog(false);
                             setShowCredentialsDialog(false);
                             setShowCustomEndpointDialog(false);
@@ -998,6 +1184,12 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
                 try {
                     if (await isRegistered("CmdOrCtrl+Shift+E")) {
                         await unregister("CmdOrCtrl+Shift+E");
+                    }
+                    if (await isRegistered("CmdOrCtrl+Shift+T")) {
+                        await unregister("CmdOrCtrl+Shift+T");
+                    }
+                    if (await isRegistered("CmdOrCtrl+Shift+Y")) {
+                        await unregister("CmdOrCtrl+Shift+Y");
                     }
                 } catch (err) {
                     console.error("Error unregistering CmdOrCtrl+Shift+E:", err);
@@ -1021,6 +1213,16 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
         }
     }, [mounted])
 
+    useEffect(() => {
+        if (openWithY && !showTaskDialog && chatId === null) {
+            setIsEditing(false);
+            setOpenWithY(false);
+        }
+    }, [openWithY, showTaskDialog, chatId])
+
+    const selectedApp = appsState.find((app: OverlayApps) => app.id === selectedAppId);
+
+
 
     return (
         <div>
@@ -1032,26 +1234,251 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
             <div
                 className={clsx(
                     'fixed w-[100vw] h-[100vh] top-0 left-0 z-50',
-                    !isEditing ? "bg-transparent" : "bg-black/50"
+                    (!isEditing && !isCreateTask) ? "bg-transparent" : "bg-black/50"
                 )}
                 onPointerDown={handleContainerPointerDown}
-                style={{ pointerEvents: isEditing ? 'auto' : 'none' }}
             >
-                {isLoaded && appsState.map((app: OverlayApps) => (
-                    <OverlayAppItem
-                        key={app.id}
-                        app={app}
-                        isEditing={isEditing}
-                        isSelected={app.id === selectedAppId}
-                        onSelect={() => setSelectedAppId(app.id)}
-                        onUpdate={handleAppUpdate}
-                        onMenuAction={handleMenuAction}
-                    />
-                ))}
+                {isLoaded && <>
+                    <AnimatePresence custom={animateExit}>
+                        {isCreateTask && (
+                            <motion.div
+                                key="composer-overlay"
+                                custom={animateExit}
+                                variants={composerVariants}
+                                initial="initial"
+                                animate="animate"
+                                exit="exit"
+                                transition={{ duration: 0.2, ease: 'easeOut' }}
+                                className='w-full h-full absolute'
+                                style={{ zIndex: 99999999999999 }}
+                            >
+                                <div className='w-full h-full flex items-center justify-center'>
+                                    <div onClick={() => {
+                                        setIsCreateTask(false);
+                                        setAnimateExit(false);
+                                    }} className='w-full h-full absolute top-0 left-0 bg-transparent'>
+
+                                    </div>
+                                    <Composer
+                                        showModelSelection={true}
+                                        workspace={'global'}
+                                        model={model}
+                                        setModel={setModel}
+                                        onSubmit={async (value: string) => {
+                                            console.log(value);
+                                            setAnimateExit(true);
+                                            setIsCreateTask(false);
+                                            const taskId = uuidv4()
+                                            const db = "global";
+                                            const sql = `INSERT OR REPLACE INTO tasks (id, metadata) VALUES (?, ?)`;
+                                            await pyInvoke("sqlite", {
+                                                db,
+                                                command: "execute",
+                                                sql: `CREATE TABLE IF NOT EXISTS tasks (
+                                                    id    TEXT PRIMARY KEY,
+                                                    metadata TEXT
+                                                )`,
+                                                params: []
+                                            });
+                                            await pyInvoke("sqlite", {
+                                                db,
+                                                command: "execute",
+                                                sql,
+                                                params: [
+                                                    taskId,
+                                                    JSON.stringify({
+                                                        id: taskId,
+                                                        query: value,
+                                                        timestamp: Date.now(),
+                                                    })
+                                                ]
+                                            });
+
+
+
+                                            const branch = sha256("0").slice(0, 32);
+                                            const tbRaw = "msg_" + branch + "_0";
+                                            // Note: do NOT pre-hash tbRaw — the backend hashes it as
+                                            // generateIdFromString(tab_id + "/" + tb), matching MessageContainer's useDatabase.
+                                            const branchId = sha256(branch).slice(0, 32);
+                                            const branchIndex = 0;
+                                            const activeId = taskId + "_response_" + branchId + "_0_" + branchIndex;
+
+                                            const initTb = generateIdFromString(taskId + "/" + "message_state");
+                                            const initialValue = {
+                                                title: { _v: value },
+                                                activeId: { _v: activeId },
+                                                errorMsg: { _v: "" },
+                                                initialized: { _v: true },
+                                                isStreaming: { _v: true },
+                                                context: { _v: "" },
+                                            }
+
+                                            await pyInvoke("sqlite", {
+                                                db: 'global', table: initTb, command: 'sync_table', data: initialValue
+                                            });
+
+                                            const streamRes = await pyInvoke("v1/chat/completions", {
+                                                id: activeId,
+                                                query: value,
+                                                stream: true,
+                                                model: model.id,
+                                                tab_id: taskId,
+                                                branch_id: branchId,
+                                                index: branchIndex,
+                                                response_branch: 0,
+                                                tb: tbRaw,
+                                                workspace: "global",
+                                                app_name: "",
+                                                pipeline: settings["Others/app_settings/string.pipeline"]?.value || "openchad/chat"
+                                            });
+                                            if (streamRes && typeof streamRes === 'object' && Symbol.asyncIterator in streamRes) {
+                                                for await (const _ of streamRes as any) { /* consume stream */ }
+                                            }
+                                        }}
+                                        width={1920}
+                                        height={1080}
+                                        isStreaming={false}
+                                        style={{ maxWidth: `100vw` }}
+                                        ref={composerRef}
+                                        maxHeight={'90vh'}
+                                        className={clsx(
+                                            "w-[768px] mx-auto z-30",
+                                            'relative',
+                                        )}
+                                    />
+                                </div>
+                            </motion.div>
+                        )}
+                    </AnimatePresence>
+                    <AnimatePresence>
+                        {(isEditing) && typeof chatId === "string" && <div className='absolute top-0 left-0 bg-black/25 w-full h-full' style={{ zIndex: 99999999999999 }}>
+                            <div className='w-full h-full flex items-center justify-center'>
+                                <div onClick={() => { setChatId(null) }} className='absolute w-full h-full bg-transparent' />
+                                <div className='w-[90vw] h-[90vh] bg-card border border-[hsl(var(--chat-border))] absolute overflow-hidden'>
+                                    <div onClick={() => { setChatId(null) }} className="absolute right-5 top-5 cursor-pointer z-10">
+                                        <X />
+                                    </div>
+                                    <Chat
+                                        id={chatId}
+                                        open={true}
+                                    />
+                                </div>
+                            </div>
+                        </div>}
+                    </AnimatePresence>
+                    <ContextMenu key={isEditing ? "editing" : "default"}>
+                        <ContextMenuTrigger disabled={!isEditing}>
+                            <div style={{ position: 'absolute', inset: 0 }}>
+                                {appsState.map((app: OverlayApps) => (
+                                    <OverlayAppItem
+                                        key={app.id}
+                                        app={app}
+                                        isEditing={isEditing && dialog === ''}
+                                        isSelected={app.id === selectedAppId && (
+                                            !showCredentialsDialog &&
+                                            !showTaskDialog &&
+                                            !showCustomEndpointDialog &&
+                                            !showLocalModelDialog &&
+                                            !showCredentialsDialog &&
+                                            chatId === null
+                                        )}
+                                        onSelect={() => {
+                                            if (dialog == '') setSelectedAppId(app.id)
+                                        }}
+                                        onUpdate={handleAppUpdate}
+                                    />
+                                ))}
+                            </div>
+                        </ContextMenuTrigger>
+
+                        <ContextMenuContent className="w-48 bg-zinc-950/95 border border-zinc-800 text-zinc-300 font-sans backdrop-blur-md">
+                            {selectedApp ? (
+                                <>
+                                    {(selectedApp.html || selectedApp.mdx) && (
+                                        <>
+                                            <ContextMenuItem
+                                                className="cursor-pointer focus:bg-zinc-850 focus:text-white"
+                                                onSelect={() => handleMenuAction(selectedAppId, 'edit')}
+                                            >
+                                                Edit Source
+                                            </ContextMenuItem>
+                                            <ContextMenuSeparator className="bg-zinc-800" />
+                                        </>
+                                    )}
+                                    {(selectedApp.dialogEvent && selectedApp.dialogLabel) && (
+                                        <>
+                                            <ContextMenuItem
+                                                className="cursor-pointer focus:bg-zinc-850 focus:text-white"
+                                                onSelect={() => {
+                                                    if (selectedApp.dialogEvent) {
+                                                        handleMenuAction(selectedAppId, 'trigger-dialog:' + selectedApp.dialogEvent);
+                                                    }
+                                                }}
+                                            >
+                                                {selectedApp.dialogLabel}
+                                            </ContextMenuItem>
+                                            <ContextMenuSeparator className="bg-zinc-800" />
+                                        </>
+                                    )}
+                                    <ContextMenuItem
+                                        className="cursor-pointer focus:bg-zinc-850 focus:text-white"
+                                        onSelect={() => handleMenuAction(selectedAppId, 'bring-to-front')}
+                                    >
+                                        Bring to Front
+                                    </ContextMenuItem>
+                                    <ContextMenuItem
+                                        className="cursor-pointer focus:bg-zinc-850 focus:text-white"
+                                        onSelect={() => handleMenuAction(selectedAppId, 'send-to-back')}
+                                    >
+                                        Send to Back
+                                    </ContextMenuItem>
+                                    <ContextMenuSeparator className="bg-zinc-800" />
+                                    <ContextMenuItem
+                                        className="cursor-pointer focus:bg-zinc-850 focus:text-white"
+                                        onSelect={() => handleMenuAction(selectedAppId, 'center')}
+                                    >
+                                        Center Source
+                                    </ContextMenuItem>
+                                    <ContextMenuItem
+                                        className="cursor-pointer focus:bg-zinc-850 focus:text-white"
+                                        onSelect={() => handleMenuAction(selectedAppId, 'reset-scale')}
+                                    >
+                                        Reset Scale
+                                    </ContextMenuItem>
+                                    <ContextMenuItem
+                                        className="cursor-pointer focus:bg-zinc-850 focus:text-white"
+                                        onSelect={() => handleMenuAction(selectedAppId, 'reset-rotation')}
+                                    >
+                                        Reset Rotation
+                                    </ContextMenuItem>
+                                    <ContextMenuItem
+                                        className="cursor-pointer focus:bg-zinc-850 focus:text-white"
+                                        onSelect={() => handleMenuAction(selectedAppId, 'reset-transform')}
+                                    >
+                                        Reset Transform
+                                    </ContextMenuItem>
+                                    <ContextMenuSeparator className="bg-zinc-800" />
+                                    <ContextMenuItem
+                                        className="cursor-pointer text-red-400 focus:bg-red-950/40 focus:text-red-300"
+                                        onSelect={() => handleMenuAction(selectedAppId, 'delete')}
+                                    >
+                                        Delete Source
+                                    </ContextMenuItem>
+                                </>
+                            ) : (
+                                // Right-clicked the background with no source selected
+                                <ContextMenuItem disabled className="text-zinc-500 text-xs cursor-default">
+                                    No source selected
+                                </ContextMenuItem>
+                            )}
+                        </ContextMenuContent>
+                    </ContextMenu>
+                </>}
             </div>
 
             {/* Edit mode toggle */}
-            {isEditing && (CustomMenu ? CustomMenu : <div
+            {isEditing && !openWithY && dialog === '' && (CustomMenu ? CustomMenu : <div
                 style={
                     {
                         zIndex: 999999
@@ -1064,8 +1491,17 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
                 }>
                 <div className='flex items-center justify-center gap-2'>
                     <Button
+                        onPointerDown={() => {
+                            setSearchQuery('');
+                            setShowTaskDialog(true);
+                        }}
+                        className='w-fit px-2.5'>
+                        <AlarmCheck />
+                    </Button>
+                    <Button
                         onClick={(e) => {
                             setIsEditing(false);
+                            setOpenWithY(false);
                         }}
                         className='flex items-center justify-center cursor-pointer'>
                         <Check />
@@ -1083,6 +1519,8 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
                                         setAppsState(appsState => [...appsState, {
                                             id: uuidv4(),
                                             appname: app.name,
+                                            ...(app.dialogLabel && { dialogLabel: app.dialogLabel }),
+                                            ...(app.dialogEvent && { dialogEvent: app.dialogEvent }),
                                             data: {},
                                             App: app.App,
                                             pos: {
@@ -1170,10 +1608,11 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
                                 children: null,
                                 separator: false,
                                 trigger: () => {
+                                    setIsEditing(false);
                                     if (isTauri) {
-                                        openUrl('https://github.com/openchad/openchad')
+                                        openUrl(Repository || 'https://github.com/openchad/openchad')
                                     } else {
-                                        window.open('https://github.com/openchad/openchad', '_blank')
+                                        window.open(Repository || 'https://github.com/openchad/openchad', '_blank')
                                     }
                                 }
                             },
@@ -1188,6 +1627,7 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
                                 children: null,
                                 separator: false,
                                 trigger: () => {
+                                    setIsEditing(false);
                                     if (isTauri) {
                                         openUrl('https://discord.gg/JWeqhecqBD')
                                     } else {
@@ -1255,7 +1695,7 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
                     />
                 </DialogContent>
             </DialogUI>
-            {isEditing && setupModel && <>
+            {(isEditing || isCreateTask) && setupModel && <>
                 <div className='fixed w-[100vw] h-[100vh] left-0 top-0 z-50 bg-black/50 flex items-center justify-center'>
                     <div className='w-[520px] bg-card border border-[hsl(var(--chat-border))] rounded-lg shadow-2xl flex flex-col overflow-hidden'>
                         {/* Header */}
@@ -1366,6 +1806,27 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
             </>
             }
             {/* ─── Add HTML / MDX Source Dialog ─── */}
+            {
+                <DialogUI open={showTaskDialog} onOpenChange={setShowTaskDialog}>
+                    <DialogContent className="max-w-4xl h-[80vh] flex flex-col border-accent/20 bg-card p-0 overflow-hidden shadow-2xl">
+                        <DialogHeader className="px-6">
+                            <DialogTitle className="text-lg font-medium pt-10 text-foreground/90">
+                                <div className="relative w-full border border-[hsl(var(--chat-border))] flex items-center gap-2 bg-[hsl(var(--float))] rounded-full px-4 shadow-sm focus-within:ring-1 focus-within:ring-accent/30 transition-all">
+                                    <Search className="w-4 h-4 text-muted-foreground" />
+                                    <input
+                                        placeholder="Search task..."
+                                        className="bg-transparent border-none p-2 w-full h-10 focus-visible:ring-0 text-sm"
+                                        value={searchQuery}
+                                        onChange={(e) => setSearchQuery(e.target.value)}
+                                        autoFocus
+                                    />
+                                </div>
+                            </DialogTitle>
+                        </DialogHeader>
+                        <Tasks workspace={'global'} isOpen={showTaskDialog} setOpen={setShowTaskDialog} query={searchQuery} />
+                    </DialogContent>
+                </DialogUI>
+            }
             {isEditing && <DialogUI open={addSourceType !== null} onOpenChange={(open) => { if (!open) closeDialog(); }}>
                 <DialogContent className="max-w-2xl flex flex-col border-accent/20 bg-card p-0 overflow-hidden shadow-2xl">
                     <DialogHeader className="px-6 pt-5 pb-3 border-b border-[hsl(var(--chat-border))]">
@@ -1430,7 +1891,7 @@ export default function ContainerOverlayApp({ Apps, CustomMenu, AppRegistry = []
                                         const App = addSourceType === 'html'
                                             ? createHtmlSourceApp(content)
                                             : createMdxSourceApp(content);
-                                        
+
                                         if (editingAppId) {
                                             setAppsState((prev: OverlayApps[]) =>
                                                 prev.map(a => a.id === editingAppId ? {

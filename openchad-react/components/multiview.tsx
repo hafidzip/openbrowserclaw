@@ -250,7 +250,7 @@ export default function MultiView({
           ref.current.resize(TabInfo.size[i] ?? defaultSize); // 👈 use saved size
         }
       });
-    }, [layout]);
+    }, [layout, tabInfo.active]);
     const currentLayout = layout === "single" ? "single" : aspectRatio === "9:16" ? 'vertical' : layout;
     // Horizontal split (1x2 or grid1x2) - 2 views side by side
     if ((currentLayout === "horizontal")) {
