@@ -23,4 +23,3 @@ dependencies = [
 
 [tool.uv.sources]
 openchadpy = { path = '..\openchadpy', editable = true }
-openchad-webview = { path = '..\openchad-webview\dist\openchad_webview-0.8.0-cp313-cp313-win_amd64.whl' }
