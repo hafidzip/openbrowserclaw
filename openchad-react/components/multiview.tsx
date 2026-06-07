@@ -223,18 +223,26 @@ export default function MultiView({
     const node = key ? nodesRef.current.get(key) : undefined;
     return <ViewSlot key={key || `slot-${slotIndex}`} node={node} id={key} />;
   };
-  const { size } = useSnapshot(TabInfo);
+  const { size, active } = useSnapshot(TabInfo);
   const { aspectRatio } = useSnapshot(Viewport);
+  const tabState = useSnapshot(TabState);
   const renderLayout = useCallback(() => {
     const { ctrl, shift } = useSnapshot(KeyState);
     const tabInfo = useSnapshot(TabInfo);
-    const active = tabInfo.switchMode;
+    const isSwitchModeActive = tabInfo.switchMode;
     const dragEvent = {
-      className: ctrl && shift && active ? "bg-accent/50 dark:bg-accent/25" : "bg-[hsl(var(--chat-border))]/50 dark:bg-[hsl(var(--chat-border))]",
+      className: ctrl && shift && isSwitchModeActive ? "bg-accent/50 dark:bg-accent/25" : "bg-[hsl(var(--chat-border))]/50 dark:bg-[hsl(var(--chat-border))]",
     }
     function handleResize(e: number, index: number) {
-      if (TabInfo.active !== "" && TabInfo.size[index]) TabInfo.size[index] = e;
-      if (TabState[TabInfo.active] && TabState[TabInfo.active].size[index]) TabState[TabInfo.active].size[index] = e;
+
+      if (active !== "" && size[index]) {
+        TabInfo.size[index] = e;
+        console.warn("TabInfo.size[index]", TabInfo.size[index])
+      }
+      if (tabState[active] && tabState[active].size && tabState[active].size[index]) {
+        TabState[active].size[index] = e;
+        console.warn("tabState[active].size[index]", tabState[active].size)
+      }
     }
     const refs = [
       useRef<ImperativePanelHandle>(null),
@@ -245,12 +253,12 @@ export default function MultiView({
     ];
     useLayoutEffect(() => {
       refs.forEach((ref, i) => {
-        if (ref.current) {
+        if (ref.current && size && size[i]) {
           const defaultSize = layout === "triple" ? 33.33 : 50;
-          ref.current.resize(TabInfo.size[i] ?? defaultSize); // 👈 use saved size
+          ref.current.resize(size[i] ?? defaultSize); // 👈 use saved size
         }
       });
-    }, [layout, tabInfo.active]);
+    }, [layout, size]);
     const currentLayout = layout === "single" ? "single" : aspectRatio === "9:16" ? 'vertical' : layout;
     // Horizontal split (1x2 or grid1x2) - 2 views side by side
     if ((currentLayout === "horizontal")) {
@@ -444,7 +452,7 @@ export default function MultiView({
     }
     // Single view
     return <div key="layout-single" className={'absolute top-0 left-0 w-full h-full'}>{getSlot(0)}</div>;
-  }, [layout, size, actives, aspectRatio])
+  }, [layout, size, actives, aspectRatio, active, tabState])
   return (
     <>
       {renderLayout()}

@@ -562,9 +562,6 @@ export default function Sidebar({
     document.addEventListener('mousemove', handleMouseMove);
     return () => document.removeEventListener('mousemove', handleMouseMove);
   }, []);
-  useEffect(() => {
-    console.log(savedTabs);
-  }, [savedTabs]);
   // Check if hovered tab still exists and close popup if not
   useEffect(() => {
     if (hoveredTabId) {

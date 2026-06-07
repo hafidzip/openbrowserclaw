@@ -443,8 +443,11 @@ export const addTab = ({
     // registered by Container via window.defaultTabs / window.defaultLayout
     let resolvedLayout = layout;
     let resolvedChildrenProps = childrenProps;
-    const defaultSize: number[] =
-        (window as any).defaultSize ?? [50, 50, 50, 50, 50];
+    const raw: number[] = (window as any).defaultSize ?? [];
+    const defaultSize: number[] = Array.from(
+        { length: 5 },
+        (_, i) => raw[i] ?? 50
+    );
     if (!resolvedChildrenProps) {
         const defaultTabs: Array<{ appname: string; data: any }> =
             (window as any).defaultTabs ?? [];
