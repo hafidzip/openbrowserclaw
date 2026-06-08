@@ -1,6 +1,6 @@
 {
   "name": "openchad-react",
-  "version": "1.0.20",
+  "version": "1.0.19",
   "license": "Apache-2.0",
   "description": "UI, components and utilities for OpenChad",
   "main": "./dist/index.js",

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { selectModel } from './components/sidebar'
 import React from 'react'
 import { usePython, usePythonEvent } from './components/usePython'
@@ -48,7 +48,6 @@ import { useDatabaseImpl } from './components/useDatabase'
 import { sha256 } from 'js-sha256'
 
 
-export const AppIdContext = createContext<string>('');
 export type OverlayApps = {
     dialogLabel?: string,
     dialogEvent?: string,
@@ -334,103 +333,101 @@ const OverlayAppItem = React.memo(function OverlayAppItem({
     const AppComponent = app.App;
 
     const content = (
-        <AppIdContext.Provider value={app.id}>
-            <div
-                ref={containerRef}
-                onPointerDown={onPointerDown}
-                onContextMenu={(e) => {
-                    onSelect();
-                }}
-                onMouseEnter={() => isEditing && setIsHovered(true)}
-                onMouseLeave={() => setIsHovered(false)}
+        <div
+            ref={containerRef}
+            onPointerDown={onPointerDown}
+            onContextMenu={(e) => {
+                onSelect();
+            }}
+            onMouseEnter={() => isEditing && setIsHovered(true)}
+            onMouseLeave={() => setIsHovered(false)}
 
-                style={{
-                    position: 'absolute',
-                    left: `calc(50% + ${app.pos.x}px)`,
-                    top: `calc(50% + ${app.pos.y}px)`,
-                    transform: `translate(-50%, -50%) rotate(${app.rotation}deg) scale(${app.scale})`,
-                    cursor: isEditing ? 'grab' : 'default',
-                    userSelect: isEditing ? 'none' : 'auto',
-                    pointerEvents: 'auto',
-                }}
-            >
-                {/* Editing overlay — visible border + handles */}
-                {isEditing && (
-                    <div
-                        style={{
-                            position: 'absolute',
-                            inset: -2,
-                            border: isSelected
-                                ? '2px solid #FF3B30'
-                                : isHovered
-                                    ? '1.5px dashed rgba(255, 59, 48, 0.8)'
-                                    : '1px dashed rgba(255, 255, 255, 0.3)',
-                            pointerEvents: 'none',
-                            zIndex: 10,
-                            transition: 'border-color 0.15s, border-style 0.15s',
-                        }}
-                    >
-                        {isSelected && (
-                            <>
-                                {/* 8 Corner & Edge Handles */}
-                                {handles.map(h => (
-                                    <div
-                                        key={h.name}
-                                        onPointerDown={(e) => onScaleHandlePointerDown(e, h.name)}
-                                        style={{
-                                            position: 'absolute',
-                                            width: 8,
-                                            height: 8,
-                                            background: '#FF3B30',
-                                            border: '1px solid #FFFFFF',
-                                            cursor: h.cursor,
-                                            pointerEvents: 'auto',
-                                            zIndex: 11,
-                                            ...h.style
-                                        }}
-                                    />
-                                ))}
-                                {/* Rotation Handle */}
+            style={{
+                position: 'absolute',
+                left: `calc(50% + ${app.pos.x}px)`,
+                top: `calc(50% + ${app.pos.y}px)`,
+                transform: `translate(-50%, -50%) rotate(${app.rotation}deg) scale(${app.scale})`,
+                cursor: isEditing ? 'grab' : 'default',
+                userSelect: isEditing ? 'none' : 'auto',
+                pointerEvents: 'auto',
+            }}
+        >
+            {/* Editing overlay — visible border + handles */}
+            {isEditing && (
+                <div
+                    style={{
+                        position: 'absolute',
+                        inset: -2,
+                        border: isSelected
+                            ? '2px solid #FF3B30'
+                            : isHovered
+                                ? '1.5px dashed rgba(255, 59, 48, 0.8)'
+                                : '1px dashed rgba(255, 255, 255, 0.3)',
+                        pointerEvents: 'none',
+                        zIndex: 10,
+                        transition: 'border-color 0.15s, border-style 0.15s',
+                    }}
+                >
+                    {isSelected && (
+                        <>
+                            {/* 8 Corner & Edge Handles */}
+                            {handles.map(h => (
                                 <div
+                                    key={h.name}
+                                    onPointerDown={(e) => onScaleHandlePointerDown(e, h.name)}
                                     style={{
                                         position: 'absolute',
-                                        top: -20,
-                                        left: '50%',
-                                        transform: 'translateX(-50%)',
-                                        width: 2,
-                                        height: 16,
-                                        background: '#FF3B30',
-                                        pointerEvents: 'none',
-                                    }}
-                                />
-                                <div
-                                    onPointerDown={onRotateHandlePointerDown}
-                                    style={{
-                                        position: 'absolute',
-                                        top: -26,
-                                        left: '50%',
-                                        transform: 'translateX(-50%)',
-                                        width: 10,
-                                        height: 10,
-                                        borderRadius: '50%',
+                                        width: 8,
+                                        height: 8,
                                         background: '#FF3B30',
                                         border: '1px solid #FFFFFF',
-                                        cursor: 'grab',
+                                        cursor: h.cursor,
                                         pointerEvents: 'auto',
-                                        zIndex: 12,
+                                        zIndex: 11,
+                                        ...h.style
                                     }}
-                                    title="Drag to rotate"
                                 />
-                            </>
-                        )}
-                    </div>
-                )}
-                {/* Disable pointer events on the inner app when editing so drag works */}
-                <div style={{ pointerEvents: isEditing ? 'none' : 'auto' }}>
-                    <AppComponent />
+                            ))}
+                            {/* Rotation Handle */}
+                            <div
+                                style={{
+                                    position: 'absolute',
+                                    top: -20,
+                                    left: '50%',
+                                    transform: 'translateX(-50%)',
+                                    width: 2,
+                                    height: 16,
+                                    background: '#FF3B30',
+                                    pointerEvents: 'none',
+                                }}
+                            />
+                            <div
+                                onPointerDown={onRotateHandlePointerDown}
+                                style={{
+                                    position: 'absolute',
+                                    top: -26,
+                                    left: '50%',
+                                    transform: 'translateX(-50%)',
+                                    width: 10,
+                                    height: 10,
+                                    borderRadius: '50%',
+                                    background: '#FF3B30',
+                                    border: '1px solid #FFFFFF',
+                                    cursor: 'grab',
+                                    pointerEvents: 'auto',
+                                    zIndex: 12,
+                                }}
+                                title="Drag to rotate"
+                            />
+                        </>
+                    )}
                 </div>
+            )}
+            {/* Disable pointer events on the inner app when editing so drag works */}
+            <div style={{ pointerEvents: isEditing ? 'none' : 'auto' }}>
+                <AppComponent />
             </div>
-        </AppIdContext.Provider>
+        </div>
     );
     return content;
 }, (prev, next) => {
@@ -904,7 +901,7 @@ export default function ContainerOverlayApp(
                 if (action.startsWith('trigger-dialog:')) {
                     const dialogName = action.replace('trigger-dialog:', '');
                     setSelectedAppId('');
-                    setDialog(id + '-' + dialogName);
+                    setDialog(dialogName);
                 }
                 break;
         }
@@ -1101,7 +1098,7 @@ export default function ContainerOverlayApp(
             currentMonitor().then((monitor) => {
                 if (monitor) {
                     const { width, height } = monitor.size;
-                    console.warn("width", width, "height", height);
+                    console.warn("width",width,"height",height);
                     // First set size and position
                     win.setSize(new LogicalSize(width, height))
                         .then(() => win.setPosition(new LogicalPosition(0, 0)))

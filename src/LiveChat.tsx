@@ -1,5 +1,5 @@
-import React, { useState, useCallback, useRef, useContext } from 'react'
-import { AppIdContext, useGlobal } from 'openchad-react'
+import React, { useState, useCallback, useRef } from 'react'
+import { useGlobal } from 'openchad-react'
 import { Dialog as DialogUI, DialogContent, DialogHeader, DialogTitle } from 'openchad-react/components/ui/dialog'
 import { Button } from 'openchad-react/components/ui/button'
 import { MessageSquare, X, Link, AlertCircle, Tv2 } from 'lucide-react'
@@ -214,16 +214,15 @@ function LiveChatDialog({ config, onSave, onClose }: LiveChatDialogProps) {
 // Widget
 // ---------------------------------------------------------------------------
 export function LiveChatWidget() {
-    const id = useContext(AppIdContext);
-    const DIALOG_EVENT = id + '-overlay-app-dialog'
-    const [dialog, setDialog] = useGlobal<string>(DIALOG_EVENT, { initialValue: '' })
-    const [config, setConfig] = useDatabase<LiveChatConfig>(id + '-live-chat-widget-config', {
+    const DIALOG_EVENT = 'live-chat-widget-dialog'
+    const [dialog, setDialog] = useGlobal<string>('overlay-app-dialog', { initialValue: '' })
+    const [config, setConfig] = useDatabase<LiveChatConfig>('live-chat-widget-config', {
         initialValue: { url: '' },
     })
     const [reloadKey, setReloadKey] = useState(0)
     const iframeRef = useRef<HTMLIFrameElement>(null)
 
-    const parsed = parse(config.url)
+    const parsed   = parse(config.url)
     const embedUrl = parsed ? buildEmbedUrl(parsed) : null
 
     const handleReload = useCallback(() => setReloadKey(k => k + 1), [])
