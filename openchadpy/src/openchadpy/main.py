@@ -688,9 +688,15 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
                 script = request.get("script")
                 label = request.get("label")
                 if label: 
-                    window = Manager.get_webview_window(app_handle, label)
-                    if window and script:
-                        window.eval(script)
+                    try:
+                        window = Manager.get_webview_window(app_handle, label)
+                        if window and script:
+                            window.eval(script)
+                        else:
+                            return {"error": "Webview window not found"}
+                    except Exception as e:
+                        logger.error(f"Error evaluating script in window {label}: {e}", exc_info=True)
+                        return {"error": str(e)}
                 return {'result': 'ok'}
             case 'set_active':
                 w = request.get("workspace")

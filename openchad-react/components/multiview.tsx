@@ -102,7 +102,7 @@ const ViewSlot = ({ node, id }: { node: HTMLElement | undefined, id: string }) =
         active && id === record["id"] && "cursor-grab"
       )}>
         <div className={cn(
-          "w-full h-full relative bg-card overflow-hidden",
+          "w-full h-full relative overflow-hidden",
           active && "pointer-events-none select-none"
         )} ref={ref} />
       </div>

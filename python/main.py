@@ -24,7 +24,7 @@ os.environ["OPENCHAD_TOOLS_DIR"] = TOOLS_DIR
 os.environ["OPENCHAD_MODEL_PROVIDERS_DIR"] = os.path.join(_PROJECT_ROOT, "ModelProvider")
 os.environ["OPENCHAD_SETTINGS_DIR"] = os.path.join(_PROJECT_ROOT, "Settings")
 os.environ["OPENCHAD_CONFIG_PATH"] = CONFIG_JSON
-os.environ["_PYTAURI_DIST"] = "pytauri-wheel"
+os.environ["_PYTAURI_DIST"] = "openchad-webview"
 
 from openchadpy.main import main
 if __name__ == "__main__":

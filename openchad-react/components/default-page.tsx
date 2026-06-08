@@ -260,7 +260,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
         <div
             ref={containerRef}
             className={clsx(
-                "w-full h-full flex flex-col items-center absolute transition-opacity duration-300",
+                "w-full h-full flex flex-col items-center absolute transition-opacity duration-300 bg-card",
                 ((width === 0 || height === 0) || justOpen) ? 'opacity-0' : 'opacity-100',
             )}
         >

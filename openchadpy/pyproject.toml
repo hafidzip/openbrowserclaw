@@ -21,7 +21,7 @@ dependencies = [
   "pydantic>=2.12.4",
   "pygments>=2.19.2",
   "pytauri>=0.8.0",
-  "pytauri-wheel>=0.8.0",
+  "openchad-webview",
   "python-pptx>=1.0.2",
   "rapidfuzz>=3.14.3",
   "scipy>=1.16.3",
@@ -34,6 +34,9 @@ dependencies = [
   "pyrsmi>=1.1.0",
   "aiortc>=1.14.0",
 ]
+[tool.uv.sources]
+openchad-webview = { path = '../openchad-webview/dist/openchad_webview-0.8.0-cp313-cp313-win_amd64.whl' }
+
 [project.scripts]
 openchadpy = "openchadpy.main:main"
 [build-system]

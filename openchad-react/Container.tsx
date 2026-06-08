@@ -655,6 +655,11 @@ export default function Container({ Apps }: { Apps: Project }) {
   }
   return (
     <div>
+      <style>{`
+                html, body {
+                    background: transparent !important;
+                }
+      `}</style>
       {isTauri && <div data-tauri-drag-region className='absolute top-0 w-full h-[2.5vh]  left-0 bg-transparent' style={{ zIndex: 10 }} />}
       <div
         contentEditable
@@ -700,10 +705,13 @@ export default function Container({ Apps }: { Apps: Project }) {
       </motion.div>
       <div ref={vieweportRef} id="app"
         className={clsx(
-          "flex bg-[hsl(var(--bg))]  h-screen overflow-hidden",
+          "flex h-screen overflow-hidden",
           currentLayout === "rightToLeft" && 'flex-row-reverse',
         )}
       >
+        <div data-tauri-drag-region className='absolute w-full h-10 bg-bg top-0 left-0'>
+
+        </div>
         <aside className="items-start x hidden md:flex bg-[hsl(var(--bg))] relative z-10">
           {/* <VerticalTab menus={menus} /> */}
           <Sidebar
@@ -726,7 +734,7 @@ export default function Container({ Apps }: { Apps: Project }) {
             layout={snaptheme.layout}
             theme={snaptheme.theme}
             settings={settings}
-            {...(Apps.repository && {repository: Apps.repository})}
+            {...(Apps.repository && { repository: Apps.repository })}
           />
         </aside>
         <div
@@ -738,7 +746,6 @@ export default function Container({ Apps }: { Apps: Project }) {
           {/*  */}
           <div className={clsx(
             "w-full overflow-hidden",
-            isTauri && "pt-1.5",
             "h-[calc(100%-50px)] md:h-full"
           )}>
             <div
@@ -746,10 +753,11 @@ export default function Container({ Apps }: { Apps: Project }) {
               className={
                 clsx(
                   "flex",
-                  "bg-card relative w-full h-full border-[0px] border-solid border-[hsl(var(--chat-border))] border-t-[1px]",
+                  "relative w-full h-full border-[0px] border-solid border-[hsl(var(--chat-border))] border-t-[1px]",
                   currentLayout === "rightToLeft" ? 'border-r-[1px]' : 'border-l-[1px]',
                 )
               }>
+
               {
                 Object.keys(snaptabs).length == 0 && (
                   <div className="w-full h-full flex items-center justify-center">
@@ -768,7 +776,7 @@ export default function Container({ Apps }: { Apps: Project }) {
                 "relative overflow-hidden",
                 "flex-1",
               )}>
-                {Object.keys(snaptabs).length > 0 && <MultiView actives={actives} className='relative top-0 left-0 bg-neutral-300 dark:bg-[hsl(var(--float))]' layout={layout as LayoutType}>
+                {Object.keys(snaptabs).length > 0 && <MultiView actives={actives} className='relative top-0 left-0' layout={layout as LayoutType}>
                   {Object.keys(tabs).map((key, index) => (
                     <TabItem key={key} isOpened={actives.includes(index)}>
                       {tabs[key]}
@@ -777,70 +785,6 @@ export default function Container({ Apps }: { Apps: Project }) {
                   }
                 </MultiView>}
               </div>
-              {isTauri && <div className={clsx("absolute z-10 top-[-0.2px]", currentLayout === "rightToLeft" ? 'left-0' : "right-0")}>
-                <Topbar reverse={currentLayout === "rightToLeft"} Elements={[
-                  currentLayout === "rightToLeft" ?
-                    <button
-                      onClick={() => {
-                        if ((window as any).__TAURI__) {
-                          (window as any).__TAURI__.window.getCurrentWindow().minimize()
-                        }
-                      }}
-                      className="pointer-events-auto  w-[30px] h-[30px] flex items-center justify-center rounded-lg transition-colors  relative bottom-1" aria-label="Settings">
-                      <div className='w-[13px] h-[13px] rounded-full bg-green-500'>
-                      </div>
-                    </button>
-                    : <button
-                      onClick={() => {
-                        if ((window as any).__TAURI__) {
-                          (window as any).__TAURI__.window.getCurrentWindow().minimize()
-                        }
-                      }}
-                      className="pointer-events-auto w-[30px] h-[30px] flex items-center justify-center rounded-lg hover:bg-[hsl(var(--hover))] transition-colors  relative bottom-1" aria-label="Settings">
-                      <Minus className="h-3 w-3 text-zinc-600 dark:text-zinc-300" />
-                    </button>,
-                  currentLayout === "rightToLeft" ?
-                    <button
-                      onClick={() => {
-                        if ((window as any).__TAURI__) {
-                          (window as any).__TAURI__.window.getCurrentWindow().toggleMaximize()
-                        }
-                      }}
-                      className="pointer-events-auto w-[30px] h-[30px] flex items-center justify-center rounded-lg transition-colors  relative bottom-1" aria-label="Settings">
-                      <div className='w-[13px] h-[13px] rounded-full bg-yellow-500'>
-                      </div>
-                    </button>
-                    : <button
-                      onClick={() => {
-                        if ((window as any).__TAURI__) {
-                          (window as any).__TAURI__.window.getCurrentWindow().toggleMaximize()
-                        }
-                      }}
-                      className="pointer-events-auto w-[30px] h-[30px] flex items-center justify-center rounded-lg hover:bg-[hsl(var(--hover))] transition-colors  relative bottom-1" aria-label="Settings">
-                      <Copy className="h-3 w-3 text-zinc-600 dark:text-zinc-300 transform scale-x-[-1]" />
-                    </button>,
-                  currentLayout === "rightToLeft" ?
-                    <button
-                      onClick={() => {
-                        if ((window as any).__TAURI__) {
-                          (window as any).__TAURI__.window.getCurrentWindow().close()
-                        }
-                      }}
-                      className="pointer-events-auto w-[30px] h-[30px] flex items-center justify-center rounded-lg transition-colors  relative bottom-1" aria-label="Settings">
-                      <div className='w-[13px] h-[13px] rounded-full bg-red-500'>
-                      </div>
-                    </button>
-                    : <button
-                      onClick={() => {
-                        if ((window as any).__TAURI__) {
-                          (window as any).__TAURI__.window.getCurrentWindow().close()
-                        }
-                      }}
-                      className="pointer-events-auto w-[30px] h-[30px] flex items-center justify-center rounded-lg hover:bg-[hsl(var(--hover))] transition-colors  relative bottom-1" aria-label="Settings">
-                      <X className="h-4 w-4 text-zinc-600 dark:text-zinc-300" />
-                    </button>
-                ]} />
-              </div>}
             </div>
           </div>
           <div className='w-full flex md:hidden h-[50px] bg-[hsl(var(--bg))] absolute bottom-[0px] z-10 gap-2 items-center justify-center border-t border-[hsl(var(--chat-border))] px-3'>
