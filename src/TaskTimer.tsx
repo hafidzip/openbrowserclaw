@@ -1,10 +1,11 @@
 import React, {
     useCallback,
+    useContext,
     useEffect,
     useRef,
     useState,
 } from 'react'
-import { useGlobal, useDatabase } from 'openchad-react'
+import { useGlobal, useDatabase, AppIdContext } from 'openchad-react'
 import { Dialog as DialogUI, DialogContent, DialogHeader, DialogTitle } from 'openchad-react/components/ui/dialog'
 import { Button } from 'openchad-react/ui'
 import {
@@ -386,13 +387,14 @@ function TaskTimerDialog({ tasks, onSave, onClose }: TaskTimerDialogProps) {
 // Overlay widget
 // ---------------------------------------------------------------------------
 export function TaskTimerWidget() {
-    const DIALOG_EVENT = 'task-timer-dialog'
+    const appId = useContext(AppIdContext);
+    const DIALOG_EVENT = appId + '-task-timer-dialog'
     const [dialog, setDialog] = useGlobal<string>('overlay-app-dialog', { initialValue: '' })
 
-    const [tasks, setTasks] = useDatabase<TimerTask[]>('task-list-timer-tasks', { initialValue: [] })
-    const [currentIdx, setCurrentIdx] = useGlobal<number>('task-list-timer-idx', { initialValue: 0 })
-    const [timerState, setTimerState] = useGlobal<TimerState>('task-list-timer-state', { initialValue: 'idle' })
-    const [totalElapsed, setTotalElapsed] = useGlobal<number>('task-list-timer-total', { initialValue: 0 })
+    const [tasks, setTasks] = useDatabase<TimerTask[]>(appId + '-task-list-timer-tasks', { initialValue: [] })
+    const [currentIdx, setCurrentIdx] = useGlobal<number>(appId + '-task-list-timer-idx', { initialValue: 0 })
+    const [timerState, setTimerState] = useGlobal<TimerState>(appId + '-task-list-timer-state', { initialValue: 'idle' })
+    const [totalElapsed, setTotalElapsed] = useGlobal<number>(appId + '-task-list-timer-total', { initialValue: 0 })
 
     // Live tick refs
     const rafRef = useRef<number | null>(null)

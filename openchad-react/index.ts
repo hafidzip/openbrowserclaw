@@ -10,10 +10,10 @@ import { useGlobal as useGlobalImpl } from "./components/useGlobal";
 import type { MessageState } from "./components/default-page";
 import { OpenChadIcon } from "./components/open-chad-icon";
 import ContainerSingleApp from "./ContainerSingleApp";
-import ContainerOverlayApp from "./ContainerOverlayApp";
+import ContainerOverlayApp, { AppIdContext } from "./ContainerOverlayApp";
 import { useSnapshot } from "valtio";
 import { Theme, Workspace } from "./utils/state";
-import { useEffect } from "react";
+import {  useEffect } from "react";
 
 function generateIdFromString(input: string): string {
     /**
@@ -83,7 +83,9 @@ const useEvent = <T,>(event: string, callback: (data: T) => void) => {
 }
 
 
+
 export {
+    AppIdContext,
     ContainerOverlayApp,
     ContainerSingleApp,
     Container,
