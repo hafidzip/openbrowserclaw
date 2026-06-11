@@ -20,7 +20,6 @@ from .database import Database
 from .context import workspace_ctx, tab_id_ctx, model_id_ctx
 from .mcp_manager import MCPManager
 from pytauri import Commands, AppHandle, Manager
-from pytauri.webview import WebviewWindow
 from pytauri_plugins import (
     autostart,
     clipboard_manager,
@@ -39,7 +38,6 @@ from pytauri_plugins import (
     single_instance,
     upload,
     websocket,
-    window_state,
 )
 
 from pytauri_wheel.lib import builder_factory, context_factory
@@ -681,19 +679,14 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
     # This is safe to call on every command  it's a cheap global assignment.
     command = body.get("command")
     request = body.get("request") or {}   
-    logger.info(f"Received command: {command} with request: {request}") 
     try:
         match command:
             case 'eval': 
                 script = request.get("script")
                 label = request.get("label")
-                if label: 
+                if label and script: 
                     try:
-                        window = Manager.get_webview_window(app_handle, label)
-                        if window and script:
-                            window.eval(script)
-                        else:
-                            return {"error": "Webview window not found"}
+                        await event_emitter.emit("eval", {"script": script, "label": label})
                     except Exception as e:
                         logger.error(f"Error evaluating script in window {label}: {e}", exc_info=True)
                         return {"error": str(e)}
@@ -1948,7 +1941,6 @@ def main() -> int:
                 # Start FastAPI in the background
                 portal.call(task_group.start_soon, run_fastapi)
                 # Configure Tauri
-                tauri_config = None
                 tauri_config = {
                     "build": {
                         "frontendDist": "http://localhost:" + (VITE_PORT if DEV_MODE else str(port)),

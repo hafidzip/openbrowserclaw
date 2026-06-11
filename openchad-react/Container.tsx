@@ -16,7 +16,7 @@ import { Spinner } from './components/ui/spinner'
 import React from 'react'
 import ReactDOM from 'react-dom'
 import DefaultPage from './components/default-page'
-import { usePython } from './components/usePython'
+import { usePython, usePythonEvent } from './components/usePython'
 import { useDatabaseImpl } from './components/useDatabase'
 import useKeyEffect from './components/useKeyEffect'
 import { SelectWorkspace } from './components/select-workspace'
@@ -27,6 +27,7 @@ import { sha256 } from 'js-sha256';
 import { useGlobal } from './components/useGlobal'
 import { useSettings } from './components/useSettings'
 import { Dropdown } from './components/dropdown'
+import { invoke } from '@tauri-apps/api/core';
 
 const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
 // Enable iframe mirror debugging in development
@@ -83,8 +84,11 @@ export interface Project {
   repository?: string;
 }
 import { hideSplashScreen } from "vite-plugin-splash-screen/runtime";
-import { generateIdFromString } from './index'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { generateIdFromString, useMenuBar } from './index'
+import { getCurrentWindow, PhysicalPosition, PhysicalSize } from '@tauri-apps/api/window'
+import BrowserBar from './Bar'
+import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
+import Bar from './Bar'
 
 export default function Container({ Apps }: { Apps: Project }) {
   if (Apps.defaultTab.tabs.length === 0) {
@@ -120,6 +124,15 @@ export default function Container({ Apps }: { Apps: Project }) {
   const currentLayout = snaptheme.layout;
   const [intialzeTheme, setInitialzeTheme] = useState(false);
   const isFirstSave = useRef(true);
+  const [MenuBar, setMenuBar] = useMenuBar();
+
+  usePythonEvent('eval', async (data) => {
+    await invoke('eval_in_webview', {
+      label: data.label,
+      script: data.script,
+    });
+  });
+
 
   useEffect(() => {
     if (!mounted || !isTauri) return;
@@ -470,6 +483,7 @@ export default function Container({ Apps }: { Apps: Project }) {
       }
     };
   }
+
   useEffect(() => {
     (async () => {
       if (typeof window !== 'undefined' && !!(window as any).__TAURI__) {
@@ -539,26 +553,32 @@ export default function Container({ Apps }: { Apps: Project }) {
   }, ["control", "shift"]);
 
 
-  const deleteTimerRef = useRef<any>(null);
+  const lastDeleteTimeRef = useRef<any>(null);
 
-  useKeyEffect(() => {
-    const activeElement = document.activeElement;
-    const isInputFocused =
-      activeElement instanceof HTMLInputElement ||
-      activeElement instanceof HTMLTextAreaElement ||
-      (activeElement instanceof HTMLElement && activeElement.isContentEditable);
-    if (isInputFocused) {
+  usePythonEvent("delete-tab", (data) => {
+    const now = Date.now();
+    if (now - lastDeleteTimeRef.current < 80) {
       return;
     }
-
-    if (deleteTimerRef.current) {
-      clearTimeout(deleteTimerRef.current);
+    try {
+      lastDeleteTimeRef.current = now;
+      deleteTabWithGroupSelection(TabInfo.active);
+    } catch (Err) {
+      console.error("Error deleting tab:", Err);
     }
+  })
 
-    deleteTimerRef.current = setTimeout(() => {
-      deleteTabWithGroupSelection(active)
-      deleteTimerRef.current = null;
-    }, 80); // delay in ms
+  useKeyEffect(() => {
+    const now = Date.now();
+    if (now - lastDeleteTimeRef.current < 80) {
+      return;
+    }
+    try {
+      lastDeleteTimeRef.current = now;
+      deleteTabWithGroupSelection(TabInfo.active);
+    } catch (Err) {
+      console.error("Error deleting tab:", Err);
+    }
 
   }, ["control", "w"]);
 
@@ -660,7 +680,6 @@ export default function Container({ Apps }: { Apps: Project }) {
                     background: transparent !important;
                 }
       `}</style>
-      {isTauri && <div data-tauri-drag-region className='absolute top-0 w-full h-[2.5vh]  left-0 bg-transparent' style={{ zIndex: 10 }} />}
       <div
         contentEditable
         style={{
@@ -709,7 +728,7 @@ export default function Container({ Apps }: { Apps: Project }) {
           currentLayout === "rightToLeft" && 'flex-row-reverse',
         )}
       >
-        <div data-tauri-drag-region className='absolute w-full h-10 bg-bg top-0 left-0'>
+        <div data-tauri-drag-region className='absolute w-full h-8 top-0 left-0'>
 
         </div>
         <aside className="items-start x hidden md:flex bg-[hsl(var(--bg))] relative z-10">
@@ -746,8 +765,11 @@ export default function Container({ Apps }: { Apps: Project }) {
           {/*  */}
           <div className={clsx(
             "w-full overflow-hidden",
-            "h-[calc(100%-50px)] md:h-full"
+            "h-[calc(100%)] md:h-full"
           )}>
+            <Bar theme={snaptheme.theme} isRightToLeft={currentLayout === "rightToLeft"}>
+              {MenuBar}
+            </Bar>
             <div
               id="app"
               className={
@@ -760,7 +782,7 @@ export default function Container({ Apps }: { Apps: Project }) {
 
               {
                 Object.keys(snaptabs).length == 0 && (
-                  <div className="w-full h-full flex items-center justify-center">
+                  <div className="w-full h-full flex items-center justify-center bg-card">
                     {warmup ? <div>
                       <Spinner />
                     </div> : <Button onClick={() => {
@@ -785,6 +807,7 @@ export default function Container({ Apps }: { Apps: Project }) {
                   }
                 </MultiView>}
               </div>
+
             </div>
           </div>
           <div className='w-full flex md:hidden h-[50px] bg-[hsl(var(--bg))] absolute bottom-[0px] z-10 gap-2 items-center justify-center border-t border-[hsl(var(--chat-border))] px-3'>
@@ -1079,7 +1102,6 @@ export default function Container({ Apps }: { Apps: Project }) {
             </div>
           </div>
         </div>
-        <div data-tauri-drag-region className='fixed w-[100vw] h-[5vh] left-0 top-0 z-50 bg-transparent' />
       </>
       }
     </div>

@@ -26,6 +26,8 @@ export interface Model {
     downloaded?: boolean;
 }
 
+export const MenuBar = proxy<{ current: React.JSX.Element | null }>({ current: null })
+
 export const Workspace = proxy({
     workspace: null as string | null,
     setWorkspace: (workspace: string | null) => {

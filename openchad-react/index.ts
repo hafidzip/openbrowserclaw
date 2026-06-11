@@ -11,8 +11,8 @@ import type { MessageState } from "./components/default-page";
 import { OpenChadIcon } from "./components/open-chad-icon";
 import ContainerSingleApp from "./ContainerSingleApp";
 import ContainerOverlayApp from "./ContainerOverlayApp";
-import { useSnapshot } from "valtio";
-import { Theme, Workspace } from "./utils/state";
+import { proxy, ref, useSnapshot } from "valtio";
+import { MenuBar, Theme, Workspace } from "./utils/state";
 import { useEffect } from "react";
 
 function generateIdFromString(input: string): string {
@@ -82,8 +82,16 @@ const useEvent = <T,>(event: string, callback: (data: T) => void) => {
     }, [event, callback])
 }
 
+const useMenuBar = () => {
+    const snap = useSnapshot(MenuBar)
+    return [snap.current, MenuBar] as const;
+}
 
 export {
+    proxy,
+    ref,
+    useSnapshot,
+    useMenuBar,
     ContainerOverlayApp,
     ContainerSingleApp,
     Container,

@@ -1,7 +1,0 @@
-{
-    "name": "Local Model Provider",
-    "version": "1.0.0",
-    "description": "Scans local Models directory for available models.",
-    "author": "openchad",
-    "requirements": []
-}

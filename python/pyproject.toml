@@ -1,25 +1,14 @@
 [project]
 name = "python"
 version = "0.1.0"
-description = "Add your description here"
+description = "OpenBrowser - AI-driven Browser built with OpenChad"
 readme = "README.md"
 requires-python = ">=3.13"
 
 dependencies = [
     "openchadpy",
-    "beautifulsoup4>=4.14.3",
-    "chromadb>=1.5.9",
-    "ffmpeg>=1.4",
-    "litellm>=1.88.0",
-    "llama-cpp-python>=0.3.27",
-    "markdownify>=1.2.2",
-    "rlms>=0.1.1",
-    "silero-vad>=6.2.0",
-    "torch>=2.10.0",
-    "tree-sitter>=0.25.2",
-    "tree-sitter-typescript>=0.23.2",
-    "vosk>=0.3.45",
+    "litellm>=1.88.0"
 ]
 
 [tool.uv.sources]
-openchadpy = { path = '..\openchadpy', editable = true }
+openchadpy = { path = '../openchadpy', editable = true }

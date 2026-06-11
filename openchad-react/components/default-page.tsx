@@ -257,144 +257,146 @@ export default function DefaultPage(AppInfo: AppInfo) {
         });
     }
     return (
-        <div
-            ref={containerRef}
-            className={clsx(
-                "w-full h-full flex flex-col items-center absolute transition-opacity duration-300 bg-card",
-                ((width === 0 || height === 0) || justOpen) ? 'opacity-0' : 'opacity-100',
-            )}
-        >
-            <ModelSelection
-                model={model}
-                setModel={setModel}
-                layout={layout}
-            />
-            <div style={{
-                height: width < 800 || height < 650 || messageState.initialized ? `${height}px` : `${height * 0.2}px`,
-            }} className={clsx(
-                "overflow-visible flex flex-col items-center absolute top-1/2 transform -translate-y-1/2",
-                (width < 500 || height < 500) ? 'gap-1' : (width < 800 || height < 650 || messageState.initialized) ? 'gap-5' : 'gap-1',
-                messageState.initialized && "w-full h-full",
-            )}>
-                <div
-                    ref={scrollAreaRef}
-                    onScroll={handleScroll}
-                    className={clsx(
-                        (width < 800 || height < 650 || messageState.initialized) ? messageState.initialized ? 'h-full' : 'flex-1 relative' : '',
-                        'w-full overflow-y-auto flex pt-5',
-                        messageState.initialized ? "items-start" : "text-center items-center justify-center",
-                    )}
-                >
-                    {
-                        messageState.initialized ?
-                            <div className="relative w-full flex justify-center overflow-y-auto pb-25">
-                                <div id="messages-container" className={clsx(
-                                    "flex flex-col relative overflow-x-hidden pt-5 w-full px-2",
-                                    width < 800 ? 'max-w-full small-content' : 'max-w-[40vw]',
-                                )}>
-                                    <MessageContainer
-                                        workspace={workspace}
-                                        isStreaming={messageState.isStreaming}
-                                        request={request}
-                                        activeId={messageState.isStreaming ? messageState.activeId : null}
-                                        tabId={AppInfo.tabId}
-                                        useDatabase={(tb, options) => {
-                                            return AppInfo.useTabDatabase(tb, options);
-                                        }}
-                                        index={0}
-                                        branch={sha256("0").slice(0, 32)}
-                                    />
-                                    {messageState.errorMsg.length > 0 && (
-                                        <div className="bg-red-300 dark:bg-red-900 text-red-500 dark:text-red-300 p-2 rounded-md border border-red-500 mt-2 text-break break-all">
-                                            {messageState.errorMsg}
-                                        </div>
-                                    )}
-                                    <div
-                                        ref={msgBottomRef}
-                                        className="w-full flex-shrink-0"
-                                        style={{ height: "0px" }}
-                                        aria-hidden="true"
-                                    />
-                                </div>
-                                <div className="fixed -top-1 w-[99%] h-17 bg-gradient-to-b from-card via-card via-70% to-transparent" />
-                                <div className="fixed bottom-0 w-[99%] h-20 bg-gradient-to-t from-card via-card via-70% to-transparent" />
-                            </div>
-                            :
-                            <h1 className={clsx("text-accent mb-4", (width < 500 || height < 500) ? 'text-lg' : (width < 800 || height < 650) ? 'text-3xl' : 'text-3xl absolute bottom-full')}>Hi, How can I help you?</h1>
-                    }
-                </div>
-                {messageState.initialized && showScrollBottom && (
-                    <button
-                        onClick={() => { scrollToBottom(); }}
-                        className={clsx(
-                            "fixed z-40 p-2.5 rounded-full bg-card/95 dark:bg-zinc-900/95 border border-[hsl(var(--chat-border))] dark:border-zinc-800 shadow-md text-foreground hover:bg-accent hover:text-accent-foreground transition-all duration-200 flex items-center justify-center cursor-pointer group",
-                            width < 800 ? "bottom-24 left-1/2" : "bottom-32 left-1/2"
-                        )}
-                        style={{ transform: 'translateX(-50%)' }}
-                    >
-                        <ArrowDown className="w-4 h-4 group-hover:translate-y-0.5 transition-transform duration-200" />
-                    </button>
+        <div className='w-full h-full flex flex-col items-center absolute bg-card'>
+            <div
+                ref={containerRef}
+                className={clsx(
+                    "w-full h-full relative transition-opacity duration-300",
+                    ((width === 0 || height === 0) || justOpen) ? 'opacity-0' : 'opacity-100',
                 )}
-                <Composer
-                    workspace={workspace}
-                    onSubmit={async (value: string) => {
-                        if (messageState.isStreaming) {
-                            await pyInvoke(
-                                "v1/chat/stop",
-                                { id: messageState.activeId }
-                            );
-                            setMessageState((prev) => ({
-                                ...prev,
-                                isStreaming: false,
-                            }));
-                        } else {
-                            if (model.id && value.trim().length > 0) {
-                                setMessageState((prev) => ({
-                                    ...prev,
-                                    errorMsg: "",
-                                    isStreaming: true,
-                                    initialized: true,
-                                }));
-                                const el = await waitForElement(AppInfo.tabId + "_empty_message_container");
-                                const branchId = el?.getAttribute("data-branch-id");
-                                const targetTable = el?.getAttribute("data-tb");
-                                const branchIndex = Number(el?.getAttribute("data-branch-index") ?? 0);
-                                if (typeof branchId === "string" && typeof targetTable === "string" && !isNaN(branchIndex)) {
-                                    await request(value, targetTable, branchId, branchIndex, 0);
-                                }
-                            } else {
-                                setMessageState((prev) => ({
-                                    ...prev,
-                                    errorMsg: "No Model Selected",
-                                    initialized: true,
-                                }));
-                            }
-                        }
-                    }}
-                    width={width}
-                    height={height}
-                    isStreaming={messageState.isStreaming}
-                    style={{ maxWidth: `${width - 10}px` }}
-                    ref={composerTextareaRef}
-                    className={clsx(
-                        "w-[768px] mx-auto z-30",
-                        messageState.initialized ? 'absolute' : 'relative',
-                        messageState.initialized
-                            ? ((width < 500 || height < 500) ? "overflow-visible bottom-2" : (width < 800 || height < 650) ? 'bottom-2' : 'bottom-5')
-                            : ((width < 500 || height < 500) ? "overflow-visible bottom-2" : (width < 800 || height < 650) ? 'bottom-2' : ''),
-                    )}
+            >
+                <ModelSelection
+                    model={model}
+                    setModel={setModel}
+                    layout={layout}
                 />
-                <>
+                <div style={{
+                    height: width < 800 || height < 650 || messageState.initialized ? `${height}px` : `${height * 0.2}px`,
+                }} className={clsx(
+                    "overflow-visible flex flex-col items-center absolute top-1/2 transform -translate-y-1/2",
+                    (width < 500 || height < 500) ? 'gap-1' : (width < 800 || height < 650 || messageState.initialized) ? 'gap-5' : 'gap-1',
+                    messageState.initialized && "w-full h-full",
+                )}>
                     <div
-                        ref={scrollContainerRef}
+                        ref={scrollAreaRef}
+                        onScroll={handleScroll}
                         className={clsx(
-                            `relative w-[768px] px-4 h-fit transition-opacity duration-200 `,
-                            'flex items-center justify-center',
-                            (width < 800 || height < 650 || messageState.initialized) && 'hidden pointer-events-none',
+                            (width < 800 || height < 650 || messageState.initialized) ? messageState.initialized ? 'h-full' : 'flex-1 relative' : '',
+                            'w-full overflow-y-auto flex pt-5',
+                            messageState.initialized ? "items-start" : "text-center items-center justify-center",
                         )}
                     >
+                        {
+                            messageState.initialized ?
+                                <div className="relative w-full flex justify-center overflow-y-auto pb-25">
+                                    <div id="messages-container" className={clsx(
+                                        "flex flex-col relative overflow-x-hidden pt-5 w-full px-2",
+                                        width < 800 ? 'max-w-full small-content' : 'max-w-[40vw]',
+                                    )}>
+                                        <MessageContainer
+                                            workspace={workspace}
+                                            isStreaming={messageState.isStreaming}
+                                            request={request}
+                                            activeId={messageState.isStreaming ? messageState.activeId : null}
+                                            tabId={AppInfo.tabId}
+                                            useDatabase={(tb, options) => {
+                                                return AppInfo.useTabDatabase(tb, options);
+                                            }}
+                                            index={0}
+                                            branch={sha256("0").slice(0, 32)}
+                                        />
+                                        {messageState.errorMsg.length > 0 && (
+                                            <div className="bg-red-300 dark:bg-red-900 text-red-500 dark:text-red-300 p-2 rounded-md border border-red-500 mt-2 text-break break-all">
+                                                {messageState.errorMsg}
+                                            </div>
+                                        )}
+                                        <div
+                                            ref={msgBottomRef}
+                                            className="w-full flex-shrink-0"
+                                            style={{ height: "0px" }}
+                                            aria-hidden="true"
+                                        />
+                                    </div>
+                                    <div className="fixed -top-1 w-[99%] h-17 bg-gradient-to-b from-card via-card via-70% to-transparent" />
+                                    <div className="fixed bottom-0 w-[99%] h-20 bg-gradient-to-t from-card via-card via-70% to-transparent" />
+                                </div>
+                                :
+                                <h1 className={clsx("text-accent mb-4", (width < 500 || height < 500) ? 'text-lg' : (width < 800 || height < 650) ? 'text-3xl' : 'text-3xl absolute bottom-full')}>Hi, How can I help you?</h1>
+                        }
                     </div>
-                </>
+                    {messageState.initialized && showScrollBottom && (
+                        <button
+                            onClick={() => { scrollToBottom(); }}
+                            className={clsx(
+                                "fixed z-40 p-2.5 rounded-full bg-card/95 dark:bg-zinc-900/95 border border-[hsl(var(--chat-border))] dark:border-zinc-800 shadow-md text-foreground hover:bg-accent hover:text-accent-foreground transition-all duration-200 flex items-center justify-center cursor-pointer group",
+                                width < 800 ? "bottom-24 left-1/2" : "bottom-32 left-1/2"
+                            )}
+                            style={{ transform: 'translateX(-50%)' }}
+                        >
+                            <ArrowDown className="w-4 h-4 group-hover:translate-y-0.5 transition-transform duration-200" />
+                        </button>
+                    )}
+                    <Composer
+                        workspace={workspace}
+                        onSubmit={async (value: string) => {
+                            if (messageState.isStreaming) {
+                                await pyInvoke(
+                                    "v1/chat/stop",
+                                    { id: messageState.activeId }
+                                );
+                                setMessageState((prev) => ({
+                                    ...prev,
+                                    isStreaming: false,
+                                }));
+                            } else {
+                                if (model.id && value.trim().length > 0) {
+                                    setMessageState((prev) => ({
+                                        ...prev,
+                                        errorMsg: "",
+                                        isStreaming: true,
+                                        initialized: true,
+                                    }));
+                                    const el = await waitForElement(AppInfo.tabId + "_empty_message_container");
+                                    const branchId = el?.getAttribute("data-branch-id");
+                                    const targetTable = el?.getAttribute("data-tb");
+                                    const branchIndex = Number(el?.getAttribute("data-branch-index") ?? 0);
+                                    if (typeof branchId === "string" && typeof targetTable === "string" && !isNaN(branchIndex)) {
+                                        await request(value, targetTable, branchId, branchIndex, 0);
+                                    }
+                                } else {
+                                    setMessageState((prev) => ({
+                                        ...prev,
+                                        errorMsg: "No Model Selected",
+                                        initialized: true,
+                                    }));
+                                }
+                            }
+                        }}
+                        width={width}
+                        height={height}
+                        isStreaming={messageState.isStreaming}
+                        style={{ maxWidth: `${width - 10}px` }}
+                        ref={composerTextareaRef}
+                        className={clsx(
+                            "w-[768px] mx-auto z-30",
+                            messageState.initialized ? 'absolute' : 'relative',
+                            messageState.initialized
+                                ? ((width < 500 || height < 500) ? "overflow-visible bottom-2" : (width < 800 || height < 650) ? 'bottom-2' : 'bottom-5')
+                                : ((width < 500 || height < 500) ? "overflow-visible bottom-2" : (width < 800 || height < 650) ? 'bottom-2' : ''),
+                        )}
+                    />
+                    <>
+                        <div
+                            ref={scrollContainerRef}
+                            className={clsx(
+                                `relative w-[768px] px-4 h-fit transition-opacity duration-200 `,
+                                'flex items-center justify-center',
+                                (width < 800 || height < 650 || messageState.initialized) && 'hidden pointer-events-none',
+                            )}
+                        >
+                        </div>
+                    </>
+                </div>
             </div>
         </div>
     );

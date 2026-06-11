@@ -1,8 +1,9 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import './globals.css'
-import App from './App'
+import { App } from './App'
 import { Container, OpenChadIcon, type Project } from "openchad-react"
+import BrowserApp from './BrowserApp'
 
 const Apps: Project = {
   projectName: "OpenBrowser",
@@ -14,11 +15,14 @@ const Apps: Project = {
       {
         appname: "main-app",
         data: {},
-        App: App,
+        App: BrowserApp,
       },
     ],
   },
   size: [50],
+  appRegistry: {
+    "agent-settings": App 
+  }
 }
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
