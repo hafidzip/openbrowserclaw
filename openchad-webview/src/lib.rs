@@ -4,11 +4,14 @@ use std::{
     fs,
     path::{Path, PathBuf},
     sync::{
+        atomic::{AtomicBool, AtomicU8, Ordering},
         mpsc::{self, Sender},
-        Mutex, RwLock,
+        Arc, Mutex, RwLock,
     },
     thread,
 };
+
+mod proxy;
 
 use pyo3::{
     exceptions::PyValueError,
@@ -34,7 +37,7 @@ use tauri::{
         platform::Target,
     },
     webview::PageLoadEvent,
-    Assets, Config, Manager,
+    Assets, Config, Manager, Emitter,
 };
 
 use adblock::{
@@ -65,113 +68,71 @@ const ADBLOCK_LISTS_FOLDER: &str = "adblock";
 ///   3. Hides the ad module/overlays.
 ///   4. Re-runs on every DOM mutation via a `MutationObserver`, and as a
 ///      fallback on a short interval (YouTube is an SPA, pages don't reload).
-const YT_AD_SKIP_SCRIPT: &str = r#"
-(function () {
-    if (window.__ytAdSkipperInstalled__) return;
-    window.__ytAdSkipperInstalled__ = true;
+const YT_AD_SKIP_SCRIPT: &str = r#"// ==UserScript==
+// @name        fadblock-for-safari
+// @description This is your new file, start writing code
+// @match       https://www.youtube.com/*
+// ==/UserScript==
 
-    // Stable selectors for YouTube ad slots/containers. Tag names of ad
-    // custom-elements do NOT rotate, unlike their inner hashed classes.
-    var AD_CONTAINER_SELECTORS = [
-        // out-of-player ad containers (your reported companion banner)
-        '#player-ads',
-        'ytd-player-legacy-desktop-watch-ads-renderer',
-        'ytd-companion-slot-renderer',
-        'ytd-companion-legal-text-renderer',
-        'ytd-action-companion-ad-renderer',
-        'ytd-watch-ads-renderer',
-        // feed / search / homepage ads
-        'ytd-ad-slot-renderer',
-        'ytd-in-feed-ad-layout-renderer',
-        'ytd-banner-promo-renderer',
-        'ytd-statement-banner-renderer',
-        'ytd-display-ad-renderer',
-        'ytd-promoted-video-renderer',
-        'ytd-promoted-sparkles-web-renderer',
-        'ytd-promoted-sparkles-text-search-renderer',
-        'ytd-compact-promoted-video-renderer',
-        'ytd-search-pyv-renderer',
-        'ytmusic-mealbar-promo-renderer',
-        'ytd-merch-shelf-renderer',
-        'masthead-ad',
-        '#masthead-ad',
-        // generic ad component view-models (banner/companion lockups)
-        'ad-image-view-model',
-        'ad-button-view-model',
-        'top-banner-image-text-icon-buttoned-layout-view-model'
-    ];
+// Source: https://raw.githubusercontent.com/0x48piraj/fadblock/master/src/chrome/js/content.js
 
-    function hideAdContainers() {
-        for (var i = 0; i < AD_CONTAINER_SELECTORS.length; i++) {
-            var nodes = document.querySelectorAll(AD_CONTAINER_SELECTORS[i]);
-            for (var k = 0; k < nodes.length; k++) {
-                var n = nodes[k];
-                n.style.setProperty('display', 'none', 'important');
-                // Also collapse the parent slot if it exists & is now empty-ish.
-                n.setAttribute('hidden', '');
-            }
+const taimuRipu = async () => {
+    await new Promise((resolve, _reject) => {
+      const videoContainer = document.getElementById("movie_player");
+  
+      const setTimeoutHandler = () => {
+        const isAd = videoContainer?.classList.contains("ad-interrupting") || videoContainer?.classList.contains("ad-showing");
+        const skipLock = document.querySelector(".ytp-ad-preview-text")?.innerText;
+        const surveyLock = document.querySelector(".ytp-ad-survey")?.length > 0;
+  
+        if (isAd && skipLock) {
+          const videoPlayer = document.getElementsByClassName("video-stream")[0];
+          videoPlayer.muted = true; // videoPlayer.volume = 0;
+          videoPlayer.currentTime = videoPlayer.duration - 0.1;
+          videoPlayer.paused && videoPlayer.play()
+          // CLICK ON THE SKIP AD BTN
+          document.querySelector(".ytp-ad-skip-button")?.click();
+          document.querySelector(".ytp-ad-skip-button-modern")?.click();
+        } else if (isAd && surveyLock) {
+          // CLICK ON THE SKIP SURVEY BTN
+          document.querySelector(".ytp-ad-skip-button")?.click();
+          document.querySelector(".ytp-ad-skip-button-modern")?.click();
         }
-    }
-
-    function skipAds() {
-        try {
-            var player = document.getElementById('movie_player');
-            var isAdShowing = player && player.classList.contains('ad-showing');
-
-            // 1. Click any available "Skip" button.
-            var skipSelectors = [
-                '.ytp-skip-ad-button',
-                '.ytp-ad-skip-button',
-                '.ytp-ad-skip-button-modern',
-                '.ytp-ad-skip-button-slot button',
-                'button.ytp-skip-ad-button'
-            ];
-            for (var i = 0; i < skipSelectors.length; i++) {
-                var btn = document.querySelector(skipSelectors[i]);
-                if (btn) { btn.click(); }
-            }
-
-            // 2. Unskippable ad => fast-forward the <video> to its end & mute.
-            if (isAdShowing) {
-                var video = document.querySelector('video.html5-main-video');
-                if (video) {
-                    video.muted = true;
-                    if (!isNaN(video.duration) && isFinite(video.duration) && video.duration > 0) {
-                        video.currentTime = video.duration;
-                    }
-                    if (typeof video.play === 'function') { video.play().catch(function(){}); }
-                }
-                var dismiss = document.querySelector('.ytp-ad-overlay-close-button, .ytp-ad-overlay-close-container');
-                if (dismiss) { dismiss.click(); }
-            }
-
-            // 3. Hide in-player ad modules/overlays.
-            var adNodes = document.querySelectorAll(
-                '.video-ads, .ytp-ad-module, .ytp-ad-overlay-container, .ytp-ad-player-overlay-layout'
-            );
-            for (var j = 0; j < adNodes.length; j++) {
-                adNodes[j].style.setProperty('display', 'none', 'important');
-            }
-
-            // 4. Hide out-of-player ad containers (companion banners, etc.).
-            hideAdContainers();
-        } catch (e) {
-            console.error('[adblock] yt ad-skip error:', e);
-        }
-    }
-
-    // Run now, on mutations, and on a short fallback interval.
-    skipAds();
-    try {
-        var obs = new MutationObserver(skipAds);
-        obs.observe(document.documentElement || document.body, {
-            childList: true, subtree: true, attributes: true,
-            attributeFilter: ['class']
+  
+        const staticAds = [".ytd-companion-slot-renderer", ".ytd-action-companion-ad-renderer", // in-feed video ads
+                           ".ytd-watch-next-secondary-results-renderer.sparkles-light-cta", ".ytd-unlimited-offer-module-renderer", // similar components
+                           ".ytp-ad-overlay-image", ".ytp-ad-text-overlay", // deprecated overlay ads (04-06-2023)
+                           "div#root.style-scope.ytd-display-ad-renderer.yt-simple-endpoint", "div#sparkles-container.style-scope.ytd-promoted-sparkles-web-renderer",
+                           ".ytd-display-ad-renderer", ".ytd-statement-banner-renderer", ".ytd-in-feed-ad-layout-renderer", // homepage ads
+                           "div#player-ads.style-scope.ytd-watch-flexy, div#panels.style-scope.ytd-watch-flexy", // sponsors
+                           ".ytd-banner-promo-renderer", ".ytd-video-masthead-ad-v3-renderer", ".ytd-primetime-promo-renderer" // subscribe for premium & youtube tv ads
+                          ];
+  
+        staticAds.forEach((ad) => {
+            document.hideElementsBySelector(ad);
         });
-    } catch (e) { /* ignore */ }
-    setInterval(skipAds, 500);
-})();
-"#;
+  
+        resolve();
+      };
+  
+      // RUN IT ONLY AFTER 100 MILLISECONDS
+      setTimeout(setTimeoutHandler, 100);
+    });
+  
+    taimuRipu();
+  };
+  
+  
+  const init = async () => {
+    Document.prototype.hideElementsBySelector = (selector) =>
+      [...document.querySelectorAll(selector)].forEach(
+        (el) => (el.style.display = "none")
+      );
+  
+      taimuRipu();
+  };
+  
+  init();"#;
 
 pub fn tauri_generate_context() -> TauriContext {
     tauri::generate_context!()
@@ -190,6 +151,14 @@ pub fn tauri_generate_context() -> TauriContext {
 // Sync`) used to dispatch jobs to that thread, plus a couple of atomics-ish
 // `RwLock`s. Each query sends a closure to the engine thread and receives the
 // result back over a oneshot channel.
+//
+// The `AdblockState` is wrapped in `Arc` and shared between Tauri's `.manage()`
+// and the local filtering proxy task. Both use the same `check_request()` path.
+
+/// Fail policy for engine check failures (panic, timeout).
+/// 0 = fail-open (allow), 1 = fail-closed (block).
+const FAIL_POLICY_OPEN: u8 = 0;
+const FAIL_POLICY_CLOSED: u8 = 1;
 
 /// Serializable subset of [`adblock::blocker::BlockerResult`].
 #[derive(serde::Serialize, Clone)]
@@ -285,12 +254,18 @@ enum EngineJob {
 ///
 /// Holds only `Send + Sync` handles; the actual `!Send` [`Engine`] lives on a
 /// dedicated worker thread (see [`AdblockState::spawn`]).
+///
+/// Wrapped in `Arc` and shared between Tauri's `.manage()` and the local
+/// filtering proxy. Both use `check_request()` for a single code path.
 pub struct AdblockState {
     /// Channel to the engine worker thread. Wrapped in a `Mutex` so we can
     /// `send` from `&self` across threads (the `Sender` itself is already
     /// `Send + Sync`, the `Mutex` just keeps ownership semantics simple).
     job_tx: Mutex<Sender<EngineJob>>,
     enabled: RwLock<bool>,
+    /// Fail policy: FAIL_POLICY_OPEN (0) or FAIL_POLICY_CLOSED (1).
+    /// Default: fail-closed (block on engine errors).
+    fail_policy: AtomicU8,
 }
 
 impl Default for AdblockState {
@@ -408,6 +383,7 @@ impl AdblockState {
         Self {
             job_tx: Mutex::new(job_tx),
             enabled: RwLock::new(true),
+            fail_policy: AtomicU8::new(FAIL_POLICY_CLOSED),
         }
     }
 
@@ -554,7 +530,7 @@ fn is_youtube_url(url: &str) -> bool {
 /// Replaces the current engine. Returns the number of rules processed.
 #[tauri::command]
 fn adblock_load_rules(app: tauri::AppHandle<Runtime>, rules: Vec<String>) -> Result<usize, String> {
-    let state = app.state::<AdblockState>();
+    let state = app.state::<Arc<AdblockState>>();
     Ok(state.load_rules(rules))
 }
 
@@ -571,7 +547,7 @@ fn adblock_load_rule_files(
             fs::read_to_string(path).map_err(|e| format!("failed to read '{path}': {e}"))?;
         all_rules.extend(content.lines().map(str::to_owned));
     }
-    let state = app.state::<AdblockState>();
+    let state = app.state::<Arc<AdblockState>>();
     Ok(state.load_rules(all_rules))
 }
 
@@ -586,7 +562,7 @@ fn adblock_check_request(
     source_url: String,
     request_type: String,
 ) -> Result<AdblockCheckResult, String> {
-    let state = app.state::<AdblockState>();
+    let state = app.state::<Arc<AdblockState>>();
     Ok(state.check_request(url, source_url, request_type))
 }
 
@@ -598,7 +574,7 @@ fn adblock_get_csp_directives(
     source_url: String,
     request_type: String,
 ) -> Result<Option<String>, String> {
-    let state = app.state::<AdblockState>();
+    let state = app.state::<Arc<AdblockState>>();
     Ok(state.csp_directives(url, source_url, request_type))
 }
 
@@ -608,7 +584,7 @@ fn adblock_cosmetic_resources(
     app: tauri::AppHandle<Runtime>,
     url: String,
 ) -> Result<CosmeticResourcesResult, String> {
-    let state = app.state::<AdblockState>();
+    let state = app.state::<Arc<AdblockState>>();
     Ok(state.cosmetic_resources(url))
 }
 
@@ -621,7 +597,7 @@ fn adblock_hidden_class_id_selectors(
     ids: Vec<String>,
     exceptions: Vec<String>,
 ) -> Result<Vec<String>, String> {
-    let state = app.state::<AdblockState>();
+    let state = app.state::<Arc<AdblockState>>();
     let exceptions: HashSet<String> = exceptions.into_iter().collect();
     Ok(state.hidden_class_id_selectors(classes, ids, exceptions))
 }
@@ -629,13 +605,13 @@ fn adblock_hidden_class_id_selectors(
 /// Enable/disable adblocking globally at runtime.
 #[tauri::command]
 fn adblock_set_enabled(app: tauri::AppHandle<Runtime>, enabled: bool) {
-    app.state::<AdblockState>().set_enabled(enabled);
+    app.state::<Arc<AdblockState>>().set_enabled(enabled);
 }
 
 /// Drop the loaded engine (frees memory, disables blocking until rules reload).
 #[tauri::command]
 fn adblock_clear(app: tauri::AppHandle<Runtime>) {
-    app.state::<AdblockState>().clear();
+    app.state::<Arc<AdblockState>>().clear();
 }
 
 // -----------------------------------------------------------------------------
@@ -974,17 +950,45 @@ pub fn context_factory(
     result.map_err(|err| err.into_py_err(py))
 }
 
+/// Shared proxy info stored in Tauri managed state.
+pub struct ProxyInfo {
+    /// The local port the proxy is listening on.
+    pub port: u16,
+    /// Reference to the proxy state (stats, alive flag, etc.).
+    pub proxy_state: Arc<proxy::ProxyState>,
+}
+
+/// Tauri command: get proxy blocking stats.
+#[tauri::command]
+fn adblock_proxy_stats(app: tauri::AppHandle<Runtime>) -> Result<proxy::BlockStatsSnapshot, String> {
+    let info = app.state::<ProxyInfo>();
+    Ok(info.proxy_state.stats.snapshot())
+}
+
+/// Tauri command: get proxy port.
+#[tauri::command]
+fn adblock_proxy_port(app: tauri::AppHandle<Runtime>) -> Result<u16, String> {
+    let info = app.state::<ProxyInfo>();
+    Ok(info.port)
+}
+
 /// `def builder_factory() -> tauri.Builder:`
 pub fn builder_factory(
     _args: &Bound<'_, PyTuple>,
     _kwargs: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<tauri::Builder<Runtime>> {
+    // Create Arc<AdblockState> BEFORE the builder so we can share one clone
+    // with `.manage()` and another with the proxy spawner.
+    let adblock_state = Arc::new(AdblockState::default());
+    let adblock_for_manage = adblock_state.clone();
+    let adblock_for_proxy = adblock_state.clone();
+
     Ok(tauri::Builder::default()
         // Global adblock state, accessible from all commands & hooks.
         // (Holds only `Send + Sync` channel handles; the `!Send` engine lives
         // on a dedicated worker thread spawned by `AdblockState::spawn`.)
-        .manage(AdblockState::default())
-        .setup(|app| {
+        .manage(adblock_for_manage)
+        .setup(move |app| {
             // Optionally auto-load filter lists at startup from
             // `$ADBLOCK_LISTS_DIR` or `./adblock/*.txt`.
             let lists_dir = std::env::var_os("ADBLOCK_LISTS_DIR")
@@ -992,8 +996,8 @@ pub fn builder_factory(
                 .unwrap_or_else(|| PathBuf::from(ADBLOCK_LISTS_FOLDER));
 
             if lists_dir.is_dir() {
-                let state = app.state::<AdblockState>();
-                // `&*state` derefs `State<'_, AdblockState>` -> `&AdblockState`.
+                let state = app.state::<Arc<AdblockState>>();
+                // `&*state` derefs `State<'_, Arc<AdblockState>>` -> `&Arc<AdblockState>`.
                 match load_filter_lists_from_dir(&state, &lists_dir) {
                     Ok(count) => {
                         println!(
@@ -1015,15 +1019,54 @@ pub fn builder_factory(
                 );
             }
 
+            // ── Start local filtering proxy ──────────────────────────────────
+            // The proxy binds to 127.0.0.1:0 (ephemeral port) and blocks
+            // requests at the domain level (Tier 1). The bound port is used
+            // by webview windows via `proxy_url`.
+            //
+            // IMPORTANT: We use block_on here (not spawn) so that ProxyInfo
+            // is registered in managed state BEFORE the app finishes setup.
+            // Otherwise the frontend can call `adblock_proxy_port` before
+            // the state exists, causing a panic.
+            let proxy_adblock = adblock_for_proxy.clone();
+            let app_handle = app.handle().clone();
+
+            match tauri::async_runtime::block_on(proxy::start_proxy(proxy_adblock)) {
+                Ok((port, proxy_state, _supervisor_handle)) => {
+                    println!("🛡️ adblock proxy: started on port {port}");
+
+                    // Store proxy info in managed state for commands and
+                    // webview creation.
+                    let proxy_info = ProxyInfo {
+                        port,
+                        proxy_state: proxy_state.clone(),
+                    };
+                    app.manage(proxy_info);
+
+                    // Start watchdog in background.
+                    let watchdog_state = proxy_state.clone();
+                    tauri::async_runtime::spawn(async move {
+                        proxy::watchdog_task(watchdog_state, port).await;
+                        // Watchdog exited — proxy is degraded.
+                        eprintln!("🚨 adblock proxy: watchdog exited — proxy degraded");
+                        // Emit event for the UI.
+                        let _ = app_handle.emit("adblock://proxy-degraded", ());
+                    });
+                }
+                Err(e) => {
+                    eprintln!("❌ adblock proxy: failed to start: {e}");
+                }
+            }
+
             Ok(())
         })
         .on_page_load(|webview, payload| {
             // Apply cosmetic filtering once the page has finished loading.
-            // (Network-level blocking is exposed via the `adblock_check_request`
-            // command, since the system webview has no request-interception hook.)
+            // (Network-level blocking is now also enforced at the proxy layer,
+            // but cosmetic filters are still needed for element hiding.)
             if matches!(payload.event(), PageLoadEvent::Finished) {
                 let url = payload.url().as_str().to_owned();
-                let state = webview.state::<AdblockState>();
+                let state = webview.state::<Arc<AdblockState>>();
 
                 // 1. Cosmetic filters (banners / overlays).
                 if let Some(script) = state.cosmetic_injection_script(url.clone()) {
@@ -1059,6 +1102,8 @@ pub fn builder_factory(
             adblock_hidden_class_id_selectors,
             adblock_set_enabled,
             adblock_clear,
+            adblock_proxy_stats,
+            adblock_proxy_port,
         ]))
 }
 

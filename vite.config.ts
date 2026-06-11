@@ -6,6 +6,7 @@ import { splashScreen } from "vite-plugin-splash-screen";
 import tsconfigPaths from "vite-tsconfig-paths";
 
 const ignoredDirs = [
+    'openchad-webview',
     'openchadpy',
     'python',
     'hafidz',

@@ -491,7 +491,7 @@ export default function Sidebar({
               });
             })
           }
-          if (needAdd) addTab();
+          // if (needAdd) addTab();
         })()
       }
     }

@@ -11,6 +11,7 @@ import { BrowserBar } from 'openchad-react/Bar';
 import { MenuBar } from 'openchad-react/utils/state';
 
 import { emitTo } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 
 const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
 
@@ -22,8 +23,9 @@ export default function BrowserApp(appInfo: AppInfo) {
   const [currentIndex, setCurrentIndex] = useState(0)
   const { pyInvoke, useActiveTabId, tabId } = appInfo
   const activeTabId = useActiveTabId();
+  const [proxyEnabled,setProxyEnabled]=useState(false)
 
-  const label = `webview-${appInfo.appId}`
+  const label = `webview-${appInfo.appId}${proxyEnabled ? '-proxy' : ''}`
   const containerRef = useRef<HTMLDivElement>(null)
   /**
    * TAURI WEBVIEW ARCHITECTURE (WebviewWindow approach)
@@ -261,13 +263,27 @@ export default function BrowserApp(appInfo: AppInfo) {
         }
         // ───────────────────────────────────────────────────────────────────────
 
+        // ── Fetch proxy port for Adblock (Phase 2) ────────────────────────────
+        let proxyUrl: string | undefined = undefined;
+        try {
+          const port = await invoke<number>('adblock_proxy_port');
+          if (port) {
+            proxyUrl = `http://127.0.0.1:${port}`;
+            // console.log(`[Webview] Using adblock proxy: ${proxyUrl}`);
+          }
+        } catch (e) {
+          console.error("[Webview] Failed to get adblock proxy port:", e);
+        }
+        // ───────────────────────────────────────────────────────────────────────
+
         console.log(`[Webview] Creating WebviewWindow (attempt ${attempt}/${MAX_RETRIES}): ${label}  url=${url}  pos=(${screenX},${screenY})  size=(${Math.round(rect.width)},${Math.round(rect.height)})`)
         const wvw = new Webview(await getCurrentWindow(), label, {
           url,
           width: Math.round(rect.width),
           height: Math.round(rect.height),
           x: screenX,
-          y: screenY
+          y: screenY,
+          ...(proxyEnabled ? { proxyUrl: proxyUrl } : {}),
         })
         context.wvw = wvw
 
@@ -535,7 +551,7 @@ export default function BrowserApp(appInfo: AppInfo) {
         }
       }
     }
-  }, [mounted, url, isTauri, appInfo.appId])
+  }, [mounted, url, isTauri, appInfo.appId, proxyEnabled])
 
 
   return (
@@ -566,6 +582,11 @@ export default function BrowserApp(appInfo: AppInfo) {
         Example usage in a child component:
           <MyModal onOpen={hideChildWebview} onClose={showChildWebview} />
       */}
+      <div className='bg-card'>
+        <Button onClick={() => setProxyEnabled(!proxyEnabled)}>
+          {proxyEnabled ? "Disable" : "Enable"}
+        </Button>
+      </div>
       <div
         ref={containerRef}
         id={label}
