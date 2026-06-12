@@ -446,6 +446,22 @@ export const addTab = ({
     // registered by Container via window.defaultTabs / window.defaultLayout
     let resolvedLayout = layout;
     let resolvedChildrenProps = childrenProps;
+    if (childrenProps) {
+        resolvedChildrenProps = { ...childrenProps }
+        const currentChildrenCount = Object.keys(resolvedChildrenProps ?? {}).length;
+
+        // 2. Auto-resolve children: If provided but less than 4, pad the rest
+        if (resolvedChildrenProps && currentChildrenCount > 0 && currentChildrenCount < 4) {
+            for (let i = currentChildrenCount; i < 4; i++) {
+                resolvedChildrenProps[uuidv4()] = {
+                    icon: "default",
+                    title: null,
+                    appname: "default",
+                    data: null,
+                } as any; // Cast as necessary based on your exact ChildProp type
+            }
+        }
+    }
     const raw: number[] = (window as any).defaultSize ?? [];
     const defaultSize: number[] = Array.from(
         { length: 5 },
@@ -673,12 +689,12 @@ export const deleteTabWithGroupSelection = async (uuid: string): Promise<string 
     // Find next tab in the same group first
     let nextTabId: string | null = null;
     const all = await getAllWebviews()
-    Object.keys(tabToDelete.childrenProps).map(async (t : string) => {
+    Object.keys(tabToDelete.childrenProps).map(async (t: string) => {
         const w = all.find((wv) => wv.label === `webview-${t}`)
-        if(w){
+        if (w) {
             await w.close()
         }
-    }) 
+    })
     if (groupTabs.length > 1) {
         // Try to select next tab in same group
         if (indexInGroup > 0) {
@@ -696,7 +712,7 @@ export const deleteTabWithGroupSelection = async (uuid: string): Promise<string 
         }
     }
 
-    
+
     // Delete the tab
     deleteTab(uuid);
     // Update active tab if the deleted tab was active

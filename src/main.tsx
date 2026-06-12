@@ -21,7 +21,7 @@ const Apps: Project = {
   },
   size: [50],
   appRegistry: {
-    "agent-settings": App 
+    "agent": App 
   }
 }
 

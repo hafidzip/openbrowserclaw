@@ -366,8 +366,10 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
   }, [handleNavigate, handleBack, handleForward, handleRefresh, hideChildWebview, showChildWebview])
 
   useEffect(() => {
-    MenuBar.current = MenuBar.current = ref(<>{element}</>) as React.JSX.Element
-  }, [element])
+    if (activeTabId == tabId) {
+      MenuBar.current = MenuBar.current = ref(<>{element}</>) as React.JSX.Element
+    }
+  }, [activeTabId, element])
 
   useEffect(() => {
     setMount(true)
@@ -428,20 +430,12 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
     (async () => {
       const container = containerRef.current
       const wvw = contextRef.current.wvw
-      if (!container || contextRef.current.closed || !wvw || !contextRef.current.created) return
-
+      if (!container || !wvw ) return
+      
       const rect = container.getBoundingClientRect()
-      const mainWin = getCurrentWindow()
 
       try {
         if (rect.width === 0 && rect.height === 0) return;
-
-        // Batch the two independent IPC calls in parallel
-        const [pos, sf] = await Promise.all([
-          mainWin.innerPosition(),
-          mainWin.scaleFactor(),
-        ])
-
         // Batch position + size + show in parallel — all are fire-and-resolve
         await Promise.all([
           wvw.setPosition(new LogicalPosition(rect.x, rect.y)),
@@ -451,7 +445,7 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
         console.error("[Webview] Failed to sync size:", e)
       }
     })()
-  }, [layout])
+  }, [layout, activeTabId])
 
 
   useEffect(() => {

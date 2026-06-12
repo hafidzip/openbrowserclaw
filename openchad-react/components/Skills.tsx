@@ -114,7 +114,7 @@ export default function Skiils({
             const res = await pyInvoke("sqlite", {
                 db,
                 command: "query",
-                sql: `SELECT id, metadata FROM agents ${searchClause} ORDER BY rowid DESC LIMIT ${limit} OFFSET ${offset}`,
+                sql: `SELECT id, metadata FROM skills ${searchClause} ORDER BY rowid DESC LIMIT ${limit} OFFSET ${offset}`,
                 params: q ? [`%${q}%`] : []
             });
             console.warn(res);
@@ -222,7 +222,7 @@ export default function Skiils({
             await pyInvoke("sqlite", {
                 db,
                 command: "execute",
-                sql: `DELETE FROM tasks WHERE id IN (${placeholders})`,
+                sql: `DELETE FROM skills WHERE id IN (${placeholders})`,
                 params: ids
             });
             setSelectedIds(prev => {

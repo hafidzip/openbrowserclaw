@@ -14,8 +14,9 @@ import {
   Pause,
   Square
 } from 'lucide-react'
-import { useFolder, useTheme, type AppInfo } from 'openchad-react'
+import { ref, useFolder, useTheme, type AppInfo } from 'openchad-react'
 import clsx from 'clsx'
+import { MenuBar } from 'openchad-react/utils/state'
 
 //  Types 
 
@@ -87,10 +88,10 @@ const AutoResizeTextarea = React.memo(function AutoResizeTextarea({
     const el = ref.current
     if (!el) return
     el.style.height = 'auto'
-    
+
     const computedStyle = window.getComputedStyle(el)
     const maxHeight = parseFloat(computedStyle.maxHeight)
-    
+
     if (!isNaN(maxHeight) && el.scrollHeight > maxHeight) {
       el.style.height = `${maxHeight}px`
       el.style.overflowY = 'auto'
@@ -896,11 +897,10 @@ const parseFields = (content: string) => {
   return [];
 }
 
-export function App(appInfo: AppInfo) {
-  const { pyInvoke } = appInfo
+export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
   const snaptheme = useTheme()
   const isDark = snaptheme.theme === 'dark'
-
+  const activeTabId = useActiveTabId()
   //  Core state 
   const [agents, setAgents] = useState<Record<string, AgentNode>>(INITIAL_AGENTS)
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>('1')
@@ -909,6 +909,12 @@ export function App(appInfo: AppInfo) {
   const [availableTools, setAvailableTools] = useState<{ name: string; description: string; source: 'internal' | 'mcp' }[]>([])
   const [tools] = useFolder('Tools')
   const [toolFields, setToolFields] = useState<Record<string, any[]>>({})
+
+  useEffect(() => {
+    if (activeTabId == tabId) {
+      MenuBar.current = MenuBar.current = null
+    }
+  }, [activeTabId])
 
   useEffect(() => {
     if (!tools || tools.length === 0) return
@@ -1780,7 +1786,7 @@ export function App(appInfo: AppInfo) {
                     style={{
                       transition: 'd 350ms cubic-bezier(0.16, 1, 0.3, 1), stroke 300ms ease-out, stroke-width 300ms ease-out'
                     }}
-                  />  
+                  />
                 </g>
               )
             })}
@@ -1919,9 +1925,9 @@ export function App(appInfo: AppInfo) {
           >
             {isRunning ? <Square size={16} className={clsx(
               'dark:text-red-700 dark:fill-red-600 text-red-600 fill-red-500'
-              )}/> : <Play size={16} className={clsx(
-                'dark:text-green-700 dark:fill-green-600 text-green-600 fill-green-500'
-                )}/>}
+            )} /> : <Play size={16} className={clsx(
+              'dark:text-green-700 dark:fill-green-600 text-green-600 fill-green-500'
+            )} />}
           </button>
 
         </div>

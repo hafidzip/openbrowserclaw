@@ -49,6 +49,10 @@ export default function DefaultPage(AppInfo: AppInfo) {
     const [justOpen, setJustOpen] = useState(true);
     const title = AppInfo.useTitle();
     const currentTab = AppInfo.useTab()
+
+    useEffect(()=>{
+        console.log(currentTab)
+    },[currentTab])
     useEffect(() => {
         if (title) return;
         const _t = messageState.title;

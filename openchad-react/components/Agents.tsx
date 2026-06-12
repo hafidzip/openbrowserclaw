@@ -9,7 +9,7 @@ import { Spinner } from "./ui/spinner";
 import clsx from "clsx";
 import { useGlobal } from "./useGlobal";
 import { useDatabaseImpl } from "./useDatabase";
-import { generateIdFromString } from "../index";
+import { generateIdFromString, uuidv4 } from "../index";
 import { Button } from "./ui";
 
 
@@ -202,7 +202,7 @@ export default function Agents({
                             if (typeof val === 'string') {
                                 try {
                                     val = JSON.parse(val);
-                                } catch {}
+                                } catch { }
                             }
                             if (row.id === 'isStreaming') {
                                 isStreaming = !!val;
@@ -222,7 +222,7 @@ export default function Agents({
             await pyInvoke("sqlite", {
                 db,
                 command: "execute",
-                sql: `DELETE FROM tasks WHERE id IN (${placeholders})`,
+                sql: `DELETE FROM agents WHERE id IN (${placeholders})`,
                 params: ids
             });
             setSelectedIds(prev => {
@@ -254,13 +254,7 @@ export default function Agents({
     //  Render 
     const allSelected = tabs.length > 0 && selectedIds.size === tabs.length;
     const isEmpty = tabs.length === 0;
-    const [, setIsEditing] = useGlobal('overlay-editing', { initialValue: false });
-    const [, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: false });
-    const [, setShowTaskDialog] = useGlobal('showTaskDialog', { initialValue: false })
-    const [, setShowMcpDialog] = useGlobal('showMcpDialog', { initialValue: false })
-    const [, setShowCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false })
-    const [, setShowLocalModelDialog] = useGlobal('showLocalModelDialog', { initialValue: false })
-    const [, setShowCustomEndpointDialog] = useGlobal('showCustomEndpointDialog', { initialValue: false })
+    const [, setShowDialog] = useGlobal('showAgentsDialog', { initialValue: false })
 
     return (
         <>
@@ -270,15 +264,20 @@ export default function Agents({
                 </div>
                 <div className="flex-1" />
                 <Button variant="secondary" className="flex items-center justify-center" size="sm" onClick={() => {
-                    setIsCreateTask(true);
-                    setIsEditing(false);
-                    setShowTaskDialog(false);
-                    setShowMcpDialog(false);
-                    setShowCredentialsDialog(false);
-                    setShowCustomEndpointDialog(false);
-                    setShowLocalModelDialog(false);
+                    setShowDialog(false)
+                    addTab({
+                        iconOverride: "Drama",
+                        childrenProps: {
+                            [uuidv4()]: {
+                                title: "Agent",
+                                appname: "agent",
+                                icon: "Drama",
+                                data: null,
+                            }
+                        }   
+                    })
                 }}>
-                    New Task <Plus className="w-6 h-6" />
+                    New Agent <Plus className="w-6 h-6" />
                 </Button>
             </div>
             <ScrollArea

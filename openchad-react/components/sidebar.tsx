@@ -892,7 +892,7 @@ export default function Sidebar({
               children: null,
               separator: false,
               trigger: () => {
-
+                setShowAgentsDialog(true);
               }
             },
             {
@@ -901,7 +901,7 @@ export default function Sidebar({
               children: null,
               separator: false,
               trigger: () => {
-
+                setShowControllableBrowsersDialog(true);
               }
             },
             {
@@ -919,7 +919,7 @@ export default function Sidebar({
               children: null,
               separator: false,
               trigger: () => {
-
+                setShowSkillsDialog(true);
               }
             },
             ...(typeof window !== 'undefined' && !!(window as any).__TAURI__) ? [{
@@ -1217,7 +1217,7 @@ export default function Sidebar({
               </div>
             </DialogTitle>
           </DialogHeader>
-          <ControllableBrowsers workspace={workspace} isOpen={showAgentsDialog} setOpen={setShowAgentsDialog} query={searchTaskQuery} />
+          <Agents workspace={workspace} isOpen={showAgentsDialog} setOpen={setShowAgentsDialog} query={searchTaskQuery} />
         </DialogContent>
       </DialogUI>
       <DialogUI open={showTaskDialog} onOpenChange={setShowTaskDialog}>
