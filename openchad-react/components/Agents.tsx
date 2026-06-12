@@ -269,8 +269,8 @@ export default function Agents({
                         iconOverride: "Drama",
                         childrenProps: {
                             [uuidv4()]: {
-                                title: "Agent",
-                                appname: "agent",
+                                title: null,
+                                appname: "default",
                                 icon: "Drama",
                                 data: null,
                             }

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, memo } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { MessageCircleWarning, MessageSquareWarning, Plus, Trash2 } from "lucide-react";
 import { Checkbox } from "./ui/checkbox";
 import { ScrollArea } from "./ui/scroll-area";
 import { Table, TableBody, TableCell, TableRow } from "./ui/table";
@@ -268,6 +268,10 @@ export default function ControllableBrowsers({
                 <div className="w-6">
                     <Checkbox checked={allSelected} onCheckedChange={toggleSelectAll} />
                 </div>
+                <div className="flex items-center text-xs opacity-50 gap-1">
+                    <MessageCircleWarning size={10}/>
+                    <span>These browsers can be controlled by an agent and stay active in the background.</span>
+                </div>
                 <div className="flex-1" />
                 <Button variant="secondary" className="flex items-center justify-center" size="sm" onClick={() => {
                     setIsCreateTask(true);
@@ -278,7 +282,7 @@ export default function ControllableBrowsers({
                     setShowCustomEndpointDialog(false);
                     setShowLocalModelDialog(false);
                 }}>
-                    New Task <Plus className="w-6 h-6" />
+                    Add Browser <Plus className="w-6 h-6" />
                 </Button>
             </div>
             <ScrollArea

@@ -354,10 +354,10 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
     setHandleAddressBarClick(() => {
       setShowPalette((prev) => {
         if (!prev) {
-          setFocus(true)
+          setFocus(false)
           setRefresh(prev => (prev + 1) % 2)
         } else {
-          setFocus(false)
+          setFocus(true)
           setRefresh(prev => (prev + 1) % 2)
         }
         return !prev;

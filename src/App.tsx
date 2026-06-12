@@ -23,8 +23,6 @@ import { MenuBar } from 'openchad-react/utils/state'
 interface AgentNode {
   id: string
   name: string
-  tasks: string[]
-  instruction: string
   tools: string[]
   children: string[]
   color: AgentColor
@@ -49,8 +47,6 @@ const INITIAL_AGENTS: Record<string, AgentNode> = {
   '1': {
     id: '1',
     name: 'CEO',
-    tasks: [],
-    instruction: '',
     tools: [],
     children: [],
     color: 'neutral'
@@ -509,22 +505,6 @@ const AgentEditor = ({
   const snaptheme = useTheme()
   const isDark = snaptheme.theme === 'dark'
 
-  //  New-task input state 
-  const [newTaskValue, setNewTaskValue] = useState('')
-
-  // Reset draft when switching agents so stale text never carries over
-  useEffect(() => {
-    setNewTaskValue('')
-  }, [selected])
-
-  const handleAddTask = useCallback(() => {
-    const val = newTaskValue.trim()
-    if (!val) return
-    const currentTasks = agents[selected].tasks || []
-    handleUpdateAgentProperty(selected, { tasks: [...currentTasks, val] })
-    setNewTaskValue('')
-  }, [newTaskValue, selected, agents, handleUpdateAgentProperty])
-
   return <div className="flex flex-col gap-4">
     <div>
       <span
@@ -551,111 +531,6 @@ const AgentEditor = ({
           background: themeStyles.muted,
           borderColor: themeStyles.border,
           color: themeStyles.accent,
-        }}
-        onFocus={(e) => (e.currentTarget.style.borderColor = themeStyles.accent)}
-        onBlur={(e) => (e.currentTarget.style.borderColor = themeStyles.border)}
-      />
-    </div>
-
-    {/* Tasks array editor */}
-    <div className="flex flex-col gap-1.5">
-      <label className="text-xs font-semibold" style={{ color: themeStyles.mutedFg }}>Tasks</label>
-
-      {/* Existing tasks list — scrollable container, taller to accommodate multiline rows */}
-      <div className="flex flex-col gap-1.5 max-h-52 overflow-y-auto pr-1">
-        {(agents[selected].tasks || []).map((task, idx) => (
-          <div
-            key={idx}
-            className="flex items-start gap-1.5 p-1.5 px-2 rounded border"
-            style={{ background: themeStyles.muted, borderColor: themeStyles.border }}
-          >
-            {/* Auto-growing textarea — expands as the user types */}
-            <AutoResizeTextarea
-              value={task}
-              onChange={(e) => {
-                const newTasks = [...(agents[selected].tasks || [])]
-                newTasks[idx] = e.target.value
-                handleUpdateAgentProperty(selected, { tasks: newTasks }, true)
-              }}
-              className="flex-1 bg-transparent text-xs outline-none pt-px"
-              style={{ color: themeStyles.accent, maxHeight: '120px' }}
-            />
-            {/* Delete button pinned to the top so it never floats on long tasks */}
-            <button
-              type="button"
-              onClick={() => {
-                const newTasks = (agents[selected].tasks || []).filter((_, i) => i !== idx)
-                handleUpdateAgentProperty(selected, { tasks: newTasks })
-              }}
-              className="ui-control p-0.5 rounded transition-colors flex-shrink-0 mt-0.5"
-              style={{ color: themeStyles.mutedFg }}
-              onMouseEnter={(e) => (e.currentTarget.style.color = '#fb7185')}
-              onMouseLeave={(e) => (e.currentTarget.style.color = themeStyles.mutedFg)}
-              title="Remove task"
-            >
-              <Trash2 size={12} />
-            </button>
-          </div>
-        ))}
-        {(agents[selected].tasks || []).length === 0 && (
-          <span className="text-[10px] italic" style={{ color: themeStyles.mutedFg }}>No tasks added</span>
-        )}
-      </div>
-
-      {/* Add new task — auto-growing textarea + submit button aligned to its bottom edge */}
-      <div className="flex gap-1.5 mt-1 items-end">
-        <AutoResizeTextarea
-          id="new-task-input"
-          value={newTaskValue}
-          onChange={(e) => setNewTaskValue(e.target.value)}
-          placeholder={`New task… (${navigator.platform?.toLowerCase().includes('mac') ? '⌘' : 'Ctrl'}+Enter to add)`}
-          className="flex-1 px-3 py-1.5 text-xs rounded-lg outline-none border"
-          style={{
-            background: themeStyles.muted,
-            borderColor: themeStyles.border,
-            color: themeStyles.accent,
-            maxHeight: '120px',
-          }}
-          onFocus={(e) => (e.currentTarget.style.borderColor = themeStyles.accent)}
-          onBlur={(e) => (e.currentTarget.style.borderColor = themeStyles.border)}
-          onKeyDown={(e) => {
-            // Ctrl/Cmd+Enter submits; plain Enter inserts a newline (natural textarea behaviour)
-            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-              e.preventDefault()
-              handleAddTask()
-            }
-          }}
-        />
-        <button
-          type="button"
-          onClick={handleAddTask}
-          className="px-2 py-1.5 rounded-lg text-xs font-semibold hover:opacity-90 flex items-center justify-center transition-opacity flex-shrink-0"
-          style={{
-            background: themeStyles.accent,
-            color: themeStyles.accentFg,
-          }}
-        >
-          <Plus size={14} />
-        </button>
-      </div>
-    </div>
-
-
-
-    {/* Instruction auto-resizing textarea */}
-    <div className="flex flex-col gap-1.5">
-      <label className="text-xs font-semibold" style={{ color: themeStyles.mutedFg }}>Instruction</label>
-      <AutoResizeTextarea
-        id="input-agent-instruction"
-        value={agents[selected].instruction || ''}
-        onChange={(e) => handleUpdateAgentProperty(selected, { instruction: e.target.value }, true)}
-        className="px-3 py-2 text-xs rounded-lg outline-none transition-colors border"
-        style={{
-          background: themeStyles.muted,
-          borderColor: themeStyles.border,
-          color: themeStyles.accent,
-          minHeight: '40px',
-          maxHeight: '200px'
         }}
         onFocus={(e) => (e.currentTarget.style.borderColor = themeStyles.accent)}
         onBlur={(e) => (e.currentTarget.style.borderColor = themeStyles.border)}
@@ -1069,8 +944,6 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
         return {
           id,
           name: '+',
-          tasks: [],
-          instruction: '',
           tools: [],
           children: [],
           color: 'neutral'
@@ -1567,8 +1440,6 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     const newAgent: AgentNode = {
       id: newId,
       name: 'New Agent',
-      tasks: [],
-      instruction: '',
       tools: [],
       children: [],
       color: 'neutral'
