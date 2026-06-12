@@ -229,8 +229,7 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
   const { workspace } = useWorkspace()
 
   const [focus, setFocus] = useState(false)
-  // Mutex ref to prevent concurrent reparent IPC calls
-  const isReparenting = useRef(false)
+  const [refresh, setRefresh] = useState(0)
 
   const [loaded, setLoaded] = useState(false)
   const [showPalette, setShowPalette] = useState(false)
@@ -353,7 +352,19 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
     setHandleForward(handleForward)
     setHandleRefresh(handleRefresh)
     setHandleAddressBarClick(() => {
-      setShowPalette((prev) => !prev);
+      setShowPalette((prev) => {
+        if (!prev) {
+          (async () => {
+            const mw = await getCurrentWebview()
+            await mw.reparent(await getCurrentWindow())
+          })()
+        } else {
+          (async () => {
+            if (contextRef.current.wvw) await contextRef.current.wvw.reparent(await getCurrentWindow())
+          })()
+        }
+        return !prev;
+      });
     });
   }, [handleNavigate, handleBack, handleForward, handleRefresh, hideChildWebview, showChildWebview])
 
@@ -368,32 +379,32 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
     }
   }, [])
 
-  // ── Consolidated reparent effect ──────────────────────────────────────────
-  // Determines the desired Z-order and calls reparent exactly once, guarded
-  // by a mutex to prevent concurrent IPC calls that would deadlock Tauri.
   useEffect(() => {
-    if (!isTauri) return
-    ;(async () => {
-      if (isReparenting.current) return
-      isReparenting.current = true
-      try {
-        const win = await getCurrentWindow()
-        const isThisTab = activeTabId === tabId
-        const wantsChildOnTop = isThisTab && focus && !showPalette
-
-        if (wantsChildOnTop && contextRef.current.wvw && contextRef.current.created) {
-          await contextRef.current.wvw.reparent(win)
-        } else {
-          const mw = await getCurrentWebview()
-          await mw.reparent(win)
+    if (activeTabId == tabId) {
+      (async () => {
+        try {
+          if (contextRef.current.wvw) {
+            await contextRef.current.wvw.reparent(await getCurrentWindow())
+          }
+        } catch (e) {
+          console.error('[Webview] onMouseEnter failed:', e)
         }
-      } catch (e) {
-        console.error('[Webview] reparent failed:', e)
-      } finally {
-        isReparenting.current = false
+      })()
+    }
+  }, [activeTabId]);
+
+  useEffect(() => {
+    (async () => {
+      if (focus) {
+        if (contextRef.current.wvw) {
+          contextRef.current.wvw.reparent(await getCurrentWindow())
+        }
+      } else {
+        const mw = await getCurrentWebview()
+        await mw.reparent(await getCurrentWindow())
       }
     })()
-  }, [focus, activeTabId, showPalette])
+  }, [focus, refresh])
 
 
   const [showSearchDialog, setShowSearchDialog] = useGlobal('showSearchDialog', { initialValue: false });
@@ -407,21 +418,11 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
   const [settingsDropdown, setSettingsDropdown] = useGlobal('settingsDropdown', { initialValue: false });
   const [mobileSettingsDropdown, setMobileSettingsDropdown] = useGlobal('mobileSettingsDropdown', { initialValue: false });
 
-  // When any overlay dialog opens, bring main webview on top (consolidates with reparent logic)
   useEffect(() => {
-    if (!isTauri) return
     if (mobileSettingsDropdown || settingsDropdown || showSearchDialog || showMcpDialog || showCredentialsDialog || showLocalModelDialog || showCustomEndpointDialog || showSettingsDialog || showTaskDialog || setupModel) {
-      ;(async () => {
-        if (isReparenting.current) return
-        isReparenting.current = true
-        try {
-          const mw = await getCurrentWebview()
-          await mw.reparent(await getCurrentWindow())
-        } catch (e) {
-          console.error('[Webview] dialog reparent failed:', e)
-        } finally {
-          isReparenting.current = false
-        }
+      (async () => {
+        const mw = await getCurrentWebview()
+        await mw.reparent(await getCurrentWindow())
       })()
     }
   }, [mobileSettingsDropdown, settingsDropdown, showSearchDialog, showMcpDialog, showCredentialsDialog, showLocalModelDialog, showCustomEndpointDialog, showSettingsDialog, showTaskDialog, setupModel])
@@ -491,18 +492,27 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
 
     // ── Core sync ─────────────────────────────────────────────────────────────
     // syncSize is the hot-path — keep IPC calls to the minimum.
-    // Debounced via requestAnimationFrame to collapse multiple simultaneous
-    // calls (resize, onMoved, onResized, onFocusChanged) into one per frame.
-    let syncRafId: number | null = null
-    let pendingKnownPos: { x: number; y: number } | undefined
-
-    const syncSizeImpl = async (knownPos?: { x: number; y: number }) => {
+    // `knownPos` is an optional pre-fetched position (from onMoved payload) to
+    // skip the innerPosition() round-trip entirely.
+    const syncSize = async (knownPos?: { x: number; y: number }) => {
+      // if (activeTabId !== tabId) return;
       const container = containerRef.current
       const wvw = context.wvw
       if (!container || context.closed || !wvw || !context.created) return
 
       // Minimized is tracked via local state — no IPC needed here
-      if (isMinimized) return
+      if (isMinimized) {
+        // try { await wvw.minimize() } catch (e) {
+        //   if (isWindowGone(e)) { clearDeadWindow(); return }
+        //   console.error("[Webview] Failed to minimize:", e)
+        // }
+        return
+      } else {
+        // try { await wvw.unminimize() } catch (e) {
+        //   if (isWindowGone(e)) { clearDeadWindow() }
+        //   // Non-fatal — window might already be unminimized
+        // }
+      }
 
       const rect = container.getBoundingClientRect()
 
@@ -510,6 +520,7 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
         if (rect.width === 0 && rect.height === 0) return;
 
         if (knownPos) {
+          // onMoved already gave us the new position — use it directly
           mainWinPos = knownPos
         } else {
           // Batch the two independent IPC calls in parallel
@@ -521,7 +532,7 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
           scale = sf
         }
 
-        // Batch position + size in parallel
+        // Batch position + size + show in parallel — all are fire-and-resolve
         await Promise.all([
           wvw.setPosition(new LogicalPosition(rect.x, rect.y)),
           wvw.setSize(new LogicalSize(Math.round(rect.width), Math.round(rect.height))),
@@ -530,18 +541,6 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
         if (isWindowGone(e)) { clearDeadWindow(); return }
         console.error("[Webview] Failed to sync size:", e)
       }
-    }
-
-    // Debounced wrapper — at most one sync per animation frame
-    const syncSize = (knownPos?: { x: number; y: number }) => {
-      if (knownPos) pendingKnownPos = knownPos
-      if (syncRafId !== null) return // already scheduled
-      syncRafId = requestAnimationFrame(() => {
-        syncRafId = null
-        const pos = pendingKnownPos
-        pendingKnownPos = undefined
-        syncSizeImpl(pos)
-      })
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -554,6 +553,7 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
         if (!container) return
         const rect = container.getBoundingClientRect()
         if (rect.width === 0 || rect.height === 0) {
+
           return
         }
         if (context.closed) return
@@ -574,16 +574,14 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
         const screenY = Math.round(mainWinPos.y / scale + rect.y)
 
         // ── Graceful label-exists check ────────────────────────────────────────
-        // On HMR, the old webview may still exist. Close it first to avoid
-        // referencing a stale handle that's about to be destroyed.
         const existing = await getByLabel(label)
         if (existing) {
-          try {
-            await existing.close()
-            // Brief wait for the close to propagate on the Rust side
-            await new Promise(r => setTimeout(r, 100))
-          } catch { /* already gone — fine */ }
-          if (context.closed) return
+          context.wvw = existing
+          context.created = true
+          setFocus(false);
+          setRefresh(prev => (prev + 1) % 2)
+          setLoaded(true);
+          return
         }
         // ───────────────────────────────────────────────────────────────────────
         setLoaded(false);
@@ -599,13 +597,6 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
         wvw.once('tauri://created', async () => {
 
           context.created = true
-          if (context.closed) {
-            const claimed = await getByLabel(wvw.label)
-            if (!claimed) {
-              wvw.close().catch(e => console.error("[Webview] Error closing on created:", e))
-            }
-            return
-          }
           try {
             // Re-sync position after creation — batch independent calls
             const [pos, sf, minimized] = await Promise.all([
@@ -622,12 +613,9 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
               await Promise.all([
                 wvw.setPosition(new LogicalPosition(currentRect.x, currentRect.y)),
                 wvw.setSize(new LogicalSize(Math.round(currentRect.width), Math.round(currentRect.height))),
+                setFocus(false),
+                setRefresh(prev => (prev + 1) % 2),
               ])
-              setFocus(false)
-            }
-            if (context.closed) {
-              wvw.close().catch(e => console.error("[Webview] Error closing after align:", e))
-              return
             }
             if (minimized) {
 
@@ -828,18 +816,6 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
       }
     }).then(u => cleanups.push(u)).catch(e => console.error("[Listener] Failed to register onFocusChanged:", e))
 
-    mainWin.onCloseRequested(async (event) => {
-      if (context.wvw) {
-        event.preventDefault()
-        try {
-          await context.wvw.close()
-        } catch (e) {
-          console.error("[Webview] Error closing child WebviewWindow:", e)
-        }
-        await mainWin.destroy()
-      }
-    }).then(u => cleanups.push(u)).catch(() => { })
-
     // ── Z-order management via hide/show ────────────────────────────────────
     // The child browser is an owned window (parent: mainWin), so the OS
     // keeps it above the main window automatically. To let the user interact
@@ -849,7 +825,6 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
 
 
     // Cursor polling to dispatch custom events when it leaves the containerRef area
-    // Throttled to 250ms with in-flight guard to prevent IPC saturation
     let isCursorInside = false
     let isPollInFlight = false
     const pollCursor = async () => {
@@ -904,17 +879,9 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
 
     return () => {
       context.closed = true
-      // Cancel any pending RAF-debounced sync
-      if (syncRafId !== null) { cancelAnimationFrame(syncRafId); syncRafId = null }
       observer.disconnect()
       window.removeEventListener('resize', onResize)
       cleanups.forEach(fn => fn())
-      if (context.wvw) {
-        const wvwToClose = context.wvw
-        if (context.created) {
-          wvwToClose.close().catch(e => console.error(`[Webview] Error closing ${wvwToClose.label}:`, e))
-        }
-      }
     }
   }, [mounted, isTauri, appId])
 
