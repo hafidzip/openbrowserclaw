@@ -354,14 +354,11 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
     setHandleAddressBarClick(() => {
       setShowPalette((prev) => {
         if (!prev) {
-          (async () => {
-            const mw = await getCurrentWebview()
-            await mw.reparent(await getCurrentWindow())
-          })()
+          setFocus(true)
+          setRefresh(prev => (prev + 1) % 2)
         } else {
-          (async () => {
-            if (contextRef.current.wvw) await contextRef.current.wvw.reparent(await getCurrentWindow())
-          })()
+          setFocus(false)
+          setRefresh(prev => (prev + 1) % 2)
         }
         return !prev;
       });
@@ -383,9 +380,8 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
     if (activeTabId == tabId) {
       (async () => {
         try {
-          if (contextRef.current.wvw) {
-            await contextRef.current.wvw.reparent(await getCurrentWindow())
-          }
+          setFocus(true)
+          setRefresh(prev => (prev + 1) % 2)
         } catch (e) {
           console.error('[Webview] onMouseEnter failed:', e)
         }
@@ -397,7 +393,7 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
     (async () => {
       if (focus) {
         if (contextRef.current.wvw) {
-          contextRef.current.wvw.reparent(await getCurrentWindow())
+          await contextRef.current.wvw.reparent(await getCurrentWindow())
         }
       } else {
         const mw = await getCurrentWebview()
@@ -407,25 +403,26 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
   }, [focus, refresh])
 
 
-  const [showSearchDialog, setShowSearchDialog] = useGlobal('showSearchDialog', { initialValue: false });
-  const [showMcpDialog, setShowMcpDialog] = useGlobal('showMcpDialog', { initialValue: false });
-  const [showCredentialsDialog, setShowCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false });
-  const [showLocalModelDialog, setShowLocalModelDialog] = useGlobal('showLocalModelDialog', { initialValue: false });
-  const [showCustomEndpointDialog, setShowCustomEndpointDialog] = useGlobal('showCustomEndpointDialog', { initialValue: false });
-  const [showSettingsDialog, setShowSettingsDialog] = useGlobal('showSettingsDialog', { initialValue: false });
-  const [showTaskDialog, setShowTaskDialog] = useGlobal('showTaskDialog', { initialValue: false });
-  const [setupModel, setSetupModel] = useGlobal('setupModel', { initialValue: false });
-  const [settingsDropdown, setSettingsDropdown] = useGlobal('settingsDropdown', { initialValue: false });
-  const [mobileSettingsDropdown, setMobileSettingsDropdown] = useGlobal('mobileSettingsDropdown', { initialValue: false });
+  const [showSearchDialog] = useGlobal('showSearchDialog', { initialValue: false });
+  const [showMcpDialog] = useGlobal('showMcpDialog', { initialValue: false });
+  const [showCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false });
+  const [showLocalModelDialog] = useGlobal('showLocalModelDialog', { initialValue: false });
+  const [showCustomEndpointDialog] = useGlobal('showCustomEndpointDialog', { initialValue: false });
+  const [showSettingsDialog] = useGlobal('showSettingsDialog', { initialValue: false });
+  const [showTaskDialog] = useGlobal('showTaskDialog', { initialValue: false });
+  const [setupModel] = useGlobal('setupModel', { initialValue: false });
+  const [settingsDropdown] = useGlobal('settingsDropdown', { initialValue: false });
+  const [mobileSettingsDropdown] = useGlobal('mobileSettingsDropdown', { initialValue: false });
+  const [showControllableBrowsersDialog] = useGlobal('showControllableBrowsersDialog', { initialValue: false });
+  const [showSkillsDialog] = useGlobal('showSkillsDialog', { initialValue: false });
+  const [showAgentsDialog] = useGlobal('showAgentsDialog', { initialValue: false });
 
   useEffect(() => {
-    if (mobileSettingsDropdown || settingsDropdown || showSearchDialog || showMcpDialog || showCredentialsDialog || showLocalModelDialog || showCustomEndpointDialog || showSettingsDialog || showTaskDialog || setupModel) {
-      (async () => {
-        const mw = await getCurrentWebview()
-        await mw.reparent(await getCurrentWindow())
-      })()
+    if (focus && (showAgentsDialog || showSkillsDialog || showControllableBrowsersDialog || mobileSettingsDropdown || settingsDropdown || showSearchDialog || showMcpDialog || showCredentialsDialog || showLocalModelDialog || showCustomEndpointDialog || showSettingsDialog || showTaskDialog || setupModel)) {
+      setFocus(false)
+      setRefresh(prev => (prev + 1) % 2)
     }
-  }, [mobileSettingsDropdown, settingsDropdown, showSearchDialog, showMcpDialog, showCredentialsDialog, showLocalModelDialog, showCustomEndpointDialog, showSettingsDialog, showTaskDialog, setupModel])
+  }, [focus, showAgentsDialog, showSkillsDialog, showControllableBrowsersDialog, mobileSettingsDropdown, settingsDropdown, showSearchDialog, showMcpDialog, showCredentialsDialog, showLocalModelDialog, showCustomEndpointDialog, showSettingsDialog, showTaskDialog, setupModel])
 
   useEffect(() => {
     (async () => {
@@ -458,7 +455,7 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
 
 
   useEffect(() => {
-    if (!isTauri || !containerRef.current || !mounted) return
+    if (!isTauri || !containerRef.current || !mounted || activeTabId != tabId) return
 
     contextRef.current = {
       closed: false,
@@ -883,7 +880,7 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
       window.removeEventListener('resize', onResize)
       cleanups.forEach(fn => fn())
     }
-  }, [mounted, isTauri, appId])
+  }, [mounted, activeTabId])
 
 
   return (

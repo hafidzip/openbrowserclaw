@@ -115,15 +115,18 @@ export default function Container({ Apps }: { Apps: Project }) {
     }, {})
   });
   const [mounted, setMounted] = useState(false);
-  const [showSearchDialog, setShowSearchDialog] = useGlobal('showSearchDialog', {initialValue: false});
-  const [showMcpDialog, setShowMcpDialog] = useGlobal('showMcpDialog', {initialValue: false});
-  const [showCredentialsDialog, setShowCredentialsDialog] = useGlobal('showCredentialsDialog', {initialValue: false});
-  const [showLocalModelDialog, setShowLocalModelDialog] = useGlobal('showLocalModelDialog', {initialValue: false});
-  const [showCustomEndpointDialog, setShowCustomEndpointDialog] = useGlobal('showCustomEndpointDialog', {initialValue: false});
-  const [showSettingsDialog, setShowSettingsDialog] = useGlobal('showSettingsDialog', {initialValue: false});
-  const [showTaskDialog, setShowTaskDialog] = useGlobal('showTaskDialog', {initialValue: false});
-  const [setupModel, setSetupModel] = useGlobal('setupModel', {initialValue: false});
-  const [mobileSettingsDropdown, setMobileSettingsDropdown] = useGlobal('mobileSettingsDropdown', { initialValue: false });
+  const [showSearchDialog, setShowSearchDialog] = useGlobal('showSearchDialog', { initialValue: false });
+  const [showMcpDialog, setShowMcpDialog] = useGlobal('showMcpDialog', { initialValue: false });
+  const [showCredentialsDialog, setShowCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false });
+  const [showLocalModelDialog, setShowLocalModelDialog] = useGlobal('showLocalModelDialog', { initialValue: false });
+  const [showCustomEndpointDialog, setShowCustomEndpointDialog] = useGlobal('showCustomEndpointDialog', { initialValue: false });
+  const [showSettingsDialog, setShowSettingsDialog] = useGlobal('showSettingsDialog', { initialValue: false });
+  const [showTaskDialog, setShowTaskDialog] = useGlobal('showTaskDialog', { initialValue: false });
+  const [showControllableBrowsersDialog, setShowControllableBrowsersDialog] = useGlobal('showControllableBrowsersDialog', { initialValue: false });
+  const [showSkillsDialog, setShowSkillsDialog] = useGlobal('showSkillsDialog', { initialValue: false });
+  const [showAgentsDialog, setShowAgentsDialog] = useGlobal('showAgentsDialog', { initialValue: false });
+  const [, setMobileSettingsDropdown] = useGlobal('mobileSettingsDropdown', { initialValue: false });
+  const [setupModel, setSetupModel] = useGlobal('setupModel', { initialValue: false });
   const snaptheme = useSnapshot(Theme);
   const currentLayout = snaptheme.layout;
   const [intialzeTheme, setInitialzeTheme] = useState(false);
@@ -787,6 +790,12 @@ export default function Container({ Apps }: { Apps: Project }) {
             setShowSettingsDialog={setShowSettingsDialog}
             showTaskDialog={showTaskDialog}
             setShowTaskDialog={setShowTaskDialog}
+            showControllableBrowsersDialog={showControllableBrowsersDialog}
+            setShowControllableBrowsersDialog={setShowControllableBrowsersDialog}
+            showSkillsDialog={showSkillsDialog}
+            setShowSkillsDialog={setShowSkillsDialog}
+            showAgentsDialog={showAgentsDialog}
+            setShowAgentsDialog={setShowAgentsDialog}
             layout={snaptheme.layout}
             theme={snaptheme.theme}
             settings={settings}

@@ -41,6 +41,9 @@ import McpServers from "./mcp"
 import SiteRegistry from "./SiteRegistry"
 import Tasks from "./Tasks"
 import { useGlobal } from "./useGlobal"
+import Agents from "./Agents"
+import ControllableBrowsers from "./ControllableBrowsers"
+import Skiils from "./Skills"
 
 // Sortable Tab Item Component
 interface SortableTabItemProps {
@@ -394,6 +397,12 @@ export default function Sidebar({
   setShowSettingsDialog,
   showTaskDialog,
   setShowTaskDialog,
+  showControllableBrowsersDialog,
+  setShowControllableBrowsersDialog,
+  showSkillsDialog,
+  setShowSkillsDialog,
+  showAgentsDialog,
+  setShowAgentsDialog,
   layout,
   theme,
   settings,
@@ -417,6 +426,12 @@ export default function Sidebar({
   setShowSettingsDialog: (value: boolean) => void;
   showTaskDialog: boolean;
   setShowTaskDialog: (value: boolean) => void;
+  showControllableBrowsersDialog: boolean;
+  setShowControllableBrowsersDialog: (value: boolean) => void;
+  showSkillsDialog: boolean;
+  setShowSkillsDialog: (value: boolean) => void;
+  showAgentsDialog: boolean;
+  setShowAgentsDialog: (value: boolean) => void;
   layout: string;
   theme: string;
   settings: Record<string, SettingItem>;
@@ -445,6 +460,9 @@ export default function Sidebar({
   const [isCollapsedSidebar, setIsCollapsedSidebar] = useState(true);
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [searchTaskQuery, setSearchTaskQuery] = useState("");
+  const [searchAgentsQuery, setSearchAgentsQuery] = useState("");
+  const [searchControllableBrowsersQuery, setSearchControllableBrowsersQuery] = useState("");
+  const [searchSkillsQuery, setSearchSkillsQuery] = useState("");
   const [, setSettingsDropdown] = useGlobal('settingsDropdown', { initialValue: false });
   const isFirstRender = useRef(true);
 
@@ -1145,6 +1163,63 @@ export default function Sidebar({
           <SettingsMenu />
         </DialogContent>
       </DialogUI>
+      <DialogUI open={showControllableBrowsersDialog} onOpenChange={setShowControllableBrowsersDialog}>
+        <DialogContent className="max-w-4xl h-[80vh] flex flex-col border-accent/20 bg-card p-0 overflow-hidden shadow-2xl">
+          <DialogHeader className="px-6">
+            <DialogTitle className="text-lg font-medium pt-10 text-foreground/90">
+              <div className="relative w-full border border-[hsl(var(--chat-border))] flex items-center gap-2 bg-[hsl(var(--float))] rounded-full px-4 shadow-sm focus-within:ring-1 focus-within:ring-accent/30 transition-all">
+                <Search className="w-4 h-4 text-muted-foreground" />
+                <input
+                  placeholder="Search agents..."
+                  className="bg-transparent border-none p-2 w-full h-10 focus-visible:ring-0 text-sm"
+                  value={searchControllableBrowsersQuery}
+                  onChange={(e) => setSearchControllableBrowsersQuery(e.target.value)}
+                  autoFocus
+                />
+              </div>
+            </DialogTitle>
+          </DialogHeader>
+          <ControllableBrowsers workspace={workspace} isOpen={showControllableBrowsersDialog} setOpen={setShowControllableBrowsersDialog} query={searchTaskQuery} />
+        </DialogContent>
+      </DialogUI>
+      <DialogUI open={showSkillsDialog} onOpenChange={setShowSkillsDialog}>
+        <DialogContent className="max-w-4xl h-[80vh] flex flex-col border-accent/20 bg-card p-0 overflow-hidden shadow-2xl">
+          <DialogHeader className="px-6">
+            <DialogTitle className="text-lg font-medium pt-10 text-foreground/90">
+              <div className="relative w-full border border-[hsl(var(--chat-border))] flex items-center gap-2 bg-[hsl(var(--float))] rounded-full px-4 shadow-sm focus-within:ring-1 focus-within:ring-accent/30 transition-all">
+                <Search className="w-4 h-4 text-muted-foreground" />
+                <input
+                  placeholder="Search agents..."
+                  className="bg-transparent border-none p-2 w-full h-10 focus-visible:ring-0 text-sm"
+                  value={searchSkillsQuery}
+                  onChange={(e) => setSearchSkillsQuery(e.target.value)}
+                  autoFocus
+                />
+              </div>
+            </DialogTitle>
+          </DialogHeader>
+          <Skiils workspace={workspace} isOpen={showSkillsDialog} setOpen={setShowSkillsDialog} query={searchTaskQuery} />
+        </DialogContent>
+      </DialogUI>
+      <DialogUI open={showAgentsDialog} onOpenChange={setShowAgentsDialog}>
+        <DialogContent className="max-w-4xl h-[80vh] flex flex-col border-accent/20 bg-card p-0 overflow-hidden shadow-2xl">
+          <DialogHeader className="px-6">
+            <DialogTitle className="text-lg font-medium pt-10 text-foreground/90">
+              <div className="relative w-full border border-[hsl(var(--chat-border))] flex items-center gap-2 bg-[hsl(var(--float))] rounded-full px-4 shadow-sm focus-within:ring-1 focus-within:ring-accent/30 transition-all">
+                <Search className="w-4 h-4 text-muted-foreground" />
+                <input
+                  placeholder="Search agents..."
+                  className="bg-transparent border-none p-2 w-full h-10 focus-visible:ring-0 text-sm"
+                  value={searchAgentsQuery}
+                  onChange={(e) => setSearchAgentsQuery(e.target.value)}
+                  autoFocus
+                />
+              </div>
+            </DialogTitle>
+          </DialogHeader>
+          <ControllableBrowsers workspace={workspace} isOpen={showAgentsDialog} setOpen={setShowAgentsDialog} query={searchTaskQuery} />
+        </DialogContent>
+      </DialogUI>
       <DialogUI open={showTaskDialog} onOpenChange={setShowTaskDialog}>
         <DialogContent className="max-w-4xl h-[80vh] flex flex-col border-accent/20 bg-card p-0 overflow-hidden shadow-2xl">
           <DialogHeader className="px-6">
@@ -1161,7 +1236,7 @@ export default function Sidebar({
               </div>
             </DialogTitle>
           </DialogHeader>
-          <Tasks workspace={'global'} isOpen={showTaskDialog} setOpen={setShowTaskDialog} query={searchTaskQuery} />
+          <Tasks workspace={workspace} isOpen={showTaskDialog} setOpen={setShowTaskDialog} query={searchTaskQuery} />
         </DialogContent>
       </DialogUI>
       <DialogUI open={showSearchDialog} onOpenChange={setShowSearchDialog}>
