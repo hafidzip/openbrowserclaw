@@ -3,7 +3,7 @@ import clsx from "clsx"
 import { Aspan } from "./animated"
 import { motion, AnimatePresence } from "motion/react"
 import { useRef, useState, useEffect, Fragment, useCallback } from "react"
-import { ChevronDown, GitBranch, Plus, Settings, X, Pin, ChevronRight, ArrowLeftRight, Key, HardDrive, Globe, Drama, EarthIcon } from "lucide-react"
+import { ChevronDown, GitBranch, Plus, Settings, X, Pin, ChevronRight, ArrowLeftRight, Key, HardDrive, Globe, Drama, EarthIcon, Scroll, AlarmCheck } from "lucide-react"
 import { Dialog as DialogUI, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog"
 import { Dropdown } from "./dropdown"
 import { TabState, addTab, TabInfo, reorderTabsInGroup, deleteTabWithGroupSelection, setTabGroup, type ITab, Theme, } from '../utils/state'
@@ -32,13 +32,15 @@ import { Search } from "lucide-react"
 import { open } from '@tauri-apps/plugin-dialog';
 import { useSettings, type SettingItem } from "./useSettings"
 import { usePython, usePythonEvent } from "./usePython"
-import SearchTab from "./SearchTab"
 import SettingsMenu from "./settings-menu"
 import Credentials from "./credentials"
 import LocalModel from "./localmodel"
 import CustomEndpoint from "./customendpoint"
 import { openUrl } from '@tauri-apps/plugin-opener'
 import McpServers from "./mcp"
+import SiteRegistry from "./SiteRegistry"
+import Tasks from "./Tasks"
+import { useGlobal } from "./useGlobal"
 
 // Sortable Tab Item Component
 interface SortableTabItemProps {
@@ -110,7 +112,7 @@ function SortableTabItem({ defaultTitle, isPinned, id, icon, title, isCollapsedS
       onContextMenu={(e) => onContextMenu(id, e)}
       onClick={onClick}
       className={clsx(
-        "w-full h-[36px] flex items-center gap-1 rounded-lg text-sm transition-colors relative group",
+        "w-full h-[36px] flex items-center gap-1 rounded-lg text-xs transition-colors relative group",
         (isActive) ? "bg-neutral-300 dark:bg-[hsl(var(--hover))]" : isHovered ? "bg-neutral-200 dark:bg-[hsl(var(--hover))]/50" : "",
       )}
       data-tab-id={id}
@@ -368,7 +370,7 @@ function SearchDialogBody({ workspace, isOpen, setOpen }: { workspace: string | 
           </div>
         </DialogTitle>
       </DialogHeader>
-      <SearchTab workspace={workspace} isOpen={isOpen} setOpen={setOpen} query={searchQuery} />
+      <SiteRegistry workspace={workspace} isOpen={isOpen} setOpen={setOpen} query={searchQuery} />
     </>
   );
 }
@@ -390,6 +392,8 @@ export default function Sidebar({
   setShowCustomEndpointDialog,
   showSettingsDialog,
   setShowSettingsDialog,
+  showTaskDialog,
+  setShowTaskDialog,
   layout,
   theme,
   settings,
@@ -411,6 +415,8 @@ export default function Sidebar({
   setShowCustomEndpointDialog: (value: boolean) => void;
   showSettingsDialog: boolean;
   setShowSettingsDialog: (value: boolean) => void;
+  showTaskDialog: boolean;
+  setShowTaskDialog: (value: boolean) => void;
   layout: string;
   theme: string;
   settings: Record<string, SettingItem>;
@@ -437,6 +443,23 @@ export default function Sidebar({
   const pinnedTabs = Object.fromEntries(Object.entries(allTabs).filter(([_, tab]) => tab.group === "pinned"));
   const s = useSettings();
   const [isCollapsedSidebar, setIsCollapsedSidebar] = useState(true);
+  const [isTransitioning, setIsTransitioning] = useState(false);
+  const [searchTaskQuery, setSearchTaskQuery] = useState("");
+  const [, setSettingsDropdown] = useGlobal('settingsDropdown', { initialValue: false });
+  const isFirstRender = useRef(true);
+
+  useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    setIsTransitioning(true);
+    const timer = setTimeout(() => {
+      setIsTransitioning(false);
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [isCollapsedSidebar]);
+
   const [showPopup, setShowPopup] = useState(false);
   const [popupTop, setPopupTop] = useState(0);
   const [hoveredTabId, setHoveredTabId] = useState<string | null>(null);
@@ -491,7 +514,7 @@ export default function Sidebar({
               });
             })
           }
-          // if (needAdd) addTab();
+          if (needAdd) addTab();
         })()
       }
     }
@@ -608,7 +631,7 @@ export default function Sidebar({
   // Handle tab deletion with group-aware auto-selection
   const handleDeleteTab = (uuid: string) => {
     // Use the group-aware deletion that auto-selects next tab in same group
-    deleteTabWithGroupSelection(uuid);
+    (async () => { await deleteTabWithGroupSelection(uuid); })()
     // The useEffect above will handle updating hover state
   };
   const handleTabMouseEnter = (id: string, e: React.MouseEvent<HTMLDivElement>) => {
@@ -745,14 +768,15 @@ export default function Sidebar({
       <div
         ref={tabContainerRef}
         className={clsx(
-          "pt-4 flex-shrink flex flex-col overflow-y-auto overflow-x-visible relative transform -translate-y-2 w-[calc(100%+10px)] pr-[10px]",
+          "pt-4 flex-shrink flex flex-col overflow-x-visible relative transform -translate-y-2 w-[calc(100%+10px)] pr-[10px]",
+          isTransitioning ? "overflow-y-visible" : "overflow-y-auto",
           (isCollapsedSidebar || Object.keys(pinnedTabs).length > 0) ? "pt-2" : "pt-1"
         )}>
         <div
           onClick={() => setShowSearchDialog(true)}
           className={clsx(
             "px-2 border border-[hsl(var(--chat-border))] hover:bg-neutral-200 dark:hover:bg-[hsl(var(--hover))]/50 relative cursor-pointer rounded-full",
-            isCollapsedSidebar && "mb-1"
+            (isCollapsedSidebar || Object.keys(pinnedTabs).length > 0) && "mb-1"
           )}>
           <div
             className={clsx(
@@ -832,7 +856,7 @@ export default function Sidebar({
       <div className={clsx("overflow-hidden w-full flex items-center transition-colors rounded-lg"
         , isCollapsedSidebar ? "py-1" : "py-2 bg-[hsl(var(--hover))]/40 hover:bg-[hsl(var(--hover))] border-[1px] border-accent/10 dark:border-accent/5"
       )}>
-        <Dropdown
+        <Dropdown onOpenChange={setSettingsDropdown}
           content={[
             {
               content: <div> Switch Workspace </div>,
@@ -843,23 +867,41 @@ export default function Sidebar({
                 setIsSwitchWorkspace(true);
               }
             },
-            
+
             {
               content: <div> Agents </div>,
               shortcut: <Drama size={16} />,
               children: null,
               separator: false,
               trigger: () => {
-                
+
               }
             },
             {
-              content: <div> Agent Browsers </div>,
+              content: <div> Controllable Browsers </div>,
               shortcut: <EarthIcon size={16} />,
               children: null,
               separator: false,
               trigger: () => {
-                
+
+              }
+            },
+            {
+              content: <div> Tasks </div>,
+              shortcut: <AlarmCheck size={16} />,
+              children: null,
+              separator: false,
+              trigger: () => {
+                setShowTaskDialog(true);
+              }
+            },
+            {
+              content: <div> Skiils </div>,
+              shortcut: <Scroll size={16} />,
+              children: null,
+              separator: false,
+              trigger: () => {
+
               }
             },
             ...(typeof window !== 'undefined' && !!(window as any).__TAURI__) ? [{
@@ -921,8 +963,6 @@ export default function Sidebar({
             }
           ]}>
           <motion.button
-            onClick={() => {
-            }}
             className={clsx(
               "focus:outline-none flex items-center gap-5 flex-1",
             )}>
@@ -1103,6 +1143,25 @@ export default function Sidebar({
             </DialogTitle>
           </DialogHeader>
           <SettingsMenu />
+        </DialogContent>
+      </DialogUI>
+      <DialogUI open={showTaskDialog} onOpenChange={setShowTaskDialog}>
+        <DialogContent className="max-w-4xl h-[80vh] flex flex-col border-accent/20 bg-card p-0 overflow-hidden shadow-2xl">
+          <DialogHeader className="px-6">
+            <DialogTitle className="text-lg font-medium pt-10 text-foreground/90">
+              <div className="relative w-full border border-[hsl(var(--chat-border))] flex items-center gap-2 bg-[hsl(var(--float))] rounded-full px-4 shadow-sm focus-within:ring-1 focus-within:ring-accent/30 transition-all">
+                <Search className="w-4 h-4 text-muted-foreground" />
+                <input
+                  placeholder="Search task..."
+                  className="bg-transparent border-none p-2 w-full h-10 focus-visible:ring-0 text-sm"
+                  value={searchTaskQuery}
+                  onChange={(e) => setSearchTaskQuery(e.target.value)}
+                  autoFocus
+                />
+              </div>
+            </DialogTitle>
+          </DialogHeader>
+          <Tasks workspace={'global'} isOpen={showTaskDialog} setOpen={setShowTaskDialog} query={searchTaskQuery} />
         </DialogContent>
       </DialogUI>
       <DialogUI open={showSearchDialog} onOpenChange={setShowSearchDialog}>

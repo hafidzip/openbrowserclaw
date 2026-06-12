@@ -6,7 +6,7 @@ identifier = "com.openbrowser.app"
 frontendDist = "./frontend"
 [app]
 withGlobalTauri = true
-security.capabilities = ["default"]
+security.capabilities = ["default", "remote-webview"]
 
 [[app.windows]]
 width = 1280
@@ -24,7 +24,7 @@ transparent = true
 # shadow = false
 # contentProtected = true
 
-maximized = true
+# maximized = true
 
 [bundle]
 icon = [

@@ -52,7 +52,10 @@ const TabItem = React.memo(({ children, isOpened }: { children: React.ReactNode,
       setLoaded(true);
     }
   }, [isOpened])
-  return <div className="w-full h-full">
+  return <div className={clsx(
+    "w-full h-full",
+    !loaded && "bg-card"
+  )}>
     {
       loaded ?
         children
@@ -86,9 +89,8 @@ export interface Project {
 import { hideSplashScreen } from "vite-plugin-splash-screen/runtime";
 import { generateIdFromString, useMenuBar } from './index'
 import { getCurrentWindow, PhysicalPosition, PhysicalSize } from '@tauri-apps/api/window'
-import BrowserBar from './Bar'
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import Bar from './Bar'
+import { getAllWebviews, getCurrentWebview, Webview } from '@tauri-apps/api/webview'
 
 export default function Container({ Apps }: { Apps: Project }) {
   if (Apps.defaultTab.tabs.length === 0) {
@@ -113,24 +115,48 @@ export default function Container({ Apps }: { Apps: Project }) {
     }, {})
   });
   const [mounted, setMounted] = useState(false);
-  const [showSearchDialog, setShowSearchDialog] = useState(false);
-  const [showMcpDialog, setShowMcpDialog] = useState(false);
-  const [showCredentialsDialog, setShowCredentialsDialog] = useState(false);
-  const [showLocalModelDialog, setShowLocalModelDialog] = useState(false);
-  const [showCustomEndpointDialog, setShowCustomEndpointDialog] = useState(false);
-  const [showSettingsDialog, setShowSettingsDialog] = useState(false);
-  const [setupModel, setSetupModel] = useState(false);
+  const [showSearchDialog, setShowSearchDialog] = useGlobal('showSearchDialog', {initialValue: false});
+  const [showMcpDialog, setShowMcpDialog] = useGlobal('showMcpDialog', {initialValue: false});
+  const [showCredentialsDialog, setShowCredentialsDialog] = useGlobal('showCredentialsDialog', {initialValue: false});
+  const [showLocalModelDialog, setShowLocalModelDialog] = useGlobal('showLocalModelDialog', {initialValue: false});
+  const [showCustomEndpointDialog, setShowCustomEndpointDialog] = useGlobal('showCustomEndpointDialog', {initialValue: false});
+  const [showSettingsDialog, setShowSettingsDialog] = useGlobal('showSettingsDialog', {initialValue: false});
+  const [showTaskDialog, setShowTaskDialog] = useGlobal('showTaskDialog', {initialValue: false});
+  const [setupModel, setSetupModel] = useGlobal('setupModel', {initialValue: false});
+  const [mobileSettingsDropdown, setMobileSettingsDropdown] = useGlobal('mobileSettingsDropdown', { initialValue: false });
   const snaptheme = useSnapshot(Theme);
   const currentLayout = snaptheme.layout;
   const [intialzeTheme, setInitialzeTheme] = useState(false);
   const isFirstSave = useRef(true);
   const [MenuBar, setMenuBar] = useMenuBar();
 
+  useEffect(() => {
+    (async () => {
+      const all = await getAllWebviews();
+      const main = await getCurrentWebview()
+      if (!all.find((wv) => wv.label === 'webview-empty')) {
+        const position = await main.position();
+        const size = await main.size();
+        const win = await getCurrentWindow();
+        const wvw = new Webview(win, 'webview-empty', {
+          url: 'about:blank',
+          width: size.width,
+          height: size.height,
+          x: position.x,
+          y: position.y
+        })
+        await main.reparent(win)
+      }
+    })()
+  }, [])
+
   usePythonEvent('eval', async (data) => {
-    await invoke('eval_in_webview', {
-      label: data.label,
-      script: data.script,
-    });
+    if (data.label !== 'main') {
+      await invoke('eval_in_webview', {
+        label: data.label,
+        script: data.script,
+      });
+    }
   });
 
 
@@ -539,6 +565,13 @@ export default function Container({ Apps }: { Apps: Project }) {
     })()
   }, [workspace, active])
 
+  useEffect(() => {
+    (async () => {
+      const mw = await getCurrentWebview()
+      await mw.reparent(await getCurrentWindow())
+    })()
+  }, [active])
+
   useKeyEffect(() => {
     const activeElement = document.activeElement;
     const isInputFocused =
@@ -562,7 +595,7 @@ export default function Container({ Apps }: { Apps: Project }) {
     }
     try {
       lastDeleteTimeRef.current = now;
-      deleteTabWithGroupSelection(TabInfo.active);
+      (async () => { await deleteTabWithGroupSelection(active); })()
     } catch (Err) {
       console.error("Error deleting tab:", Err);
     }
@@ -575,7 +608,7 @@ export default function Container({ Apps }: { Apps: Project }) {
     }
     try {
       lastDeleteTimeRef.current = now;
-      deleteTabWithGroupSelection(TabInfo.active);
+      (async () => { await deleteTabWithGroupSelection(active); })()
     } catch (Err) {
       console.error("Error deleting tab:", Err);
     }
@@ -728,6 +761,8 @@ export default function Container({ Apps }: { Apps: Project }) {
           currentLayout === "rightToLeft" && 'flex-row-reverse',
         )}
       >
+
+
         <div data-tauri-drag-region className='absolute w-full h-8 top-0 left-0'>
 
         </div>
@@ -750,6 +785,8 @@ export default function Container({ Apps }: { Apps: Project }) {
             setShowCustomEndpointDialog={setShowCustomEndpointDialog}
             showSettingsDialog={showSettingsDialog}
             setShowSettingsDialog={setShowSettingsDialog}
+            showTaskDialog={showTaskDialog}
+            setShowTaskDialog={setShowTaskDialog}
             layout={snaptheme.layout}
             theme={snaptheme.theme}
             settings={settings}
@@ -807,7 +844,6 @@ export default function Container({ Apps }: { Apps: Project }) {
                   }
                 </MultiView>}
               </div>
-
             </div>
           </div>
           <div className='w-full flex md:hidden h-[50px] bg-[hsl(var(--bg))] absolute bottom-[0px] z-10 gap-2 items-center justify-center border-t border-[hsl(var(--chat-border))] px-3'>
@@ -889,6 +925,7 @@ export default function Container({ Apps }: { Apps: Project }) {
               <Plus className='w-5 h-5' />
             </div>
             <Dropdown
+              onOpenChange={setMobileSettingsDropdown}
               content={[
                 {
                   content: <div> Switch Workspace </div>,
@@ -988,7 +1025,12 @@ export default function Container({ Apps }: { Apps: Project }) {
                   }
                 },
               ]}>
-              <div className='hover:bg-[hsl(var(--hover))] border border-transparent hover:border-[hsl(var(--chat-border))] p-1 rounded-lg z-10'>
+              <div onPointerDown={async () => {
+                if (isTauri) {
+                  const mw = await getCurrentWebview()
+                  await mw.reparent(await getCurrentWindow())
+                }
+              }} className='hover:bg-[hsl(var(--hover))] border border-transparent hover:border-[hsl(var(--chat-border))] p-1 rounded-lg z-10'>
                 <Settings className='w-5 h-5' />
               </div>
             </Dropdown>

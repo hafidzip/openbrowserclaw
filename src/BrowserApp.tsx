@@ -1,6 +1,6 @@
-import { ArrowLeft, ArrowRight, RefreshCw, Home, Search } from 'lucide-react'
+import { ArrowLeft, ArrowRight, RefreshCw, Home, Search, Globe } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ref, type AppInfo } from "openchad-react"
+import { ref, useGlobal, usePython, usePythonEvent, type AppInfo } from "openchad-react"
 import { getCurrentWindow, cursorPosition } from '@tauri-apps/api/window'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi'
@@ -11,36 +11,235 @@ import { BrowserBar } from 'openchad-react/Bar';
 import { MenuBar } from 'openchad-react/utils/state';
 
 import { emitTo } from '@tauri-apps/api/event';
-import { invoke } from '@tauri-apps/api/core';
+import { uuidv4 } from 'openchad-react/utils';
 
 const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
 
-export default function BrowserApp(appInfo: AppInfo) {
+export function CommandPalette({
+  initialUrl,
+  pyInvoke,
+  workspace,
+  onNavigate,
+  onDismiss,
+}: {
+  initialUrl: string;
+  pyInvoke: any;
+  workspace: string | null;
+  onNavigate: (url: string) => void;
+  onDismiss: () => void;
+}) {
+  const isValidHttpUrl = (string: string) => {
+    try {
+      const url = new URL(string);
+      return url.protocol === "http:" || url.protocol === "https:";
+    } catch (_) {
+      return false;
+    }
+  }
+  const [input, setInput] = useState(initialUrl)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [suggestions, setSuggestions] = useState<any[]>([])
 
-  const [url, setUrl] = useState("https://google.com")
-  const [inputUrl, setInputUrl] = useState("https://google.com")
-  const [history, setHistory] = useState<string[]>(["https://google.com"])
-  const [currentIndex, setCurrentIndex] = useState(0)
-  const { pyInvoke, useActiveTabId, tabId } = appInfo
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (inputRef.current) {
+        inputRef.current.focus()
+        inputRef.current.select()
+      }
+    }, 50)
+    return () => clearTimeout(timer)
+  }, [])
+
+  useEffect(() => {
+    let active = true;
+    const fetchSuggestions = async () => {
+      const db = workspace ?? "global";
+      try {
+        const searchClause = input ? "WHERE metadata LIKE ?" : "";
+        const res = await pyInvoke("sqlite", {
+          db,
+          command: "query",
+          sql: `SELECT id, metadata FROM site_registry ${searchClause} ORDER BY rowid DESC LIMIT 5`,
+          params: input ? [`%${input}%`] : []
+        }) as any;
+        const rows = res?.data ?? (Array.isArray(res) ? res : []);
+        if (!Array.isArray(rows)) return;
+        const parsed = rows.map((row: any) => {
+          try {
+            return { id: row.id, ...JSON.parse(row.metadata) };
+          } catch {
+            return { id: row.id, title: "Unknown", url: row.id };
+          }
+        });
+        if (active) {
+          setSuggestions(parsed);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    fetchSuggestions();
+    return () => {
+      active = false;
+    };
+  }, [input, pyInvoke, workspace]);
+
+  const handleSearchOrNavigate = (val: string) => {
+    let target = val;
+    // Check if it's a valid URL format
+    const urlPattern = /^(https?:\/\/)?([\w\-]+\.)+[\w\-]+(\/[\w\-./?%&=]*)?$/i;
+    if (urlPattern.test(target)) {
+      if (!/^https?:\/\//i.test(target)) {
+        target = 'https://' + target;
+      }
+    } else {
+      // Treat as search query
+      target = `https://google.com/search?q=${encodeURIComponent(target)}`;
+    }
+    onNavigate(target);
+  };
+
+  return (
+    <div
+      className="w-full h-full absolute left-0 top-0 flex items-center justify-center bg-black/50 p-4 z-50"
+      onClick={onDismiss}
+    >
+      {/* Container matching the card structure in the image */}
+      <div
+        className="w-full max-w-[640px] rounded-2xl border flex flex-col p-2.5 overflow-hidden gap-1.5"
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          backgroundColor: 'hsl(var(--card))',
+          borderColor: 'hsl(var(--border))',
+          boxShadow: 'var(--kotakshadow)',
+        }}
+      >
+        {/* Search Bar Input Area */}
+        <div className="flex items-center gap-3 px-3.5 py-2.5">
+          <Search
+            size={18}
+            style={{ color: 'var(--fgColor-muted)' }}
+            className="flex-shrink-0"
+          />
+          <input
+            ref={inputRef}
+            type="text"
+            className="w-full bg-transparent border-none outline-none text-[15px] p-0 focus:ring-0 placeholder:font-normal"
+            style={{ color: 'var(--fgColor-default)' }}
+            placeholder="Search or Enter URL..."
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && input.trim()) {
+                handleSearchOrNavigate(input.trim());
+              }
+            }}
+          />
+        </div>
+
+        {/* Suggestion List */}
+        <div className="flex flex-col gap-0.5">
+          {input.trim() && input !== initialUrl && (
+            <div
+              className="w-full flex items-center justify-between px-3.5 py-2 rounded-xl cursor-pointer transition-colors duration-150"
+              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'hsl(var(--hover))'}
+              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+              onClick={() => handleSearchOrNavigate(input.trim())}
+            >
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="w-5 h-5 flex items-center justify-center flex-shrink-0">
+                  <Search size={16} style={{ color: 'var(--fgColor-muted)' }} />
+                </div>
+                <div className="flex items-baseline gap-2 min-w-0 text-[14px]">
+                  <span style={{ color: 'var(--fgColor-default)' }} className="font-medium flex-shrink-0">
+                    {isValidHttpUrl(input) ? `Open ${input}` : `Search ${input}`}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {suggestions.filter((item) => item.id !== initialUrl).map((item) => {
+            const hasIcon = typeof item.icon === "string" && (
+              item.icon.startsWith("/") ||
+              item.icon.startsWith("http") ||
+              item.icon.startsWith("data:") ||
+              /\.(png|jpg|jpeg|ico|svg|webp)$/i.test(item.icon)
+            );
+            return (
+              <div
+                key={item.id}
+                className="w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl cursor-pointer transition-colors duration-150"
+                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'hsl(var(--hover))'}
+                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
+                onClick={() => {
+                  if (item.url) {
+                    onNavigate(item.url);
+                  } else {
+                    onNavigate(item.id);
+                  }
+                }}
+              >
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-5 h-5 flex items-center justify-center flex-shrink-0">
+                    {hasIcon ? (
+                      <img src={item.icon} className="w-4 h-4 object-contain rounded-sm" alt="" />
+                    ) : (
+                      <Globe size={16} style={{ color: 'var(--fgColor-muted)' }} />
+                    )}
+                  </div>
+
+                  <div className="flex items-baseline gap-2 min-w-0 text-[14px]">
+                    <span style={{ color: 'var(--fgColor-default)' }} className="font-medium flex-shrink-0">
+                      {item.title}
+                    </span>
+                    {item.url && (
+                      <span
+                        style={{ color: 'var(--fgColor-muted)' }}
+                        className="text-[13px] font-normal truncate opacity-80"
+                      >
+                        — {item.url}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const cleanUrl = (u: string) => u.replace(/\/$/, "");
+
+export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActiveTabId, useTheme, tabId, appId, useTab }: AppInfo) {
+
+  const tabState = useTab();
+  const initialUrl = tabState?.childrenProps?.[appId]?.data?.url || "about:blank";
+
+  const [url, setUrl] = useState(initialUrl)
+  const [navState, setNavState] = useState({
+    history: [initialUrl],
+    currentIndex: 0
+  });
+  const { history, currentIndex } = navState;
+  const { layout } = useTheme()
+  const { workspace } = useWorkspace()
+
+  const [focus, setFocus] = useState(false)
+  // Mutex ref to prevent concurrent reparent IPC calls
+  const isReparenting = useRef(false)
+
+  const [loaded, setLoaded] = useState(false)
+  const [showPalette, setShowPalette] = useState(false)
+  const pendingNav = useRef<'back' | 'forward' | null>(null)
+
   const activeTabId = useActiveTabId();
-  const [proxyEnabled,setProxyEnabled]=useState(false)
 
-  const label = `webview-${appInfo.appId}${proxyEnabled ? '-proxy' : ''}`
+  const label = `webview-${appId}`
   const containerRef = useRef<HTMLDivElement>(null)
-  /**
-   * TAURI WEBVIEW ARCHITECTURE (WebviewWindow approach)
-   *
-   * The child browser is created as a `WebviewWindow` — a separate OS window
-   * with its own webview. This provides:
-   *   1. `Manager.get_webview_window()` can find it → `eval()` works from Python
-   *   2. Each window captures its own input natively → no z-order hacking
-   *   3. The child window is borderless, skip-taskbar, and positioned to match
-   *      the container div in the main window.
-   *
-   * `wantsVisible` controls whether the child window is shown. Call
-   * `hideChildWebview()` before rendering main-view overlays, then
-   * `showChildWebview()` when done.
-   */
 
   const getByLabel = async (label: string) => {
     try {
@@ -72,32 +271,56 @@ export default function BrowserApp(appInfo: AppInfo) {
     try { const wv = await getByLabel(label); await wv?.show() } catch { /* webview may not exist yet */ }
   }, [label])
 
+  const normalizeUrl = (input: string): string => {
+    const trimmed = input.trim()
+    if (!trimmed) return ''
+
+    // Already has a protocol — use as-is
+    if (/^https?:\/\//i.test(trimmed)) return trimmed
+
+    // Looks like a bare domain or domain+path (no spaces, has a dot, valid chars)
+    // e.g. "github.com", "github.com/user/repo", "www.example.co.uk"
+    const looksLikeDomain =
+      !trimmed.includes(' ') &&
+      /^[a-zA-Z0-9-]+(\.[a-zA-Z0-9-]+)+([/?#].*)?$/.test(trimmed)
+
+    if (looksLikeDomain) return `https://${trimmed}`
+
+    // Everything else → Google search
+    return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`
+  }
+
   const handleNavigate = async (newUrl: string) => {
-    await pyInvoke('eval', {
-      label,
-      script: `window.location = "${newUrl}"`
-    })
+    const url = normalizeUrl(newUrl)
+    if (!url) return
+    // JSON.stringify escapes quotes/special chars — safer than bare template literal
+    await pyInvoke('eval', { label, script: `window.location = ${JSON.stringify(url)}` })
   }
 
   const handleBack = async () => {
-    await pyInvoke('eval', {
-      label,
-      script: `window.history.back()`
-    })
+    if (currentIndex > 0) {
+      pendingNav.current = 'back'
+      await pyInvoke('eval', {
+        label,
+        script: `window.history.back()`
+      })
+    }
   }
 
   const handleForward = async () => {
-    await pyInvoke('eval', {
-      label,
-      script: `window.history.forward()`
-    })
+    if (currentIndex < history.length - 1) {
+      pendingNav.current = 'forward'
+      await pyInvoke('eval', {
+        label,
+        script: `window.history.forward()`
+      })
+    }
   }
 
   const handleRefresh = async () => {
     await pyInvoke('eval', {
       label,
-      // script: `window.location.reload()`
-      script: 'window.__TAURI__.event.emitTo("main", "msg", "hello");'
+      script: `window.location.reload()`
     })
   }
 
@@ -105,15 +328,38 @@ export default function BrowserApp(appInfo: AppInfo) {
 
   const [mounted, setMount] = useState(false)
 
-  const { element, setHandleNavigate, setHandleBack, setHandleForward, setHandleRefresh, setUrl: setBarUrl } = BrowserBar()
+  const {
+    element,
+    setHandleNavigate,
+    setHandleBack,
+    setHandleForward,
+    setHandleRefresh,
+    setUrl: setBarUrl,
+    setHandleAddressBarClick
+  } = BrowserBar({
+    canGoBack: currentIndex > 0,
+    canGoForward: currentIndex < history.length - 1
+  })
+
+  useEffect(() => {
+    if (url === "about:blank") {
+      setShowPalette(true)
+    }
+  }, [url])
 
   useEffect(() => {
     setHandleNavigate(handleNavigate)
     setHandleBack(handleBack)
     setHandleForward(handleForward)
     setHandleRefresh(handleRefresh)
+    setHandleAddressBarClick(() => {
+      setShowPalette((prev) => !prev);
+    });
+  }, [handleNavigate, handleBack, handleForward, handleRefresh, hideChildWebview, showChildWebview])
+
+  useEffect(() => {
     MenuBar.current = MenuBar.current = ref(<>{element}</>) as React.JSX.Element
-  }, [handleNavigate, handleBack, handleForward, handleRefresh, element])
+  }, [element])
 
   useEffect(() => {
     setMount(true)
@@ -122,19 +368,92 @@ export default function BrowserApp(appInfo: AppInfo) {
     }
   }, [])
 
+  // ── Consolidated reparent effect ──────────────────────────────────────────
+  // Determines the desired Z-order and calls reparent exactly once, guarded
+  // by a mutex to prevent concurrent IPC calls that would deadlock Tauri.
   useEffect(() => {
-    if (activeTabId == tabId) {
-      (async () => {
+    if (!isTauri) return
+    ;(async () => {
+      if (isReparenting.current) return
+      isReparenting.current = true
+      try {
+        const win = await getCurrentWindow()
+        const isThisTab = activeTabId === tabId
+        const wantsChildOnTop = isThisTab && focus && !showPalette
+
+        if (wantsChildOnTop && contextRef.current.wvw && contextRef.current.created) {
+          await contextRef.current.wvw.reparent(win)
+        } else {
+          const mw = await getCurrentWebview()
+          await mw.reparent(win)
+        }
+      } catch (e) {
+        console.error('[Webview] reparent failed:', e)
+      } finally {
+        isReparenting.current = false
+      }
+    })()
+  }, [focus, activeTabId, showPalette])
+
+
+  const [showSearchDialog, setShowSearchDialog] = useGlobal('showSearchDialog', { initialValue: false });
+  const [showMcpDialog, setShowMcpDialog] = useGlobal('showMcpDialog', { initialValue: false });
+  const [showCredentialsDialog, setShowCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false });
+  const [showLocalModelDialog, setShowLocalModelDialog] = useGlobal('showLocalModelDialog', { initialValue: false });
+  const [showCustomEndpointDialog, setShowCustomEndpointDialog] = useGlobal('showCustomEndpointDialog', { initialValue: false });
+  const [showSettingsDialog, setShowSettingsDialog] = useGlobal('showSettingsDialog', { initialValue: false });
+  const [showTaskDialog, setShowTaskDialog] = useGlobal('showTaskDialog', { initialValue: false });
+  const [setupModel, setSetupModel] = useGlobal('setupModel', { initialValue: false });
+  const [settingsDropdown, setSettingsDropdown] = useGlobal('settingsDropdown', { initialValue: false });
+  const [mobileSettingsDropdown, setMobileSettingsDropdown] = useGlobal('mobileSettingsDropdown', { initialValue: false });
+
+  // When any overlay dialog opens, bring main webview on top (consolidates with reparent logic)
+  useEffect(() => {
+    if (!isTauri) return
+    if (mobileSettingsDropdown || settingsDropdown || showSearchDialog || showMcpDialog || showCredentialsDialog || showLocalModelDialog || showCustomEndpointDialog || showSettingsDialog || showTaskDialog || setupModel) {
+      ;(async () => {
+        if (isReparenting.current) return
+        isReparenting.current = true
         try {
-          if (contextRef.current.wvw) {
-            await contextRef.current.wvw.reparent(await getCurrentWindow())
-          }
+          const mw = await getCurrentWebview()
+          await mw.reparent(await getCurrentWindow())
         } catch (e) {
-          console.error('[Webview] onMouseEnter failed:', e)
+          console.error('[Webview] dialog reparent failed:', e)
+        } finally {
+          isReparenting.current = false
         }
       })()
     }
-  }, [activeTabId]);
+  }, [mobileSettingsDropdown, settingsDropdown, showSearchDialog, showMcpDialog, showCredentialsDialog, showLocalModelDialog, showCustomEndpointDialog, showSettingsDialog, showTaskDialog, setupModel])
+
+  useEffect(() => {
+    (async () => {
+      const container = containerRef.current
+      const wvw = contextRef.current.wvw
+      if (!container || contextRef.current.closed || !wvw || !contextRef.current.created) return
+
+      const rect = container.getBoundingClientRect()
+      const mainWin = getCurrentWindow()
+
+      try {
+        if (rect.width === 0 && rect.height === 0) return;
+
+        // Batch the two independent IPC calls in parallel
+        const [pos, sf] = await Promise.all([
+          mainWin.innerPosition(),
+          mainWin.scaleFactor(),
+        ])
+
+        // Batch position + size + show in parallel — all are fire-and-resolve
+        await Promise.all([
+          wvw.setPosition(new LogicalPosition(rect.x, rect.y)),
+          wvw.setSize(new LogicalSize(Math.round(rect.width), Math.round(rect.height))),
+        ])
+      } catch (e) {
+        console.error("[Webview] Failed to sync size:", e)
+      }
+    })()
+  }, [layout])
 
 
   useEffect(() => {
@@ -166,34 +485,24 @@ export default function BrowserApp(appInfo: AppInfo) {
 
     // Self-healing: if the window is gone, clear handles so we stop retrying
     const clearDeadWindow = () => {
-      console.warn('[Webview] Window is gone. Clearing dead handle to stop retries.')
       context.wvw = null
       context.created = false
     }
 
     // ── Core sync ─────────────────────────────────────────────────────────────
     // syncSize is the hot-path — keep IPC calls to the minimum.
-    // `knownPos` is an optional pre-fetched position (from onMoved payload) to
-    // skip the innerPosition() round-trip entirely.
-    const syncSize = async (knownPos?: { x: number; y: number }) => {
-      // if (activeTabId !== tabId) return;
+    // Debounced via requestAnimationFrame to collapse multiple simultaneous
+    // calls (resize, onMoved, onResized, onFocusChanged) into one per frame.
+    let syncRafId: number | null = null
+    let pendingKnownPos: { x: number; y: number } | undefined
+
+    const syncSizeImpl = async (knownPos?: { x: number; y: number }) => {
       const container = containerRef.current
       const wvw = context.wvw
       if (!container || context.closed || !wvw || !context.created) return
 
       // Minimized is tracked via local state — no IPC needed here
-      if (isMinimized) {
-        // try { await wvw.minimize() } catch (e) {
-        //   if (isWindowGone(e)) { clearDeadWindow(); return }
-        //   console.error("[Webview] Failed to minimize:", e)
-        // }
-        return
-      } else {
-        // try { await wvw.unminimize() } catch (e) {
-        //   if (isWindowGone(e)) { clearDeadWindow() }
-        //   // Non-fatal — window might already be unminimized
-        // }
-      }
+      if (isMinimized) return
 
       const rect = container.getBoundingClientRect()
 
@@ -201,7 +510,6 @@ export default function BrowserApp(appInfo: AppInfo) {
         if (rect.width === 0 && rect.height === 0) return;
 
         if (knownPos) {
-          // onMoved already gave us the new position — use it directly
           mainWinPos = knownPos
         } else {
           // Batch the two independent IPC calls in parallel
@@ -213,7 +521,7 @@ export default function BrowserApp(appInfo: AppInfo) {
           scale = sf
         }
 
-        // Batch position + size + show in parallel — all are fire-and-resolve
+        // Batch position + size in parallel
         await Promise.all([
           wvw.setPosition(new LogicalPosition(rect.x, rect.y)),
           wvw.setSize(new LogicalSize(Math.round(rect.width), Math.round(rect.height))),
@@ -222,6 +530,18 @@ export default function BrowserApp(appInfo: AppInfo) {
         if (isWindowGone(e)) { clearDeadWindow(); return }
         console.error("[Webview] Failed to sync size:", e)
       }
+    }
+
+    // Debounced wrapper — at most one sync per animation frame
+    const syncSize = (knownPos?: { x: number; y: number }) => {
+      if (knownPos) pendingKnownPos = knownPos
+      if (syncRafId !== null) return // already scheduled
+      syncRafId = requestAnimationFrame(() => {
+        syncRafId = null
+        const pos = pendingKnownPos
+        pendingKnownPos = undefined
+        syncSizeImpl(pos)
+      })
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -234,7 +554,6 @@ export default function BrowserApp(appInfo: AppInfo) {
         if (!container) return
         const rect = container.getBoundingClientRect()
         if (rect.width === 0 || rect.height === 0) {
-          console.log("[Webview] Container dimensions are 0. Skipping initialization.")
           return
         }
         if (context.closed) return
@@ -255,45 +574,34 @@ export default function BrowserApp(appInfo: AppInfo) {
         const screenY = Math.round(mainWinPos.y / scale + rect.y)
 
         // ── Graceful label-exists check ────────────────────────────────────────
+        // On HMR, the old webview may still exist. Close it first to avoid
+        // referencing a stale handle that's about to be destroyed.
         const existing = await getByLabel(label)
         if (existing) {
-          context.wvw = existing
-          context.created = true
-          return
+          try {
+            await existing.close()
+            // Brief wait for the close to propagate on the Rust side
+            await new Promise(r => setTimeout(r, 100))
+          } catch { /* already gone — fine */ }
+          if (context.closed) return
         }
         // ───────────────────────────────────────────────────────────────────────
-
-        // ── Fetch proxy port for Adblock (Phase 2) ────────────────────────────
-        let proxyUrl: string | undefined = undefined;
-        try {
-          const port = await invoke<number>('adblock_proxy_port');
-          if (port) {
-            proxyUrl = `http://127.0.0.1:${port}`;
-            // console.log(`[Webview] Using adblock proxy: ${proxyUrl}`);
-          }
-        } catch (e) {
-          console.error("[Webview] Failed to get adblock proxy port:", e);
-        }
-        // ───────────────────────────────────────────────────────────────────────
-
-        console.log(`[Webview] Creating WebviewWindow (attempt ${attempt}/${MAX_RETRIES}): ${label}  url=${url}  pos=(${screenX},${screenY})  size=(${Math.round(rect.width)},${Math.round(rect.height)})`)
+        setLoaded(false);
         const wvw = new Webview(await getCurrentWindow(), label, {
           url,
           width: Math.round(rect.width),
           height: Math.round(rect.height),
           x: screenX,
-          y: screenY,
-          ...(proxyEnabled ? { proxyUrl: proxyUrl } : {}),
+          y: screenY
         })
         context.wvw = wvw
 
         wvw.once('tauri://created', async () => {
+
           context.created = true
           if (context.closed) {
             const claimed = await getByLabel(wvw.label)
-            if (claimed) {
-              console.log(`[Webview] Deferred close skipped — window claimed by another mount.`)
-            } else {
+            if (!claimed) {
               wvw.close().catch(e => console.error("[Webview] Error closing on created:", e))
             }
             return
@@ -315,6 +623,7 @@ export default function BrowserApp(appInfo: AppInfo) {
                 wvw.setPosition(new LogicalPosition(currentRect.x, currentRect.y)),
                 wvw.setSize(new LogicalSize(Math.round(currentRect.width), Math.round(currentRect.height))),
               ])
+              setFocus(false)
             }
             if (context.closed) {
               wvw.close().catch(e => console.error("[Webview] Error closing after align:", e))
@@ -328,13 +637,79 @@ export default function BrowserApp(appInfo: AppInfo) {
             context.wvw = null
             context.created = false
           }
+          setLoaded(true);
         }).catch(e => console.error("[Webview] Error registering tauri://created:", e))
+
+        await wvw.listen("update_location_title_icon", async (event) => {
+          const data = event.payload as any
+          if (data.target == label) {
+            setTitle(data.title)
+            const db = workspace ?? "global";
+            const sql = `INSERT OR REPLACE INTO site_registry (id, metadata) VALUES (?, ?)`;
+
+            await pyInvoke("sqlite", {
+              db,
+              command: "execute",
+              sql: `CREATE TABLE IF NOT EXISTS site_registry (
+                      id    TEXT PRIMARY KEY,
+                      metadata TEXT
+                    )`,
+              params: []
+            });
+            await pyInvoke("sqlite", {
+              db,
+              command: "execute",
+              sql,
+              params: [
+                data.url,
+                JSON.stringify({
+                  title: data.title ?? data.url ?? 'Untitled',
+                  url: data.url ?? 'about:blank',
+                  icon: data.icon ?? 'default',
+                  timestamp: Date.now(),
+                })
+              ]
+            });
+          }
+        })
+
+        await wvw.listen("update_location", async (event) => {
+          const data = event.payload as any
+          if (data.target == label) {
+            console.warn(data);
+            setBarUrl(data.url)
+            setUrl(data.url)
+
+            const currentPending = pendingNav.current;
+            pendingNav.current = null;
+
+            setNavState((prev) => {
+              let newIndex = prev.currentIndex;
+              let newHistory = [...prev.history];
+              const normalizedIncoming = cleanUrl(data.url);
+
+              if (currentPending === 'back') {
+                newIndex = Math.max(0, prev.currentIndex - 1);
+              } else if (currentPending === 'forward') {
+                newIndex = Math.min(prev.history.length - 1, prev.currentIndex + 1);
+              } else {
+                if (cleanUrl(prev.history[prev.currentIndex]) !== normalizedIncoming) {
+                  // Fresh navigation — always truncate forward stack
+                  newHistory = prev.history.slice(0, prev.currentIndex + 1);
+                  newHistory.push(data.url);
+                  newIndex = newHistory.length - 1;
+                }
+                // else: same URL (on_page_load re-emit / same-page reload) — no-op
+              }
+              return { history: newHistory, currentIndex: newIndex };
+            });
+          }
+        })
 
         wvw.once('tauri://error', async (e) => {
           console.error(`[Webview] Native creation error on "${label}" (attempt ${attempt}/${MAX_RETRIES}):`, e)
           const fallback = await getByLabel(label)
           if (fallback) {
-            console.log(`[Webview] Recovering from creation error — reusing "${label}".`)
             context.wvw = fallback
             context.created = true
             try {
@@ -358,7 +733,6 @@ export default function BrowserApp(appInfo: AppInfo) {
               context.wvw = null
               context.created = false
               if (attempt < MAX_RETRIES && !context.closed) {
-                console.log(`[Webview] Recovery failed. Retrying in ${RETRY_DELAY_MS}ms...`)
                 await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
                 if (!context.closed) await initWebview(attempt + 1)
               } else if (!context.closed) {
@@ -370,7 +744,6 @@ export default function BrowserApp(appInfo: AppInfo) {
             context.wvw = null
             context.created = false
             if (attempt < MAX_RETRIES && !context.closed) {
-              console.log(`[Webview] Retrying in ${RETRY_DELAY_MS}ms...`)
               await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
               if (!context.closed) await initWebview(attempt + 1)
             } else {
@@ -456,7 +829,6 @@ export default function BrowserApp(appInfo: AppInfo) {
     }).then(u => cleanups.push(u)).catch(e => console.error("[Listener] Failed to register onFocusChanged:", e))
 
     mainWin.onCloseRequested(async (event) => {
-      console.log("[Webview] Main window close requested. Cleaning up child webviews.")
       if (context.wvw) {
         event.preventDefault()
         try {
@@ -474,45 +846,38 @@ export default function BrowserApp(appInfo: AppInfo) {
     // with the main window's UI (sidebar, topbar, etc.) we simply hide the
     // child. When the cursor re-enters the browser area we show + focus it.
     //
-    const bringMainToFront = async () => {
-      if (!context.wvw || !context.created) return
-      try {
-        const mw = await getCurrentWebview()
-        await mw.reparent(await getCurrentWindow())
-      } catch (e) {
-        if (isWindowGone(e)) { clearDeadWindow(); return }
-        console.error('[Webview] hide failed:', e)
-      }
-    }
 
 
     // Cursor polling to dispatch custom events when it leaves the containerRef area
+    // Throttled to 250ms with in-flight guard to prevent IPC saturation
     let isCursorInside = false
+    let isPollInFlight = false
     const pollCursor = async () => {
-      if (context.closed) return
+      if (context.closed || isPollInFlight) return
       const container = containerRef.current
       if (!container) return
+      isPollInFlight = true
       try {
         if (isMinimized) {
           if (isCursorInside) {
             isCursorInside = false
             window.dispatchEvent(new CustomEvent('cursor-container-leave'))
-            await bringMainToFront()
+            setFocus(false)
           }
           return
         }
 
         const rect = container.getBoundingClientRect()
-        const [pos, sf, cursor] = await Promise.all([
+        // Only fetch cursor position + window position; scaleFactor is cached from init
+        const [pos, cursor] = await Promise.all([
           mainWin.innerPosition(),
-          mainWin.scaleFactor(),
           cursorPosition()
         ])
 
-        const minX = pos.x + rect.left * sf
-        const maxX = pos.x + rect.right * sf
-        const minY = pos.y + rect.top * sf
-        const maxY = pos.y + rect.bottom * sf
+        const minX = pos.x + rect.left * scale
+        const maxX = pos.x + rect.right * scale
+        const minY = pos.y + rect.top * scale
+        const maxY = pos.y + rect.bottom * scale
 
         const inside = cursor.x >= minX && cursor.x <= maxX && cursor.y >= minY && cursor.y <= maxY
         if (inside && !isCursorInside) {
@@ -521,43 +886,43 @@ export default function BrowserApp(appInfo: AppInfo) {
             detail: { x: cursor.x, y: cursor.y }
           }))
         } else if (!inside && isCursorInside) {
-          // Cursor left the container area — bring main window on top
           isCursorInside = false
           window.dispatchEvent(new CustomEvent('cursor-container-leave', {
             detail: { x: cursor.x, y: cursor.y }
           }))
-          await bringMainToFront()
+          setFocus(false)
         }
       } catch (e) {
         console.error("[Webview] Failed to poll cursor position:", e)
+      } finally {
+        isPollInFlight = false
       }
     }
 
-    const cursorInterval = setInterval(pollCursor, 100)
+    const cursorInterval = setInterval(pollCursor, 250)
     cleanups.push(() => clearInterval(cursorInterval))
 
     return () => {
       context.closed = true
+      // Cancel any pending RAF-debounced sync
+      if (syncRafId !== null) { cancelAnimationFrame(syncRafId); syncRafId = null }
       observer.disconnect()
       window.removeEventListener('resize', onResize)
       cleanups.forEach(fn => fn())
       if (context.wvw) {
         const wvwToClose = context.wvw
         if (context.created) {
-          console.log(`[Webview] Closing: ${wvwToClose.label}`)
           wvwToClose.close().catch(e => console.error(`[Webview] Error closing ${wvwToClose.label}:`, e))
-        } else {
-          console.log(`[Webview] ${wvwToClose.label} still initializing — close deferred to tauri://created.`)
         }
       }
     }
-  }, [mounted, url, isTauri, appInfo.appId, proxyEnabled])
+  }, [mounted, isTauri, appId])
 
 
   return (
     <div className={clsx(
       "flex flex-col w-full h-full relative overflow-hidden",
-      // "bg-card"
+      !loaded && "bg-card"
     )}>
 
       {/*
@@ -582,21 +947,18 @@ export default function BrowserApp(appInfo: AppInfo) {
         Example usage in a child component:
           <MyModal onOpen={hideChildWebview} onClose={showChildWebview} />
       */}
-      <div className='bg-card'>
-        <Button onClick={() => setProxyEnabled(!proxyEnabled)}>
-          {proxyEnabled ? "Disable" : "Enable"}
-        </Button>
-      </div>
+
       <div
         ref={containerRef}
         id={label}
-        onMouseEnter={async () => {
-          try {
-            if (contextRef.current.wvw) {
-              await contextRef.current.wvw.reparent(await getCurrentWindow())
-            }
-          } catch (e) {
-            console.error('[Webview] onMouseEnter failed:', e)
+        onPointerDown={async () => {
+          if (!focus) {
+            setFocus(true)
+          }
+        }}
+        onMouseOver={async () => {
+          if (!focus) {
+            setFocus(true)
           }
         }}
         className={clsx(
@@ -613,7 +975,24 @@ export default function BrowserApp(appInfo: AppInfo) {
           </div>
         )}
       </div>
-
+      {(showPalette || url === "about:blank") && (
+        <CommandPalette
+          initialUrl={url === "about:blank" ? "" : url}
+          pyInvoke={pyInvoke}
+          workspace={workspace}
+          onNavigate={(targetUrl) => {
+            setUrl(targetUrl)
+            setBarUrl(targetUrl)
+            setShowPalette(false);
+            showChildWebview();
+            handleNavigate(targetUrl);
+          }}
+          onDismiss={() => {
+            setShowPalette(false);
+            showChildWebview();
+          }}
+        />
+      )}
     </div>
   )
 }

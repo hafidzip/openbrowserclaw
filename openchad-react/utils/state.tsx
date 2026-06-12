@@ -4,6 +4,7 @@ import { cleanupPersistentIframe } from "../components/iframe-mirror";
 import * as Icons from "lucide-react"
 import type { AppInfo } from "./utils";
 import clsx from 'clsx';
+import { getAllWebviews } from '@tauri-apps/api/webview';
 
 export const LucideIcons = Icons
 
@@ -663,7 +664,7 @@ export const reorderTabsInGroup = (group: string | null, fromIndex: number, toIn
  * @returns The ID of the newly selected tab, or null if no tabs remain
  */
 
-export const deleteTabWithGroupSelection = (uuid: string): string | null => {
+export const deleteTabWithGroupSelection = async (uuid: string): Promise<string | null> => {
     const tabToDelete = TabState[uuid];
     if (!tabToDelete) return null;
     const group = tabToDelete.group;
@@ -671,6 +672,13 @@ export const deleteTabWithGroupSelection = (uuid: string): string | null => {
     const indexInGroup = groupTabs.indexOf(uuid);
     // Find next tab in the same group first
     let nextTabId: string | null = null;
+    const all = await getAllWebviews()
+    Object.keys(tabToDelete.childrenProps).map(async (t : string) => {
+        const w = all.find((wv) => wv.label === `webview-${t}`)
+        if(w){
+            await w.close()
+        }
+    }) 
     if (groupTabs.length > 1) {
         // Try to select next tab in same group
         if (indexInGroup > 0) {
@@ -687,6 +695,8 @@ export const deleteTabWithGroupSelection = (uuid: string): string | null => {
             nextTabId = ungroupedTabs.length > 0 ? ungroupedTabs[0] : allTabs[0];
         }
     }
+
+    
     // Delete the tab
     deleteTab(uuid);
     // Update active tab if the deleted tab was active

@@ -1,0 +1,22 @@
+{
+  "identifier": "remote-webview",
+  "description": "Allow remote webviews to emit events",
+  "windows": [
+    "main",
+    "webview-*",
+    "temp-zorder-*"
+  ],
+  "webviews": [
+    "webview-*",
+    "temp-zorder-*"
+  ],
+  "remote": {
+    "urls": [
+      "https://**",
+      "http://**"
+    ]
+  },
+  "permissions": [
+    "core:event:default"
+  ]
+}

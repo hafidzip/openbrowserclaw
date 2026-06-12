@@ -1,6 +1,6 @@
 import Container, { type Project } from "./Container"
 import type { AppInfo } from "./utils/utils"
-import { usePython } from "./components/usePython"
+import { usePython, usePythonEvent } from "./components/usePython"
 import { sha256 } from 'js-sha256';
 import { useDatabaseImplBase } from "./components/useDatabase/useDatabase"
 import { useFileImpl } from "./components/useFile";
@@ -14,6 +14,7 @@ import ContainerOverlayApp from "./ContainerOverlayApp";
 import { proxy, ref, useSnapshot } from "valtio";
 import { MenuBar, Theme, Workspace } from "./utils/state";
 import { useEffect } from "react";
+import { uuidv4 } from "./utils";
 
 function generateIdFromString(input: string): string {
     /**
@@ -103,9 +104,11 @@ export {
     useGlobal,
     generateIdFromString,
     usePython,
+    usePythonEvent, 
     OpenChadIcon,
     useTheme,
     useEvent,
+    uuidv4,
     type AppInfo,
     type Project,
     type MessageState

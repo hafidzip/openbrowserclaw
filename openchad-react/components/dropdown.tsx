@@ -70,7 +70,7 @@ export function Dropdown({ children, content, align = "start", className = "w-56
           </Command>
           <DropdownMenuSeparator />
         </>}
-        <ScrollArea className="max-h-[300px] overflow-y-auto">
+        <ScrollArea className="max-h-[400px] overflow-y-auto">
           {content.map((item, index) => (
             <Fragment key={index}>
               {item.children?.length ? (

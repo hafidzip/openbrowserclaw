@@ -681,6 +681,12 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
     request = body.get("request") or {}   
     try:
         match command:
+            case 'emit':
+                name = body.get("name")
+                payload = body.get("payload")
+                if name and payload:
+                    await event_emitter.emit(name, payload)
+                return {'result': 'ok'}
             case 'eval': 
                 script = request.get("script")
                 label = request.get("label")
@@ -1401,8 +1407,22 @@ async def handle_ws_command(conn_id: str, data: dict, send_func: Callable[[dict]
     msg_id = data.get("id", "")
     try:
         match api:
-            case 'eval':
-                return { "error": "eval command is not supported from websocket" }
+            case 'emit':
+                name = body.get("name")
+                payload = body.get("payload")
+                if name and payload:                   
+                    await event_emitter.emit(name, payload)
+                return {'result': 'ok'}
+            case 'eval': 
+                script = body.get("script")
+                label = body.get("label")
+                if label and script: 
+                    try:
+                        await event_emitter.emit("eval", {"script": script, "label": label})
+                    except Exception as e:
+                        logger.error(f"Error evaluating script in window {label}: {e}", exc_info=True)
+                        return {"error": str(e)}
+                return {'result': 'ok'}
             case "stream_ready":
                 return {"message": "OK"}
             case "sqlite":
@@ -1935,6 +1955,7 @@ def main() -> int:
     # Ensure project root is correct for Tauri
     SRC_TAURI_DIR = Path(_PROJECT_ROOT)
     import concurrent.futures
+    os.environ["BASE_URL"] = "localhost:" + (VITE_PORT if DEV_MODE else str(port))
     with start_blocking_portal("asyncio") as portal:
         try:
             with portal.wrap_async_context_manager(_get_task_group()) as task_group:

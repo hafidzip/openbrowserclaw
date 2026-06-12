@@ -6,18 +6,27 @@ import { useRef, useState } from 'react';
 const isTauriEnv = typeof window !== "undefined" && !!(window as any).__TAURI__;
 
 
-export function BrowserBar() {
+export function BrowserBar({
+  canGoBack,
+  canGoForward
+}: {
+  canGoBack: boolean;
+  canGoForward: boolean;
+}) {
   const [url, setUrl] = useState("");
+  
   const handleNavigateRef = useRef<((url: string) => void) | undefined>(undefined);
-  const handleBackRef    = useRef<(() => void) | undefined>(undefined);
+  const handleBackRef = useRef<(() => void) | undefined>(undefined);
   const handleForwardRef = useRef<(() => void) | undefined>(undefined);
   const handleRefreshRef = useRef<(() => void) | undefined>(undefined);
+  const handleAddressBarClickRef = useRef<(() => void) | undefined>(undefined);
 
   // Refs are mutated silently — no re-render, so no infinite loop
   const setHandleNavigate = (fn: (url: string) => void) => { handleNavigateRef.current = fn; };
-  const setHandleBack    = (fn: () => void) => { handleBackRef.current    = fn; };
+  const setHandleBack = (fn: () => void) => { handleBackRef.current = fn; };
   const setHandleForward = (fn: () => void) => { handleForwardRef.current = fn; };
   const setHandleRefresh = (fn: () => void) => { handleRefreshRef.current = fn; };
+  const setHandleAddressBarClick = (fn: () => void) => { handleAddressBarClickRef.current = fn; };
 
 
   return {
@@ -28,10 +37,26 @@ export function BrowserBar() {
           "flex items-center gap-1.5 pointer-events-auto",
         )
       }>
-        <div onClick={() => { handleBackRef.current?.(); }} className="flex items-center justify-center rounded-lg w-7 h-7 hover:bg-white/10 dark:hover:bg-white/5 transition-colors cursor-pointer text-zinc-400 hover:text-zinc-200">
+        <div 
+          onClick={() => { if (canGoBack) handleBackRef.current?.(); }} 
+          className={clsx(
+            "flex items-center justify-center rounded-lg w-7 h-7 transition-colors",
+            canGoBack 
+              ? "hover:bg-white/10 dark:hover:bg-white/5 cursor-pointer text-zinc-400 hover:text-zinc-200" 
+              : "opacity-40 cursor-not-allowed text-zinc-600"
+          )}
+        >
           <ArrowLeft className="w-4 h-4" />
         </div>
-        <div onClick={() => { handleForwardRef.current?.(); }} className="flex items-center justify-center rounded-lg w-7 h-7 hover:bg-white/10 dark:hover:bg-white/5 transition-colors cursor-pointer text-zinc-400 hover:text-zinc-200">
+        <div 
+          onClick={() => { if (canGoForward) handleForwardRef.current?.(); }} 
+          className={clsx(
+            "flex items-center justify-center rounded-lg w-7 h-7 transition-colors",
+            canGoForward 
+              ? "hover:bg-white/10 dark:hover:bg-white/5 cursor-pointer text-zinc-400 hover:text-zinc-200" 
+              : "opacity-40 cursor-not-allowed text-zinc-600"
+          )}
+        >
           <ArrowRight className="w-4 h-4" />
         </div>
         <div onClick={() => { handleRefreshRef.current?.(); }} className="flex items-center justify-center rounded-lg w-7 h-7 hover:bg-white/10 dark:hover:bg-white/5 transition-colors cursor-pointer text-zinc-400 hover:text-zinc-200">
@@ -40,29 +65,21 @@ export function BrowserBar() {
       </div>
 
       {/* Pill-shaped Address Bar (Middle) */}
-      <div className="flex-1 max-w-[480px] mx-4 pointer-events-auto">
+      <div className="flex-1 max-w-[480px] mx-4 pointer-events-none">
         <div className={clsx(
-          "w-full h-7 rounded-full flex items-center px-3 gap-2 transition-all",
+          "w-full h-7 rounded-full flex items-center px-3 gap-2 transition-all pointer-events-none",
         )}>
-          <Link2 className="w-3.5 h-3.5 text-zinc-500 flex-shrink-0" />
-          <input
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                handleNavigateRef.current?.(url);
-              }
-            }}
-            type="text"
-            placeholder="Search or Enter URL..."
+          <div 
+            onClick={() => { handleAddressBarClickRef.current?.(); }}
             className={clsx(
-              "bg-accent/5 rounded-lg px-4 border-none outline-none text-[11px] w-full h-full flex-1",
+              url.length > 0 && 'text-center text-accent/50 hover:text-accent hover:bg-accent/5 cursor-pointer w-100 text-xs rounded-lg  px-2 py-1 truncate pointer-events-auto',
             )}
-          />
-          <SlidersHorizontal className="w-3.5 h-3.5 text-zinc-500 hover:text-zinc-400 cursor-pointer flex-shrink-0 transition-colors" />
+          >
+            {url}
+          </div>
         </div>
       </div>
-    </>, setHandleNavigate, setHandleBack, setHandleForward, setHandleRefresh, setUrl
+    </>, setHandleNavigate, setHandleBack, setHandleForward, setHandleRefresh, setUrl, setHandleAddressBarClick
   }
 }
 
@@ -93,9 +110,7 @@ export default function Bar({ children, theme, isRightToLeft }: { children?: Rea
       )}
     >
 
-      {children ? children : <div className='flex-1'>
-
-      </div>}
+      {children ? children : <div className='flex-1'></div>}
 
       {/* Right Controls */}
       <div className={clsx(
