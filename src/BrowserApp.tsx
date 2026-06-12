@@ -430,8 +430,8 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
     (async () => {
       const container = containerRef.current
       const wvw = contextRef.current.wvw
-      if (!container || !wvw ) return
-      
+      if (!container || !wvw) return
+
       const rect = container.getBoundingClientRect()
 
       try {
@@ -536,161 +536,30 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
 
     // ─────────────────────────────────────────────────────────────────────────
 
-    const initWebview = async (attempt = 1): Promise<void> => {
-      const MAX_RETRIES = 3
-      const RETRY_DELAY_MS = 500
-      try {
-        const container = containerRef.current
-        if (!container) return
-        const rect = container.getBoundingClientRect()
-        if (rect.width === 0 || rect.height === 0) {
-
-          return
-        }
-        if (context.closed) return
-
-        // Fetch position + scale in parallel
-        try {
-          const [pos, sf] = await Promise.all([
-            mainWin.innerPosition(),
-            mainWin.scaleFactor(),
-          ])
-          mainWinPos = pos
-          scale = sf
-        } catch (e) {
-          console.error("[Webview] Failed to get main window position:", e)
-        }
-
-        const screenX = Math.round(mainWinPos.x / scale + rect.x)
-        const screenY = Math.round(mainWinPos.y / scale + rect.y)
-
-        // ── Graceful label-exists check ────────────────────────────────────────
-        const existing = await getByLabel(label)
-        if (existing) {
-          context.wvw = existing
-          context.created = true
-          setFocus(false);
-          setRefresh(prev => (prev + 1) % 2)
-          setLoaded(true);
-          return
-        }
-        // ───────────────────────────────────────────────────────────────────────
-        setLoaded(false);
-        const wvw = new Webview(await getCurrentWindow(), label, {
-          url,
-          width: Math.round(rect.width),
-          height: Math.round(rect.height),
-          x: screenX,
-          y: screenY
-        })
-        context.wvw = wvw
-
-        wvw.once('tauri://created', async () => {
-
-          context.created = true
+    (async () => {
+      // ── Graceful label-exists check ────────────────────────────────────────
+      const existing = await getByLabel(label)
+      if (existing) {
+        context.wvw = existing
+        context.created = true
+        setFocus(false);
+        setRefresh(prev => (prev + 1) % 2)
+        setLoaded(true);
+      } else {
+        const initWebview = async (attempt = 1): Promise<void> => {
+          const MAX_RETRIES = 3
+          const RETRY_DELAY_MS = 500
           try {
-            // Re-sync position after creation — batch independent calls
-            const [pos, sf, minimized] = await Promise.all([
-              mainWin.innerPosition(),
-              mainWin.scaleFactor(),
-              mainWin.isMinimized(),
-            ])
-            mainWinPos = pos
-            scale = sf
-            isMinimized = minimized
+            const container = containerRef.current
+            if (!container) return
+            const rect = container.getBoundingClientRect()
+            if (rect.width === 0 || rect.height === 0) {
 
-            const currentRect = containerRef.current?.getBoundingClientRect()
-            if (currentRect && currentRect.width > 0 && currentRect.height > 0) {
-              await Promise.all([
-                wvw.setPosition(new LogicalPosition(currentRect.x, currentRect.y)),
-                wvw.setSize(new LogicalSize(Math.round(currentRect.width), Math.round(currentRect.height))),
-                setFocus(false),
-                setRefresh(prev => (prev + 1) % 2),
-              ])
+              return
             }
-            if (minimized) {
+            if (context.closed) return
 
-            }
-          } catch (e) {
-            console.error("[Webview] Error positioning after creation:", e)
-            context.wvw = null
-            context.created = false
-          }
-          setLoaded(true);
-        }).catch(e => console.error("[Webview] Error registering tauri://created:", e))
-
-        await wvw.listen("update_location_title_icon", async (event) => {
-          const data = event.payload as any
-          if (data.target == label) {
-            setTitle(data.title)
-            const db = workspace ?? "global";
-            const sql = `INSERT OR REPLACE INTO site_registry (id, metadata) VALUES (?, ?)`;
-
-            await pyInvoke("sqlite", {
-              db,
-              command: "execute",
-              sql: `CREATE TABLE IF NOT EXISTS site_registry (
-                      id    TEXT PRIMARY KEY,
-                      metadata TEXT
-                    )`,
-              params: []
-            });
-            await pyInvoke("sqlite", {
-              db,
-              command: "execute",
-              sql,
-              params: [
-                data.url,
-                JSON.stringify({
-                  title: data.title ?? data.url ?? 'Untitled',
-                  url: data.url ?? 'about:blank',
-                  icon: data.icon ?? 'default',
-                  timestamp: Date.now(),
-                })
-              ]
-            });
-          }
-        })
-
-        await wvw.listen("update_location", async (event) => {
-          const data = event.payload as any
-          if (data.target == label) {
-            console.warn(data);
-            setBarUrl(data.url)
-            setUrl(data.url)
-
-            const currentPending = pendingNav.current;
-            pendingNav.current = null;
-
-            setNavState((prev) => {
-              let newIndex = prev.currentIndex;
-              let newHistory = [...prev.history];
-              const normalizedIncoming = cleanUrl(data.url);
-
-              if (currentPending === 'back') {
-                newIndex = Math.max(0, prev.currentIndex - 1);
-              } else if (currentPending === 'forward') {
-                newIndex = Math.min(prev.history.length - 1, prev.currentIndex + 1);
-              } else {
-                if (cleanUrl(prev.history[prev.currentIndex]) !== normalizedIncoming) {
-                  // Fresh navigation — always truncate forward stack
-                  newHistory = prev.history.slice(0, prev.currentIndex + 1);
-                  newHistory.push(data.url);
-                  newIndex = newHistory.length - 1;
-                }
-                // else: same URL (on_page_load re-emit / same-page reload) — no-op
-              }
-              return { history: newHistory, currentIndex: newIndex };
-            });
-          }
-        })
-
-        wvw.once('tauri://error', async (e) => {
-          console.error(`[Webview] Native creation error on "${label}" (attempt ${attempt}/${MAX_RETRIES}):`, e)
-          const fallback = await getByLabel(label)
-          if (fallback) {
-            context.wvw = fallback
-            context.created = true
+            // Fetch position + scale in parallel
             try {
               const [pos, sf] = await Promise.all([
                 mainWin.innerPosition(),
@@ -698,45 +567,178 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
               ])
               mainWinPos = pos
               scale = sf
-              const currentRect = containerRef.current?.getBoundingClientRect()
-              if (currentRect) {
-                const sx = Math.round(mainWinPos.x / scale + currentRect.x)
-                const sy = Math.round(mainWinPos.y / scale + currentRect.y)
-                // await Promise.all([
-                //   fallback.setPosition(new LogicalPosition(currentRect.x, currentRect.y)),
-                //   fallback.setSize(new LogicalSize(Math.round(currentRect.width), Math.round(currentRect.height))),
-                // ])
-              }
-            } catch (err) {
-              console.error("[Webview] Failed to recover existing webview:", err)
-              context.wvw = null
-              context.created = false
-              if (attempt < MAX_RETRIES && !context.closed) {
-                await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
-                if (!context.closed) await initWebview(attempt + 1)
-              } else if (!context.closed) {
-                console.error(`[Webview] All ${MAX_RETRIES} attempts exhausted. WebviewWindow could not be created.`)
-              }
+            } catch (e) {
+              console.error("[Webview] Failed to get main window position:", e)
             }
-          } else {
-            console.warn(`[Webview] No fallback window found for "${label}". Clearing dead handle.`)
-            context.wvw = null
-            context.created = false
-            if (attempt < MAX_RETRIES && !context.closed) {
-              await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
-              if (!context.closed) await initWebview(attempt + 1)
-            } else {
-              console.error(`[Webview] All ${MAX_RETRIES} attempts exhausted. WebviewWindow could not be created.`)
-            }
+
+            const screenX = Math.round(mainWinPos.x / scale + rect.x)
+            const screenY = Math.round(mainWinPos.y / scale + rect.y)
+
+
+            // ───────────────────────────────────────────────────────────────────────
+            setLoaded(false);
+            const wvw = new Webview(await getCurrentWindow(), label, {
+              url,
+              width: Math.round(rect.width),
+              height: Math.round(rect.height),
+              x: screenX,
+              y: screenY
+            })
+            context.wvw = wvw
+
+            wvw.once('tauri://created', async () => {
+
+              context.created = true
+              try {
+                // Re-sync position after creation — batch independent calls
+                const [pos, sf, minimized] = await Promise.all([
+                  mainWin.innerPosition(),
+                  mainWin.scaleFactor(),
+                  mainWin.isMinimized(),
+                ])
+                mainWinPos = pos
+                scale = sf
+                isMinimized = minimized
+
+                const currentRect = containerRef.current?.getBoundingClientRect()
+                if (currentRect && currentRect.width > 0 && currentRect.height > 0) {
+                  await Promise.all([
+                    wvw.setPosition(new LogicalPosition(currentRect.x, currentRect.y)),
+                    wvw.setSize(new LogicalSize(Math.round(currentRect.width), Math.round(currentRect.height))),
+                    setFocus(false),
+                    setRefresh(prev => (prev + 1) % 2),
+                  ])
+                }
+                if (minimized) {
+
+                }
+              } catch (e) {
+                console.error("[Webview] Error positioning after creation:", e)
+                context.wvw = null
+                context.created = false
+              }
+              setLoaded(true);
+            }).catch(e => console.error("[Webview] Error registering tauri://created:", e))
+
+            await wvw.listen("update_location_title_icon", async (event) => {
+              const data = event.payload as any
+              if (data.target == label) {
+                setTitle(data.title)
+                const db = workspace ?? "global";
+                const sql = `INSERT OR REPLACE INTO site_registry (id, metadata) VALUES (?, ?)`;
+
+                await pyInvoke("sqlite", {
+                  db,
+                  command: "execute",
+                  sql: `CREATE TABLE IF NOT EXISTS site_registry (
+                      id    TEXT PRIMARY KEY,
+                      metadata TEXT
+                    )`,
+                  params: []
+                });
+                await pyInvoke("sqlite", {
+                  db,
+                  command: "execute",
+                  sql,
+                  params: [
+                    data.url,
+                    JSON.stringify({
+                      title: data.title ?? data.url ?? 'Untitled',
+                      url: data.url ?? 'about:blank',
+                      icon: data.icon ?? 'default',
+                      timestamp: Date.now(),
+                    })
+                  ]
+                });
+              }
+            })
+
+            await wvw.listen("update_location", async (event) => {
+              const data = event.payload as any
+              if (data.target == label) {
+                console.warn(data);
+                setBarUrl(data.url)
+                setUrl(data.url)
+
+                const currentPending = pendingNav.current;
+                pendingNav.current = null;
+
+                setNavState((prev) => {
+                  let newIndex = prev.currentIndex;
+                  let newHistory = [...prev.history];
+                  const normalizedIncoming = cleanUrl(data.url);
+
+                  if (currentPending === 'back') {
+                    newIndex = Math.max(0, prev.currentIndex - 1);
+                  } else if (currentPending === 'forward') {
+                    newIndex = Math.min(prev.history.length - 1, prev.currentIndex + 1);
+                  } else {
+                    if (cleanUrl(prev.history[prev.currentIndex]) !== normalizedIncoming) {
+                      // Fresh navigation — always truncate forward stack
+                      newHistory = prev.history.slice(0, prev.currentIndex + 1);
+                      newHistory.push(data.url);
+                      newIndex = newHistory.length - 1;
+                    }
+                    // else: same URL (on_page_load re-emit / same-page reload) — no-op
+                  }
+                  return { history: newHistory, currentIndex: newIndex };
+                });
+              }
+            })
+
+            wvw.once('tauri://error', async (e) => {
+              console.error(`[Webview] Native creation error on "${label}" (attempt ${attempt}/${MAX_RETRIES}):`, e)
+              const fallback = await getByLabel(label)
+              if (fallback) {
+                context.wvw = fallback
+                context.created = true
+                try {
+                  const [pos, sf] = await Promise.all([
+                    mainWin.innerPosition(),
+                    mainWin.scaleFactor(),
+                  ])
+                  mainWinPos = pos
+                  scale = sf
+                  const currentRect = containerRef.current?.getBoundingClientRect()
+                  if (currentRect) {
+                    const sx = Math.round(mainWinPos.x / scale + currentRect.x)
+                    const sy = Math.round(mainWinPos.y / scale + currentRect.y)
+                    // await Promise.all([
+                    //   fallback.setPosition(new LogicalPosition(currentRect.x, currentRect.y)),
+                    //   fallback.setSize(new LogicalSize(Math.round(currentRect.width), Math.round(currentRect.height))),
+                    // ])
+                  }
+                } catch (err) {
+                  console.error("[Webview] Failed to recover existing webview:", err)
+                  context.wvw = null
+                  context.created = false
+                  if (attempt < MAX_RETRIES && !context.closed) {
+                    await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
+                    if (!context.closed) await initWebview(attempt + 1)
+                  } else if (!context.closed) {
+                    console.error(`[Webview] All ${MAX_RETRIES} attempts exhausted. WebviewWindow could not be created.`)
+                  }
+                }
+              } else {
+                console.warn(`[Webview] No fallback window found for "${label}". Clearing dead handle.`)
+                context.wvw = null
+                context.created = false
+                if (attempt < MAX_RETRIES && !context.closed) {
+                  await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
+                  if (!context.closed) await initWebview(attempt + 1)
+                } else {
+                  console.error(`[Webview] All ${MAX_RETRIES} attempts exhausted. WebviewWindow could not be created.`)
+                }
+              }
+            }).catch(e => console.error("[Webview] Error registering tauri://error:", e))
+
+          } catch (e) {
+            console.error("[Webview] Failed to initialize:", e)
           }
-        }).catch(e => console.error("[Webview] Error registering tauri://error:", e))
-
-      } catch (e) {
-        console.error("[Webview] Failed to initialize:", e)
+        }
+        await initWebview()
       }
-    }
-
-    initWebview()
+    })()
 
     // Stable wrapper so add/removeEventListener reference the same function
     const onResize = () => syncSize()

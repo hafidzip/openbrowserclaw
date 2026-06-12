@@ -279,7 +279,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
                 }} className={clsx(
                     "overflow-visible flex flex-col items-center absolute top-1/2 transform -translate-y-1/2",
                     (width < 500 || height < 500) ? 'gap-1' : (width < 800 || height < 650 || messageState.initialized) ? 'gap-5' : 'gap-1',
-                    messageState.initialized && "w-full h-full",
+                    messageState.initialized ? "w-full h-full" : "w-full",
                 )}>
                     <div
                         ref={scrollAreaRef}

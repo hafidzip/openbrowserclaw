@@ -250,18 +250,6 @@ export default function SiteRegistry({
                     data: { url: tab.url || tab.id }
                 }
             };
-            const dummyKeys = ["default1", "default2", "default3"];
-            let dummyIdx = 0;
-            while (Object.keys(childrenProps).length < 4) {
-                const dKey = dummyKeys[dummyIdx] || `default${dummyIdx + 1}`;
-                childrenProps[dKey] = {
-                    icon: "default",
-                    title: null,
-                    appname: "select-tab",
-                    data: null,
-                };
-                dummyIdx++;
-            }
             addTab({
                 title: tab.title,
                 iconOverride: tab.icon || "default",

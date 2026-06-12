@@ -9,7 +9,7 @@ import { Spinner } from "./ui/spinner";
 import clsx from "clsx";
 import { useGlobal } from "./useGlobal";
 import { useDatabaseImpl } from "./useDatabase";
-import { generateIdFromString } from "../index";
+import { generateIdFromString, uuidv4 } from "../index";
 import { Button } from "./ui";
 
 
@@ -18,6 +18,20 @@ const truncate = (text: string, length = 50) => {
     if (text.length <= length) return text;
     return text.slice(0, length) + "...";
 };
+
+const TabIcon = memo(({ iconVal }: { iconVal: string | undefined }) => {
+    if (
+        typeof iconVal === "string" &&
+        (iconVal.startsWith("/") ||
+            iconVal.startsWith("http") ||
+            iconVal.startsWith("data:") ||
+            /\.(png|jpg|jpeg|ico|svg|webp)$/i.test(iconVal))
+    ) {
+        return <img src={iconVal} className="w-5 h-5 object-contain rounded-sm" alt="" />;
+    }
+    const Icon = (LucideIcons as any)[iconVal as string] || LucideIcons.Globe;
+    return <Icon className="w-4 h-4" />;
+});
 
 const TabRow = memo((
     { tab, isSelected, onToggle, onOpen, onDelete }: {
@@ -35,28 +49,16 @@ const TabRow = memo((
         onDelete(tab.id);
     }, [tab.id, onDelete]);
 
-    const tbName = generateIdFromString(tab.id + "/" + "message_state");
-    const [messageState] = useDatabaseImpl<any>(tbName, {
-        initialValue: {
-            title: null,
-            activeId: "",
-            errorMsg: "",
-            initialized: false,
-            isStreaming: false,
-            context: "",
-        },
-    });
-
     return (
         <TableRow className="border-accent/5 hover:bg-accent/5 transition-colors cursor-pointer h-12 group">
             <TableCell className="w-10 cursor-default" onClick={e => e.stopPropagation()}>
                 <Checkbox checked={isSelected} onCheckedChange={handleToggle} />
             </TableCell>
             <TableCell onClick={handleOpen} className="w-8 text-xs text-muted-foreground">
-                {messageState.isStreaming ? <Spinner /> : <div></div>}
+                <TabIcon iconVal={tab.icon} />
             </TableCell>
             <TableCell onClick={handleOpen} className="max-w-[200px] truncate font-medium">
-                {truncate(tab.query) || "Untitled Tab"}
+                {truncate(tab.name) || "Untitled"}
             </TableCell>
             <TableCell onClick={handleOpen} className="text-[11px] text-muted-foreground whitespace-nowrap flex justify-end items-center gap-2 pr-4 h-12">
                 <span className="opacity-60">{formatTaskTime(tab.timestamp)}</span>
@@ -83,6 +85,8 @@ export default function ControllableBrowsers({
     const [tabs, setTabs] = useState<any[]>([]);
     const [loading, setLoading] = useState(false);
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+    const [isAdding, setIsAdding] = useState(false);
+    const [newBrowserName, setNewBrowserName] = useState("");
     // Refs  live values readable from async callbacks without stale closures
     const pageRef = useRef(0);
     const hasMoreRef = useRef(true);
@@ -98,6 +102,45 @@ export default function ControllableBrowsers({
     const setLoadingBoth = (val: boolean) => {
         loadingRef.current = val;
         setLoading(val);
+    };
+    const handleAddBrowser = async () => {
+        const name = newBrowserName.trim();
+        if (!name) return;
+        try {
+            const db = workspace ?? "global";
+            const newId = `agent-${uuidv4()}`;
+            const metadata = {
+                name: name,
+                url: "about:blank",
+                icon: "Drama",
+                timestamp: Date.now()
+            };
+
+            await pyInvoke("sqlite", {
+                db,
+                command: "execute",
+                sql: `CREATE TABLE IF NOT EXISTS controllable_browsers (
+                    id TEXT PRIMARY KEY,
+                    metadata TEXT
+                )`,
+                params: []
+            });
+
+            await pyInvoke("sqlite", {
+                db,
+                command: "execute",
+                sql: `INSERT INTO controllable_browsers (id, metadata) VALUES (?, ?)`,
+                params: [newId, JSON.stringify(metadata)]
+            });
+
+            setIsAdding(false);
+            setNewBrowserName("");
+            pageRef.current = 0;
+            hasMoreRef.current = true;
+            loadTabs(0, true);
+        } catch (e) {
+            console.error("Failed to add controllable browser", e);
+        }
     };
     //  Core fetch (no stale-closure risk; reads from refs) 
     const loadTabs = useCallback(async (pageNum: number, reset: boolean) => {
@@ -202,7 +245,7 @@ export default function ControllableBrowsers({
                             if (typeof val === 'string') {
                                 try {
                                     val = JSON.parse(val);
-                                } catch {}
+                                } catch { }
                             }
                             if (row.id === 'isStreaming') {
                                 isStreaming = !!val;
@@ -241,9 +284,20 @@ export default function ControllableBrowsers({
     //  Open selected / open single 
     const openTab = (id: string) => {
         const tab = tabsRef.current.find((t: any) => t.id === id);
-        if (tab) {
-            setChatId(tab.id)
-        }
+        const childrenProps: Record<string, any> = {
+            [tab.id]: {
+                icon: tab.icon || "default",
+                title: tab.name,
+                appname: "main-app",
+                data: { url: tab.url || tab.id }
+            }
+        };
+        addTab({
+            title: tab.name,
+            iconOverride: tab.icon || "default",
+            layout: "single",
+            childrenProps
+        });
     };
     const handleOpenId = useCallback((id: string) => {
         openTab(id);
@@ -254,13 +308,6 @@ export default function ControllableBrowsers({
     //  Render 
     const allSelected = tabs.length > 0 && selectedIds.size === tabs.length;
     const isEmpty = tabs.length === 0;
-    const [, setIsEditing] = useGlobal('overlay-editing', { initialValue: false });
-    const [, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: false });
-    const [, setShowTaskDialog] = useGlobal('showTaskDialog', { initialValue: false })
-    const [, setShowMcpDialog] = useGlobal('showMcpDialog', { initialValue: false })
-    const [, setShowCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false })
-    const [, setShowLocalModelDialog] = useGlobal('showLocalModelDialog', { initialValue: false })
-    const [, setShowCustomEndpointDialog] = useGlobal('showCustomEndpointDialog', { initialValue: false })
 
     return (
         <>
@@ -269,21 +316,45 @@ export default function ControllableBrowsers({
                     <Checkbox checked={allSelected} onCheckedChange={toggleSelectAll} />
                 </div>
                 <div className="flex items-center text-xs opacity-50 gap-1">
-                    <MessageCircleWarning size={10}/>
+                    <MessageCircleWarning size={10} />
                     <span>These browsers can be controlled by an agent and stay active in the background.</span>
                 </div>
                 <div className="flex-1" />
-                <Button variant="secondary" className="flex items-center justify-center" size="sm" onClick={() => {
-                    setIsCreateTask(true);
-                    setIsEditing(false);
-                    setShowTaskDialog(false);
-                    setShowMcpDialog(false);
-                    setShowCredentialsDialog(false);
-                    setShowCustomEndpointDialog(false);
-                    setShowLocalModelDialog(false);
-                }}>
-                    Add Browser <Plus className="w-6 h-6" />
-                </Button>
+                {isAdding ? (
+                    <div className="flex items-center gap-2">
+                        <input
+                            type="text"
+                            placeholder="Browser name..."
+                            value={newBrowserName}
+                            onChange={(e) => setNewBrowserName(e.target.value)}
+                            className="px-2 py-1 text-xs rounded border outline-none bg-accent/5 border-accent/20 text-foreground"
+                            onKeyDown={async (e) => {
+                                if (e.key === 'Enter') {
+                                    await handleAddBrowser();
+                                } else if (e.key === 'Escape') {
+                                    setIsAdding(false);
+                                    setNewBrowserName("");
+                                }
+                            }}
+                            autoFocus
+                        />
+                        <Button variant="secondary" size="sm" onClick={handleAddBrowser}>
+                            Add
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => {
+                            setIsAdding(false);
+                            setNewBrowserName("");
+                        }}>
+                            Cancel
+                        </Button>
+                    </div>
+                ) : (
+                    <Button variant="secondary" className="flex items-center justify-center" size="sm" onClick={() => {
+                        setIsAdding(true);
+                    }}>
+                        Add Browser <Plus className="w-6 h-6" />
+                    </Button>
+                )}
             </div>
             <ScrollArea
                 className="flex-1 -mx-6 w-[97.5%] mx-auto border-t border-b border-[hsl(var(--chat-border))]"
