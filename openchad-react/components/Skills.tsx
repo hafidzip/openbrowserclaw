@@ -35,25 +35,10 @@ const TabRow = memo((
         onDelete(tab.id);
     }, [tab.id, onDelete]);
 
-    const tbName = generateIdFromString(tab.id + "/" + "message_state");
-    const [messageState] = useDatabaseImpl<any>(tbName, {
-        initialValue: {
-            title: null,
-            activeId: "",
-            errorMsg: "",
-            initialized: false,
-            isStreaming: false,
-            context: "",
-        },
-    });
-
     return (
         <TableRow className="border-accent/5 hover:bg-accent/5 transition-colors cursor-pointer h-12 group">
             <TableCell className="w-10 cursor-default" onClick={e => e.stopPropagation()}>
                 <Checkbox checked={isSelected} onCheckedChange={handleToggle} />
-            </TableCell>
-            <TableCell onClick={handleOpen} className="w-8 text-xs text-muted-foreground">
-                {messageState.isStreaming ? <Spinner /> : <div></div>}
             </TableCell>
             <TableCell onClick={handleOpen} className="max-w-[200px] truncate font-medium">
                 {truncate(tab.query) || "Untitled Tab"}
@@ -184,40 +169,6 @@ export default function Skiils({
         try {
             const db = workspace ?? "global";
             const placeholders = ids.map(() => "?").join(",");
-            for (const i of ids) {
-                try {
-                    const initTb = generateIdFromString(i + "/" + "message_state");
-                    const res = await pyInvoke("sqlite", {
-                        db: db,
-                        table: initTb,
-                        command: "query",
-                        sql: `SELECT id, _v FROM ${initTb} WHERE id IN ('isStreaming', 'activeId')`
-                    });
-                    const rows = res?.data ?? (Array.isArray(res) ? res : []);
-                    if (Array.isArray(rows)) {
-                        let isStreaming = false;
-                        let activeId = "";
-                        rows.forEach((row: any) => {
-                            let val = row._v;
-                            if (typeof val === 'string') {
-                                try {
-                                    val = JSON.parse(val);
-                                } catch {}
-                            }
-                            if (row.id === 'isStreaming') {
-                                isStreaming = !!val;
-                            } else if (row.id === 'activeId') {
-                                activeId = String(val || "");
-                            }
-                        });
-                        if (isStreaming && activeId) {
-                            await pyInvoke("v1/chat/stop", { id: activeId });
-                        }
-                    }
-                } catch (e) {
-                    console.error("Failed to check/stop task", i, e);
-                }
-            }
 
             await pyInvoke("sqlite", {
                 db,

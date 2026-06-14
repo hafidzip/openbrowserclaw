@@ -1,6 +1,6 @@
 import { ArrowLeft, ArrowRight, RefreshCw, Home, Search, Globe } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ref, useGlobal, usePython, usePythonEvent, type AppInfo } from "openchad-react"
+import { AsyncLock, ref, useGlobal, usePython, usePythonEvent, type AppInfo } from "openchad-react"
 import { getCurrentWindow, cursorPosition } from '@tauri-apps/api/window'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi'
@@ -8,10 +8,11 @@ import { Webview, getCurrentWebview, getAllWebviews } from '@tauri-apps/api/webv
 import { Button } from 'openchad-react/ui'
 import clsx from 'clsx'
 import { BrowserBar } from 'openchad-react/Bar';
-import { MenuBar } from 'openchad-react/utils/state';
+import { deleteActiveTabWithGroupSelection, MenuBar, TabInfo, TabState } from 'openchad-react/utils/state';
 
 import { emitTo } from '@tauri-apps/api/event';
 import { uuidv4 } from 'openchad-react/utils';
+import { useDatabaseImpl } from 'openchad-react/components/useDatabase';
 
 const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
 
@@ -28,14 +29,13 @@ export function CommandPalette({
   onNavigate: (url: string) => void;
   onDismiss: () => void;
 }) {
-  const isValidHttpUrl = (string: string) => {
-    try {
-      const url = new URL(string);
-      return url.protocol === "http:" || url.protocol === "https:";
-    } catch (_) {
-      return false;
-    }
-  }
+  const isValidHttpUrl = (string: string): boolean => {
+    if (!string) return false;
+    if (string.startsWith("https")) return true;
+    if (string.startsWith("http")) return true;
+    const urlRegex = /^([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}/;
+    return urlRegex.test(string);
+  };
   const [input, setInput] = useState(initialUrl)
   const inputRef = useRef<HTMLInputElement>(null)
   const [suggestions, setSuggestions] = useState<any[]>([])
@@ -101,7 +101,7 @@ export function CommandPalette({
 
   return (
     <div
-      className="w-full h-full absolute left-0 top-0 flex items-center justify-center bg-black/50 p-4 z-50"
+      className="w-full h-full absolute left-0 top-0 flex items-center justify-center bg-black/50 p-4"
       onClick={onDismiss}
     >
       {/* Container matching the card structure in the image */}
@@ -212,7 +212,10 @@ export function CommandPalette({
   );
 }
 
-const cleanUrl = (u: string) => u.replace(/\/$/, "");
+const cleanUrl = (u?: string | null) => {
+  if (!u) return "";
+  return u.replace(/\/$/, "");
+};
 
 export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActiveTabId, useTheme, tabId, appId, useTab }: AppInfo) {
 
@@ -221,8 +224,8 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
 
   const [url, setUrl] = useState(initialUrl)
   const [navState, setNavState] = useState({
-    history: [initialUrl],
-    currentIndex: 0
+    history: initialUrl === "about:blank" ? [] : [initialUrl],
+    currentIndex: initialUrl === "about:blank" ? -1 : 0
   });
   const { history, currentIndex } = navState;
   const { layout } = useTheme()
@@ -233,6 +236,7 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
 
   const [loaded, setLoaded] = useState(false)
   const [showPalette, setShowPalette] = useState(false)
+
   const pendingNav = useRef<'back' | 'forward' | null>(null)
 
   const activeTabId = useActiveTabId();
@@ -249,26 +253,6 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
 
     }
   }
-
-  const contextRef = useRef({
-    closed: false,
-    wvw: null as Webview | null,
-    created: false,
-  })
-
-  const wantsVisible = useRef(true)
-
-  /** Hides the child webview window so main-view overlays can render on top */
-  const hideChildWebview = useCallback(async () => {
-    wantsVisible.current = false
-    try { const wv = await getByLabel(label); await wv?.hide() } catch { /* webview may not exist yet */ }
-  }, [label])
-
-  /** Restores the child webview window after an overlay is dismissed */
-  const showChildWebview = useCallback(async () => {
-    wantsVisible.current = true
-    try { const wv = await getByLabel(label); await wv?.show() } catch { /* webview may not exist yet */ }
-  }, [label])
 
   const normalizeUrl = (input: string): string => {
     const trimmed = input.trim()
@@ -293,15 +277,19 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
     const url = normalizeUrl(newUrl)
     if (!url) return
     // JSON.stringify escapes quotes/special chars — safer than bare template literal
-    await pyInvoke('eval', { label, script: `window.location = ${JSON.stringify(url)}` })
+    AsyncLock.run(async () => {
+      await pyInvoke('eval', { label, script: `window.location = ${JSON.stringify(url)}` })
+    })
   }
 
   const handleBack = async () => {
     if (currentIndex > 0) {
       pendingNav.current = 'back'
-      await pyInvoke('eval', {
-        label,
-        script: `window.history.back()`
+      AsyncLock.run(async () => {
+        await pyInvoke('eval', {
+          label,
+          script: `window.history.back()`
+        })
       })
     }
   }
@@ -309,17 +297,21 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
   const handleForward = async () => {
     if (currentIndex < history.length - 1) {
       pendingNav.current = 'forward'
-      await pyInvoke('eval', {
-        label,
-        script: `window.history.forward()`
+      AsyncLock.run(async () => {
+        await pyInvoke('eval', {
+          label,
+          script: `window.history.forward()`
+        })
       })
     }
   }
 
   const handleRefresh = async () => {
-    await pyInvoke('eval', {
-      label,
-      script: `window.location.reload()`
+    AsyncLock.run(async () => {
+      await pyInvoke('eval', {
+        label,
+        script: `window.location.reload()`
+      })
     })
   }
 
@@ -363,7 +355,7 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
         return !prev;
       });
     });
-  }, [handleNavigate, handleBack, handleForward, handleRefresh, hideChildWebview, showChildWebview])
+  }, [handleNavigate, handleBack, handleForward, handleRefresh])
 
   useEffect(() => {
     if (activeTabId == tabId) {
@@ -372,35 +364,37 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
   }, [activeTabId, element])
 
   useEffect(() => {
-    setMount(true)
-    return () => {
-      setMount(false)
-    }
-  }, [])
+    if (!mounted) setMount(activeTabId == tabId)
+  }, [activeTabId])
 
   useEffect(() => {
-    if (activeTabId == tabId) {
-      (async () => {
-        try {
-          setFocus(true)
-          setRefresh(prev => (prev + 1) % 2)
-        } catch (e) {
-          console.error('[Webview] onMouseEnter failed:', e)
+    (async () => {
+      await AsyncLock.run(async () => {
+        const existing = await getByLabel(label)
+        if (existing) {
+          if (activeTabId == tabId) {
+            await existing.show()
+          } else {
+            await existing.hide()
+          }
         }
-      })()
-    }
+      })
+    })()
   }, [activeTabId]);
 
   useEffect(() => {
     (async () => {
-      if (focus) {
-        if (contextRef.current.wvw) {
-          await contextRef.current.wvw.reparent(await getCurrentWindow())
+      await AsyncLock.run(async () => {
+        if (focus) {
+          const existing = await getByLabel(label)
+          if (existing) {
+            await existing.reparent(await getCurrentWindow())
+          }
+        } else {
+          const mw = await getCurrentWebview()
+          await mw.reparent(await getCurrentWindow())
         }
-      } else {
-        const mw = await getCurrentWebview()
-        await mw.reparent(await getCurrentWindow())
-      }
+      })
     })()
   }, [focus, refresh])
 
@@ -426,457 +420,222 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
     }
   }, [focus, showAgentsDialog, showSkillsDialog, showControllableBrowsersDialog, mobileSettingsDropdown, settingsDropdown, showSearchDialog, showMcpDialog, showCredentialsDialog, showLocalModelDialog, showCustomEndpointDialog, showSettingsDialog, showTaskDialog, setupModel])
 
+  const syncSize = async () => {
+    const container = containerRef.current
+    const webviews = await getAllWebviews()
+    const wvw = webviews.find(webview => webview.label === label)
+    if (!container || !wvw) return
+
+    const rect = container.getBoundingClientRect()
+
+    try {
+      if (rect.width === 0 && rect.height === 0) return;
+      // Batch position + size + show in parallel — all are fire-and-resolve
+      await Promise.all([
+        wvw.setPosition(new LogicalPosition(rect.x, rect.y)),
+        wvw.setSize(new LogicalSize(Math.round(rect.width), Math.round(rect.height))),
+      ])
+    } catch (e) {
+      console.error("[Webview] Failed to sync size:", e)
+    }
+  }
+
   useEffect(() => {
     (async () => {
-      const container = containerRef.current
-      const wvw = contextRef.current.wvw
-      if (!container || !wvw) return
-
-      const rect = container.getBoundingClientRect()
-
-      try {
-        if (rect.width === 0 && rect.height === 0) return;
-        // Batch position + size + show in parallel — all are fire-and-resolve
-        await Promise.all([
-          wvw.setPosition(new LogicalPosition(rect.x, rect.y)),
-          wvw.setSize(new LogicalSize(Math.round(rect.width), Math.round(rect.height))),
-        ])
-      } catch (e) {
-        console.error("[Webview] Failed to sync size:", e)
-      }
+      await AsyncLock.run(async () => {
+        await syncSize();
+      })
     })()
-  }, [layout, activeTabId])
-
+  }, [layout, activeTabId, refresh])
 
   useEffect(() => {
-    if (!isTauri || !containerRef.current || !mounted || activeTabId != tabId) return
-
-    contextRef.current = {
-      closed: false,
-      wvw: null,
-      created: false,
-    }
-    const context = contextRef.current
-
-    const mainWin = getCurrentWindow()
-
-    // ── Cached IPC values ─────────────────────────────────────────────────────
-    // scaleFactor never changes at runtime (barring monitor DPI switch).
-    // mainWinPos is updated directly from onMoved payloads to avoid extra round-trips.
-    let mainWinPos = { x: 0, y: 0 }
-    let scale = 1
-    // Track minimized state via a ref so syncSize never needs to call isMinimized()
-    let isMinimized = false
-    // ─────────────────────────────────────────────────────────────────────────
-
-    // Helper: detect if an error means the window was destroyed
-    const isWindowGone = (e: unknown): boolean => {
-      const msg = String(e && typeof e === 'object' && 'message' in e ? (e as any).message : e)
-      return msg.includes('window not found') || msg.includes('not found')
-    }
-
-    // Self-healing: if the window is gone, clear handles so we stop retrying
-    const clearDeadWindow = () => {
-      context.wvw = null
-      context.created = false
-    }
-
-    // ── Core sync ─────────────────────────────────────────────────────────────
-    // syncSize is the hot-path — keep IPC calls to the minimum.
-    // `knownPos` is an optional pre-fetched position (from onMoved payload) to
-    // skip the innerPosition() round-trip entirely.
-    const syncSize = async (knownPos?: { x: number; y: number }) => {
-      // if (activeTabId !== tabId) return;
-      const container = containerRef.current
-      const wvw = context.wvw
-      if (!container || context.closed || !wvw || !context.created) return
-
-      // Minimized is tracked via local state — no IPC needed here
-      if (isMinimized) {
-        // try { await wvw.minimize() } catch (e) {
-        //   if (isWindowGone(e)) { clearDeadWindow(); return }
-        //   console.error("[Webview] Failed to minimize:", e)
-        // }
-        return
-      } else {
-        // try { await wvw.unminimize() } catch (e) {
-        //   if (isWindowGone(e)) { clearDeadWindow() }
-        //   // Non-fatal — window might already be unminimized
-        // }
-      }
-
-      const rect = container.getBoundingClientRect()
-
-      try {
-        if (rect.width === 0 && rect.height === 0) return;
-
-        if (knownPos) {
-          // onMoved already gave us the new position — use it directly
-          mainWinPos = knownPos
-        } else {
-          // Batch the two independent IPC calls in parallel
-          const [pos, sf] = await Promise.all([
-            mainWin.innerPosition(),
-            mainWin.scaleFactor(),
-          ])
-          mainWinPos = pos
-          scale = sf
-        }
-
-        // Batch position + size + show in parallel — all are fire-and-resolve
-        await Promise.all([
-          wvw.setPosition(new LogicalPosition(rect.x, rect.y)),
-          wvw.setSize(new LogicalSize(Math.round(rect.width), Math.round(rect.height))),
-        ])
-      } catch (e) {
-        if (isWindowGone(e)) { clearDeadWindow(); return }
-        console.error("[Webview] Failed to sync size:", e)
-      }
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
+    if (!mounted || !containerRef.current) return
 
     (async () => {
-      // ── Graceful label-exists check ────────────────────────────────────────
       const existing = await getByLabel(label)
       if (existing) {
-        context.wvw = existing
-        context.created = true
-        setFocus(false);
+        setFocus(false)
         setRefresh(prev => (prev + 1) % 2)
-        setLoaded(true);
+        setLoaded(true)
+        await existing.show()
       } else {
-        const initWebview = async (attempt = 1): Promise<void> => {
-          const MAX_RETRIES = 3
-          const RETRY_DELAY_MS = 500
-          try {
-            const container = containerRef.current
-            if (!container) return
-            const rect = container.getBoundingClientRect()
-            if (rect.width === 0 || rect.height === 0) {
+        console.log('init webview')
+        const initWebview = async (): Promise<void> => {
+          const container = containerRef.current
+          if (!container) return
+          const rect = container.getBoundingClientRect()
+          if (rect.width === 0 || rect.height === 0) return
 
-              return
-            }
-            if (context.closed) return
+          setLoaded(false)
+          await AsyncLock.acquire();
+          const wvw = new Webview(await getCurrentWindow(), label, {
+            url,
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+            x: screenX,
+            y: screenY
+          })
 
-            // Fetch position + scale in parallel
-            try {
-              const [pos, sf] = await Promise.all([
-                mainWin.innerPosition(),
-                mainWin.scaleFactor(),
-              ])
-              mainWinPos = pos
-              scale = sf
-            } catch (e) {
-              console.error("[Webview] Failed to get main window position:", e)
-            }
+          wvw.listen('page_loaded', (event) => {
+            window.dispatchEvent(new CustomEvent('page_loaded', { detail: event.payload }));
+          });
 
-            const screenX = Math.round(mainWinPos.x / scale + rect.x)
-            const screenY = Math.round(mainWinPos.y / scale + rect.y)
+          wvw.listen('update_location', (event) => {
+            window.dispatchEvent(new CustomEvent('update_location', { detail: event.payload }));
+          })
+          wvw.listen('update_location_title_icon', (event) => {
+            window.dispatchEvent(new CustomEvent('update_location_title_icon', { detail: event.payload }));
+          })
+          wvw.listen('delete_tab', async (event) => {
+            window.dispatchEvent(new CustomEvent('delete_tab', { detail: event.payload }));
+          })
+          wvw.listen('switch_tab', async (event) => {
+            window.dispatchEvent(new CustomEvent('switch_tab', { detail: event.payload }));
+          })
 
-
-            // ───────────────────────────────────────────────────────────────────────
-            setLoaded(false);
-            const wvw = new Webview(await getCurrentWindow(), label, {
-              url,
-              width: Math.round(rect.width),
-              height: Math.round(rect.height),
-              x: screenX,
-              y: screenY
-            })
-            context.wvw = wvw
-
-            wvw.once('tauri://created', async () => {
-
-              context.created = true
-              try {
-                // Re-sync position after creation — batch independent calls
-                const [pos, sf, minimized] = await Promise.all([
-                  mainWin.innerPosition(),
-                  mainWin.scaleFactor(),
-                  mainWin.isMinimized(),
-                ])
-                mainWinPos = pos
-                scale = sf
-                isMinimized = minimized
-
-                const currentRect = containerRef.current?.getBoundingClientRect()
-                if (currentRect && currentRect.width > 0 && currentRect.height > 0) {
-                  await Promise.all([
-                    wvw.setPosition(new LogicalPosition(currentRect.x, currentRect.y)),
-                    wvw.setSize(new LogicalSize(Math.round(currentRect.width), Math.round(currentRect.height))),
-                    setFocus(false),
-                    setRefresh(prev => (prev + 1) % 2),
-                  ])
-                }
-                if (minimized) {
-
-                }
-              } catch (e) {
-                console.error("[Webview] Error positioning after creation:", e)
-                context.wvw = null
-                context.created = false
-              }
-              setLoaded(true);
-            }).catch(e => console.error("[Webview] Error registering tauri://created:", e))
-
-            await wvw.listen("update_location_title_icon", async (event) => {
-              const data = event.payload as any
-              if (data.target == label) {
-                setTitle(data.title)
-                const db = workspace ?? "global";
-                const sql = `INSERT OR REPLACE INTO site_registry (id, metadata) VALUES (?, ?)`;
-
-                await pyInvoke("sqlite", {
-                  db,
-                  command: "execute",
-                  sql: `CREATE TABLE IF NOT EXISTS site_registry (
-                      id    TEXT PRIMARY KEY,
-                      metadata TEXT
-                    )`,
-                  params: []
-                });
-                await pyInvoke("sqlite", {
-                  db,
-                  command: "execute",
-                  sql,
-                  params: [
-                    data.url,
-                    JSON.stringify({
-                      title: data.title ?? data.url ?? 'Untitled',
-                      url: data.url ?? 'about:blank',
-                      icon: data.icon ?? 'default',
-                      timestamp: Date.now(),
-                    })
-                  ]
-                });
-              }
-            })
-
-            await wvw.listen("update_location", async (event) => {
-              const data = event.payload as any
-              if (data.target == label) {
-                console.warn(data);
-                setBarUrl(data.url)
-                setUrl(data.url)
-
-                const currentPending = pendingNav.current;
-                pendingNav.current = null;
-
-                setNavState((prev) => {
-                  let newIndex = prev.currentIndex;
-                  let newHistory = [...prev.history];
-                  const normalizedIncoming = cleanUrl(data.url);
-
-                  if (currentPending === 'back') {
-                    newIndex = Math.max(0, prev.currentIndex - 1);
-                  } else if (currentPending === 'forward') {
-                    newIndex = Math.min(prev.history.length - 1, prev.currentIndex + 1);
-                  } else {
-                    if (cleanUrl(prev.history[prev.currentIndex]) !== normalizedIncoming) {
-                      // Fresh navigation — always truncate forward stack
-                      newHistory = prev.history.slice(0, prev.currentIndex + 1);
-                      newHistory.push(data.url);
-                      newIndex = newHistory.length - 1;
-                    }
-                    // else: same URL (on_page_load re-emit / same-page reload) — no-op
-                  }
-                  return { history: newHistory, currentIndex: newIndex };
-                });
-              }
-            })
-
-            wvw.once('tauri://error', async (e) => {
-              console.error(`[Webview] Native creation error on "${label}" (attempt ${attempt}/${MAX_RETRIES}):`, e)
-              const fallback = await getByLabel(label)
-              if (fallback) {
-                context.wvw = fallback
-                context.created = true
-                try {
-                  const [pos, sf] = await Promise.all([
-                    mainWin.innerPosition(),
-                    mainWin.scaleFactor(),
-                  ])
-                  mainWinPos = pos
-                  scale = sf
-                  const currentRect = containerRef.current?.getBoundingClientRect()
-                  if (currentRect) {
-                    const sx = Math.round(mainWinPos.x / scale + currentRect.x)
-                    const sy = Math.round(mainWinPos.y / scale + currentRect.y)
-                    // await Promise.all([
-                    //   fallback.setPosition(new LogicalPosition(currentRect.x, currentRect.y)),
-                    //   fallback.setSize(new LogicalSize(Math.round(currentRect.width), Math.round(currentRect.height))),
-                    // ])
-                  }
-                } catch (err) {
-                  console.error("[Webview] Failed to recover existing webview:", err)
-                  context.wvw = null
-                  context.created = false
-                  if (attempt < MAX_RETRIES && !context.closed) {
-                    await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
-                    if (!context.closed) await initWebview(attempt + 1)
-                  } else if (!context.closed) {
-                    console.error(`[Webview] All ${MAX_RETRIES} attempts exhausted. WebviewWindow could not be created.`)
-                  }
-                }
-              } else {
-                console.warn(`[Webview] No fallback window found for "${label}". Clearing dead handle.`)
-                context.wvw = null
-                context.created = false
-                if (attempt < MAX_RETRIES && !context.closed) {
-                  await new Promise(r => setTimeout(r, RETRY_DELAY_MS))
-                  if (!context.closed) await initWebview(attempt + 1)
-                } else {
-                  console.error(`[Webview] All ${MAX_RETRIES} attempts exhausted. WebviewWindow could not be created.`)
-                }
-              }
-            }).catch(e => console.error("[Webview] Error registering tauri://error:", e))
-
-          } catch (e) {
-            console.error("[Webview] Failed to initialize:", e)
-          }
+          await wvw.once('tauri://created', async () => {
+            setLoaded(true)
+            setFocus(false)
+            setRefresh(prev => (prev + 1) % 2)
+            AsyncLock.release();
+          })
         }
         await initWebview()
       }
     })()
 
-    // Stable wrapper so add/removeEventListener reference the same function
-    const onResize = () => syncSize()
-    const observer = new ResizeObserver(onResize)
-    observer.observe(containerRef.current)
-    window.addEventListener('resize', onResize)
-
     const cleanups: (() => void)[] = []
 
-    let prevMinimized = false
-    let prevMaximized = false
+    const onFocus = () => { setFocus(false); setRefresh(prev => (prev + 1) % 2) }
+    const onHidePopup = () => {
+      setFocus(false);
+    }
+    const onUpdateTitle = async (event: any) => {
+      await AsyncLock.run(async () => {
+        const data = event.detail as any
+        if (data.target == label) {
+          setTitle(data.title)
+          const db = workspace ?? "global"
+          const sql = `INSERT OR REPLACE INTO site_registry (id, metadata) VALUES (?, ?)`
 
-    // onMoved: payload already contains the new position — pass it in to skip
-    // the innerPosition() IPC call entirely (saves one full round-trip per event)
-    mainWin.onMoved((position) => {
-      const knownPos = { x: position.payload.x, y: position.payload.y }
-      syncSize(knownPos)
-      window.dispatchEvent(new CustomEvent('window-moved', {
-        detail: { x: position.payload.x, y: position.payload.y }
-      }))
-    }).then(u => cleanups.push(u)).catch(e => console.error("[Listener] Failed to register onMoved:", e))
-
-    mainWin.onResized(async () => {
-      if (activeTabId !== tabId) return;
-      // Refresh scale factor here (rare but possible on DPI change)
-      try {
-        const [minimized, maximized, sf] = await Promise.all([
-          mainWin.isMinimized(),
-          mainWin.isMaximized(),
-          mainWin.scaleFactor(),
-        ])
-        scale = sf
-        isMinimized = minimized
-
-        if (minimized && !prevMinimized) {
-          window.dispatchEvent(new CustomEvent('window-minimize'))
-        } else if (!minimized && prevMinimized) {
-          window.dispatchEvent(new CustomEvent('window-unminimize'))
+          await pyInvoke("sqlite", {
+            db,
+            command: "execute",
+            sql: `CREATE TABLE IF NOT EXISTS site_registry (
+                      id    TEXT PRIMARY KEY,
+                      metadata TEXT
+                    )`,
+            params: []
+          })
+          await pyInvoke("sqlite", {
+            db,
+            command: "execute",
+            sql,
+            params: [
+              data.url,
+              JSON.stringify({
+                title: data.title ?? data.url ?? 'Untitled',
+                url: data.url ?? 'about:blank',
+                icon: data.icon ?? 'default',
+                timestamp: Date.now(),
+              })
+            ]
+          })
         }
-        if (maximized && !prevMaximized) {
-          window.dispatchEvent(new CustomEvent('window-maximize'))
-        } else if (!maximized && prevMaximized) {
-          window.dispatchEvent(new CustomEvent('window-unmaximize'))
+      })
+    }
+    const onLocationChange = async (event: any) => {
+      await AsyncLock.run(async () => {
+        const data = event.detail as any
+        if (data.target == label) {
+          console.log(data)
+          setBarUrl(data.url)
+          setUrl(data.url)
+
+          const currentPending = pendingNav.current
+          pendingNav.current = null
+
+          setNavState((prev) => {
+            let newIndex = prev.currentIndex
+            let newHistory = [...prev.history]
+            
+            const normalizedIncoming = cleanUrl(data.url)
+
+            if (currentPending === 'back') {
+              newIndex = Math.max(0, prev.currentIndex - 1)
+            } else if (currentPending === 'forward') {
+              newIndex = Math.min(prev.history.length - 1, prev.currentIndex + 1)
+            } else {
+              if (data.url && data.url !== "about:blank") {
+                const currentUrl = (prev.currentIndex >= 0 && prev.currentIndex < prev.history.length)
+                  ? prev.history[prev.currentIndex]
+                  : "";
+                if (cleanUrl(currentUrl) !== normalizedIncoming) {
+                  // Fresh navigation — always truncate forward stack
+                  newHistory = prev.history.slice(0, prev.currentIndex + 1)
+                  newHistory.push(data.url)
+                  newIndex = newHistory.length - 1
+                }
+              }
+            }
+
+            // Ensure newIndex is within valid bounds for newHistory
+            if (newHistory.length === 0) {
+              newIndex = -1
+            } else {
+              newIndex = Math.max(0, Math.min(newHistory.length - 1, newIndex))
+            }
+
+            return { history: newHistory, currentIndex: newIndex }
+          })
         }
-        prevMinimized = minimized
-        prevMaximized = maximized
-      } catch (e) {
-        console.error("[Webview] Failed to check window state for custom events:", e)
-      }
-      syncSize()
-    }).then(u => cleanups.push(u)).catch(e => console.error("[Listener] Failed to register onResized:", e))
-
-    mainWin.onFocusChanged(async ({ payload: focused }) => {
-      syncSize()
-      if (focused) {
-        window.dispatchEvent(new CustomEvent('window-focus-gained'))
-        // If cursor is over the browser area, re-show and focus the child
-        if (isCursorInside && context.wvw && context.created && wantsVisible.current) {
-          try {
-
-          } catch (e) {
-            if (isWindowGone(e)) { clearDeadWindow(); return }
-            console.error('[Webview] focus restore failed:', e)
-          }
-        }
-      } else {
-        window.dispatchEvent(new CustomEvent('window-focus-lost'))
-      }
-    }).then(u => cleanups.push(u)).catch(e => console.error("[Listener] Failed to register onFocusChanged:", e))
-
-    // ── Z-order management via hide/show ────────────────────────────────────
-    // The child browser is an owned window (parent: mainWin), so the OS
-    // keeps it above the main window automatically. To let the user interact
-    // with the main window's UI (sidebar, topbar, etc.) we simply hide the
-    // child. When the cursor re-enters the browser area we show + focus it.
-    //
-
-
-    // Cursor polling to dispatch custom events when it leaves the containerRef area
-    let isCursorInside = false
-    let isPollInFlight = false
-    const pollCursor = async () => {
-      if (context.closed || isPollInFlight) return
-      const container = containerRef.current
-      if (!container) return
-      isPollInFlight = true
-      try {
-        if (isMinimized) {
-          if (isCursorInside) {
-            isCursorInside = false
-            window.dispatchEvent(new CustomEvent('cursor-container-leave'))
-            setFocus(false)
-          }
-          return
-        }
-
-        const rect = container.getBoundingClientRect()
-        // Only fetch cursor position + window position; scaleFactor is cached from init
-        const [pos, cursor] = await Promise.all([
-          mainWin.innerPosition(),
-          cursorPosition()
-        ])
-
-        const minX = pos.x + rect.left * scale
-        const maxX = pos.x + rect.right * scale
-        const minY = pos.y + rect.top * scale
-        const maxY = pos.y + rect.bottom * scale
-
-        const inside = cursor.x >= minX && cursor.x <= maxX && cursor.y >= minY && cursor.y <= maxY
-        if (inside && !isCursorInside) {
-          isCursorInside = true
-          window.dispatchEvent(new CustomEvent('cursor-container-enter', {
-            detail: { x: cursor.x, y: cursor.y }
-          }))
-        } else if (!inside && isCursorInside) {
-          isCursorInside = false
-          window.dispatchEvent(new CustomEvent('cursor-container-leave', {
-            detail: { x: cursor.x, y: cursor.y }
-          }))
-          setFocus(false)
-        }
-      } catch (e) {
-        console.error("[Webview] Failed to poll cursor position:", e)
-      } finally {
-        isPollInFlight = false
-      }
+      })
     }
 
-    const cursorInterval = setInterval(pollCursor, 250)
-    cleanups.push(() => clearInterval(cursorInterval))
+    const Sync = async () => {
+      await AsyncLock.run(async () => {
+        await syncSize();
+      })
+    }
+
+    const onTabDelete = async () => {
+      await deleteActiveTabWithGroupSelection()
+    }
+
+    const onTabSwitch = async (event: any) => {
+      // TODO
+    }
+
+    const observer = new ResizeObserver(Sync)
+    observer.observe(containerRef.current)
+    window.addEventListener('update_location', onLocationChange)
+    window.addEventListener('update_location_title_icon', onUpdateTitle)
+    window.addEventListener('delete_tab', onTabDelete)
+    window.addEventListener('switch_tab', onTabSwitch)
+    window.addEventListener('resize', Sync)
+    window.addEventListener('mainFocusChanged', Sync)
+    window.addEventListener('mainOnMove', Sync)
+    window.addEventListener('mainOnResize', Sync)
+    window.addEventListener('mainMove', Sync)
+    window.addEventListener('mainCursorLeave', onFocus)
+    window.addEventListener('hide-popup', onHidePopup);
 
     return () => {
-      context.closed = true
       observer.disconnect()
-      window.removeEventListener('resize', onResize)
+      window.removeEventListener('update_location', onLocationChange)
+      window.removeEventListener('update_location_title_icon', onUpdateTitle)
+      window.removeEventListener('delete_tab', onTabDelete)
+      window.removeEventListener('switch_tab', onTabSwitch)
+      window.removeEventListener('resize', Sync)
+      window.removeEventListener('mainFocusChanged', Sync)
+      window.removeEventListener('mainOnMove', Sync)
+      window.removeEventListener('mainOnResize', Sync)
+      window.removeEventListener('mainMove', Sync)
+      window.removeEventListener('mainCursorLeave', onFocus)
+      window.removeEventListener('hide-popup', onHidePopup);
       cleanups.forEach(fn => fn())
     }
-  }, [mounted, activeTabId])
+  }, [mounted])
 
 
   return (
@@ -916,7 +675,7 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
             setFocus(true)
           }
         }}
-        onMouseOver={async () => {
+        onMouseMove={async () => {
           if (!focus) {
             setFocus(true)
           }
@@ -944,12 +703,10 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
             setUrl(targetUrl)
             setBarUrl(targetUrl)
             setShowPalette(false);
-            showChildWebview();
             handleNavigate(targetUrl);
           }}
           onDismiss={() => {
             setShowPalette(false);
-            showChildWebview();
           }}
         />
       )}

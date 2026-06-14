@@ -1,17 +1,15 @@
-import { useState, useEffect, useCallback, useRef, memo } from "react";
-import { MessageCircleWarning, MessageSquareWarning, Plus, Trash2 } from "lucide-react";
+import { useState, useCallback, useMemo, memo } from "react";
+import { MessageCircleWarning, Plus, Trash2 } from "lucide-react";
 import { Checkbox } from "./ui/checkbox";
 import { ScrollArea } from "./ui/scroll-area";
 import { Table, TableBody, TableCell, TableRow } from "./ui/table";
-import { usePython } from "./usePython";
-import { formatTaskTime, LucideIcons, addTab } from "../utils/state";
-import { Spinner } from "./ui/spinner";
+import { formatTaskTime, LucideIcons, addTab, TabInfo, deleteTabWithGroupSelection } from "../utils/state";
 import clsx from "clsx";
 import { useGlobal } from "./useGlobal";
-import { useDatabaseImpl } from "./useDatabase";
-import { generateIdFromString, uuidv4 } from "../index";
+import { AsyncLock, useSnapshot, uuidv4 } from "../index";
 import { Button } from "./ui";
-
+import { useDatabaseImpl } from "./useDatabase";
+import { getAllWebviews } from "@tauri-apps/api/webview";
 
 const truncate = (text: string, length = 50) => {
     if (!text) return "";
@@ -33,21 +31,19 @@ const TabIcon = memo(({ iconVal }: { iconVal: string | undefined }) => {
     return <Icon className="w-4 h-4" />;
 });
 
-const TabRow = memo((
-    { tab, isSelected, onToggle, onOpen, onDelete }: {
-        tab: any;
-        isSelected: boolean;
-        onToggle: (id: string) => void;
-        onOpen: (id: string) => void;
-        onDelete: (id: string) => void;
-    }
-) => {
-    const handleToggle = useCallback(() => onToggle(tab.id), [tab.id, onToggle]);
-    const handleOpen = useCallback(() => onOpen(tab.id), [tab.id, onOpen]);
+const TabRow = memo(({ tab, isSelected, onToggle, onOpen, onDelete }: {
+    tab: ControllableBrowser & { uuid: string };
+    isSelected: boolean;
+    onToggle: (uuid: string) => void;
+    onOpen: (uuid: string) => void;
+    onDelete: (uuid: string) => void;
+}) => {
+    const handleToggle = useCallback(() => onToggle(tab.uuid), [tab.uuid, onToggle]);
+    const handleOpen = useCallback(() => onOpen(tab.uuid), [tab.uuid, onOpen]);
     const handleDelete = useCallback((e: React.MouseEvent) => {
         e.stopPropagation();
-        onDelete(tab.id);
-    }, [tab.id, onDelete]);
+        onDelete(tab.uuid);
+    }, [tab.uuid, onDelete]);
 
     return (
         <TableRow className="border-accent/5 hover:bg-accent/5 transition-colors cursor-pointer h-12 group">
@@ -71,6 +67,12 @@ const TabRow = memo((
     );
 });
 
+export interface ControllableBrowser {
+    name: string;
+    url: string;
+    icon: string;
+    timestamp: number;
+}
 
 export default function ControllableBrowsers({
     workspace, isOpen, setOpen, query
@@ -80,234 +82,118 @@ export default function ControllableBrowsers({
     setOpen: (open: boolean) => void;
     query: string;
 }) {
-    const [, setChatId] = useGlobal<string | null>('chatId', { initialValue: null })
-    const { pyInvoke } = usePython();
-    const [tabs, setTabs] = useState<any[]>([]);
-    const [loading, setLoading] = useState(false);
+    // Initialized as a Record object instead of an Array
+    const [tabs, setTabs] = useDatabaseImpl<Record<string, ControllableBrowser>>('ControllableBrowser', { initialValue: {} });
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [isAdding, setIsAdding] = useState(false);
     const [newBrowserName, setNewBrowserName] = useState("");
-    // Refs  live values readable from async callbacks without stale closures
-    const pageRef = useRef(0);
-    const hasMoreRef = useRef(true);
-    const loadingRef = useRef(false);
-    const tabsRef = useRef<any[]>([]);
-    const queryRef = useRef(query);
-    const sentinelRef = useRef<HTMLDivElement>(null);
-    // Prevents the IntersectionObserver from firing before the first page is loaded
-    const initializedRef = useRef(false);
-    // Keep refs in sync with latest render values
-    tabsRef.current = tabs;
-    queryRef.current = query;
-    const setLoadingBoth = (val: boolean) => {
-        loadingRef.current = val;
-        setLoading(val);
-    };
-    const handleAddBrowser = async () => {
+    const { SetActive } = useSnapshot(TabInfo);
+
+    // Derive an array from the object to easily map and filter in the UI view
+    const filteredTabs = useMemo(() => {
+        const tabsArray = Object.entries(tabs || {}).map(([uuid, data]) => ({
+            uuid,
+            ...data
+        })).sort((a, b) => b.timestamp - a.timestamp); // Keep most recent on top
+
+        return query
+            ? tabsArray.filter(t => JSON.stringify(t).toLowerCase().includes(query.toLowerCase()))
+            : tabsArray;
+    }, [tabs, query]);
+
+    const handleAddBrowser = useCallback(() => {
         const name = newBrowserName.trim();
         if (!name) return;
-        try {
-            const db = workspace ?? "global";
-            const newId = `agent-${uuidv4()}`;
-            const metadata = {
-                name: name,
+        
+        const newUuid = `agent-${uuidv4()}`;
+        
+        setTabs(prev => ({
+            [newUuid]: {
+                name,
                 url: "about:blank",
                 icon: "Drama",
                 timestamp: Date.now()
-            };
-
-            await pyInvoke("sqlite", {
-                db,
-                command: "execute",
-                sql: `CREATE TABLE IF NOT EXISTS controllable_browsers (
-                    id TEXT PRIMARY KEY,
-                    metadata TEXT
-                )`,
-                params: []
-            });
-
-            await pyInvoke("sqlite", {
-                db,
-                command: "execute",
-                sql: `INSERT INTO controllable_browsers (id, metadata) VALUES (?, ?)`,
-                params: [newId, JSON.stringify(metadata)]
-            });
-
-            setIsAdding(false);
-            setNewBrowserName("");
-            pageRef.current = 0;
-            hasMoreRef.current = true;
-            loadTabs(0, true);
-        } catch (e) {
-            console.error("Failed to add controllable browser", e);
-        }
-    };
-    //  Core fetch (no stale-closure risk; reads from refs) 
-    const loadTabs = useCallback(async (pageNum: number, reset: boolean) => {
-        if (loadingRef.current) return;
-        setLoadingBoth(true);
-        // Lock the observer out during a reset so it can't race the initial fetch
-        if (reset) initializedRef.current = false;
-        try {
-            const db = workspace ?? "global";
-            const limit = 50;
-            const offset = pageNum * limit;
-            const q = queryRef.current;
-            const searchClause = q ? "WHERE metadata LIKE ?" : "";
-            const res = await pyInvoke("sqlite", {
-                db,
-                command: "query",
-                sql: `SELECT id, metadata FROM controllable_browsers ${searchClause} ORDER BY rowid DESC LIMIT ${limit} OFFSET ${offset}`,
-                params: q ? [`%${q}%`] : []
-            });
-            console.warn(res);
-            const rows: any[] = res?.data ?? (Array.isArray(res) ? res : []);
-            if (!Array.isArray(rows)) return;
-            hasMoreRef.current = rows.length === limit;
-            const parsed = rows.map((row: any) => {
-                try { return { id: row.id, ...JSON.parse(row.metadata) }; }
-                catch { return { id: row.id, title: "Unknown" }; }
-            });
-            setTabs(prev => reset ? parsed : [...prev, ...parsed]);
-            // Unlock the observer only after the first page has settled
-            if (reset) initializedRef.current = true;
-        } catch (e) {
-            console.error(e);
-        } finally {
-            setLoadingBoth(false);
-        }
-    }, [workspace, pyInvoke]);
-    //  Debounced reset on query / open change 
-    useEffect(() => {
-        if (!isOpen) return;
-        const timer = setTimeout(() => {
-            pageRef.current = 0;
-            hasMoreRef.current = true;
-            loadTabs(0, true);
-        }, 300);
-        return () => clearTimeout(timer);
-    }, [isOpen, query, loadTabs]);
-    //  IntersectionObserver sentinel  fires the instant the bottom div enters view
-    // Far more reliable than scroll events: works inside any overflow container,
-    // no stale closures, no throttle hacks needed.
-    useEffect(() => {
-        const sentinel = sentinelRef.current;
-        if (!sentinel) return;
-        const observer = new IntersectionObserver(
-            ([entry]) => {
-                if (entry.isIntersecting && !loadingRef.current && hasMoreRef.current && initializedRef.current) {
-                    pageRef.current += 1;
-                    loadTabs(pageRef.current, false);
-                }
             },
-            { threshold: 0 }
-        );
-        observer.observe(sentinel);
-        return () => observer.disconnect();
-    }, [loadTabs]);
-    //  Selection helpers 
-    const toggleSelect = useCallback((id: string) => {
-        setSelectedIds(prev => {
-            const next = new Set(prev);
-            next.has(id) ? next.delete(id) : next.add(id);
+            ...(prev || {})
+        }));
+        
+        setIsAdding(false);
+        setNewBrowserName("");
+    }, [newBrowserName, setTabs]);
+
+    const handleDelete = useCallback(async (uuid?: string) => {
+        const ids = uuid ? [uuid] : Array.from(selectedIds);
+        if (ids.length === 0) return;
+        const idSet = new Set(ids);
+        
+        ids.forEach(async (label: string) => {
+            await AsyncLock.run(async () => {
+                const all = await getAllWebviews();
+                const w = all.find((wv) => wv.label === `webview-${label}`);
+                if (w) {
+                    await w.close();
+                }
+            });
+            (async () => { await deleteTabWithGroupSelection(label); })();
+        });
+        setTabs(prev => {
+            const next = { ...prev };
+            ids.forEach(i => delete next[i]); // Delete cleanly from object
             return next;
         });
-    }, []);
-    const toggleSelectAll = useCallback(() => {
-        setSelectedIds(prev =>
-            prev.size === tabsRef.current.length && tabsRef.current.length > 0
-                ? new Set()
-                : new Set(tabsRef.current.map((t: any) => t.id))
-        );
-    }, []);
-    //  Delete 
-    const handleDelete = useCallback(async (id?: string) => {
-        const ids = id ? [id] : Array.from(selectedIds);
-        if (ids.length === 0) return;
-        try {
-            const db = workspace ?? "global";
-            const placeholders = ids.map(() => "?").join(",");
-            for (const i of ids) {
-                try {
-                    const initTb = generateIdFromString(i + "/" + "message_state");
-                    const res = await pyInvoke("sqlite", {
-                        db: db,
-                        table: initTb,
-                        command: "query",
-                        sql: `SELECT id, _v FROM ${initTb} WHERE id IN ('isStreaming', 'activeId')`
-                    });
-                    const rows = res?.data ?? (Array.isArray(res) ? res : []);
-                    if (Array.isArray(rows)) {
-                        let isStreaming = false;
-                        let activeId = "";
-                        rows.forEach((row: any) => {
-                            let val = row._v;
-                            if (typeof val === 'string') {
-                                try {
-                                    val = JSON.parse(val);
-                                } catch { }
-                            }
-                            if (row.id === 'isStreaming') {
-                                isStreaming = !!val;
-                            } else if (row.id === 'activeId') {
-                                activeId = String(val || "");
-                            }
-                        });
-                        if (isStreaming && activeId) {
-                            await pyInvoke("v1/chat/stop", { id: activeId });
-                        }
-                    }
-                } catch (e) {
-                    console.error("Failed to check/stop task", i, e);
-                }
-            }
+        
+        setSelectedIds(prev => {
+            const next = new Set(prev);
+            ids.forEach(i => next.delete(i));
+            return next;
+        });
+    }, [selectedIds, setTabs]);
 
-            await pyInvoke("sqlite", {
-                db,
-                command: "execute",
-                sql: `DELETE FROM controllable_browsers WHERE id IN (${placeholders})`,
-                params: ids
-            });
-            setSelectedIds(prev => {
-                const next = new Set(prev);
-                ids.forEach(i => next.delete(i));
-                return next;
-            });
-            pageRef.current = 0;
-            hasMoreRef.current = true;
-            loadTabs(0, true);
-            setChatId(null)
-        } catch (e) {
-            console.error(e);
-        }
-    }, [selectedIds, workspace, pyInvoke, loadTabs, setChatId]);
-    //  Open selected / open single 
-    const openTab = (id: string) => {
-        const tab = tabsRef.current.find((t: any) => t.id === id);
-        const childrenProps: Record<string, any> = {
-            [tab.id]: {
-                icon: tab.icon || "default",
-                title: tab.name,
-                appname: "main-app",
-                data: { url: tab.url || tab.id }
-            }
-        };
+    const openTab = useCallback((uuid: string) => {
+        const tab = (tabs || {})[uuid];
+        if (!tab) return;
         addTab({
+            uuid: uuid,
             title: tab.name,
             iconOverride: tab.icon || "default",
             layout: "single",
-            childrenProps
+            childrenProps: {
+                [uuid]: {
+                    icon: tab.icon || "default",
+                    title: tab.name,
+                    appname: "main-app",
+                    data: { url: tab.url || uuid }
+                }
+            }
         });
-    };
-    const handleOpenId = useCallback((id: string) => {
-        openTab(id);
+        SetActive(uuid);
+    }, [tabs, SetActive]);
+
+    const toggleSelect = useCallback((uuid: string) => {
+        setSelectedIds(prev => {
+            const next = new Set(prev);
+            next.has(uuid) ? next.delete(uuid) : next.add(uuid);
+            return next;
+        });
+    }, []);
+
+    const toggleSelectAll = useCallback(() => {
+        setSelectedIds(prev =>
+            prev.size === filteredTabs.length && filteredTabs.length > 0
+                ? new Set()
+                : new Set(filteredTabs.map(t => t.uuid))
+        );
+    }, [filteredTabs]);
+
+    const handleOpenId = useCallback((uuid: string) => {
+        openTab(uuid);
         setOpen(false);
-    }, [setOpen]);
-    const handleDeleteRow = useCallback((id: string) => handleDelete(id), [handleDelete]);
+    }, [openTab, setOpen]);
+
+    const handleDeleteRow = useCallback((uuid: string) => handleDelete(uuid), [handleDelete]);
     const handleDeleteSelected = useCallback(() => handleDelete(), [handleDelete]);
-    //  Render 
-    const allSelected = tabs.length > 0 && selectedIds.size === tabs.length;
-    const isEmpty = tabs.length === 0;
+
+    const allSelected = filteredTabs.length > 0 && selectedIds.size === filteredTabs.length;
 
     return (
         <>
@@ -326,57 +212,45 @@ export default function ControllableBrowsers({
                             type="text"
                             placeholder="Browser name..."
                             value={newBrowserName}
-                            onChange={(e) => setNewBrowserName(e.target.value)}
+                            onChange={e => setNewBrowserName(e.target.value)}
                             className="px-2 py-1 text-xs rounded border outline-none bg-accent/5 border-accent/20 text-foreground"
-                            onKeyDown={async (e) => {
-                                if (e.key === 'Enter') {
-                                    await handleAddBrowser();
-                                } else if (e.key === 'Escape') {
+                            onKeyDown={e => {
+                                if (e.key === 'Enter') handleAddBrowser();
+                                else if (e.key === 'Escape') {
                                     setIsAdding(false);
                                     setNewBrowserName("");
                                 }
                             }}
                             autoFocus
                         />
-                        <Button variant="secondary" size="sm" onClick={handleAddBrowser}>
-                            Add
-                        </Button>
+                        <Button variant="secondary" size="sm" onClick={handleAddBrowser}>Add</Button>
                         <Button variant="ghost" size="sm" onClick={() => {
                             setIsAdding(false);
                             setNewBrowserName("");
-                        }}>
-                            Cancel
-                        </Button>
+                        }}>Cancel</Button>
                     </div>
                 ) : (
-                    <Button variant="secondary" className="flex items-center justify-center" size="sm" onClick={() => {
-                        setIsAdding(true);
-                    }}>
+                    <Button variant="secondary" className="flex items-center justify-center" size="sm" onClick={() => setIsAdding(true)}>
                         Add Browser <Plus className="w-6 h-6" />
                     </Button>
                 )}
             </div>
-            <ScrollArea
-                className="flex-1 -mx-6 w-[97.5%] mx-auto border-t border-b border-[hsl(var(--chat-border))]"
-            >
+
+            <ScrollArea className="flex-1 -mx-6 w-[97.5%] mx-auto border-t border-b border-[hsl(var(--chat-border))]">
                 <Table>
                     <TableBody>
-                        {isEmpty ? (
+                        {filteredTabs.length === 0 ? (
                             <TableRow>
                                 <TableCell colSpan={4} className="h-12 text-center text-muted-foreground text-xs">
-                                    <div className="flex items-center justify-center gap-2">
-                                        {loading
-                                            ? <><Spinner /><span>Searching...</span></>
-                                            : <>No results</>}
-                                    </div>
+                                    No results
                                 </TableCell>
                             </TableRow>
                         ) : (
-                            tabs.map(tab => (
+                            filteredTabs.map(tab => (
                                 <TabRow
-                                    key={tab.id}
+                                    key={tab.uuid}
                                     tab={tab}
-                                    isSelected={selectedIds.has(tab.id)}
+                                    isSelected={selectedIds.has(tab.uuid)}
                                     onToggle={toggleSelect}
                                     onOpen={handleOpenId}
                                     onDelete={handleDeleteRow}
@@ -385,18 +259,10 @@ export default function ControllableBrowsers({
                         )}
                     </TableBody>
                 </Table>
-                {/* Sentinel: IntersectionObserver watches this  triggers next-page load */}
-                <div ref={sentinelRef} className="h-px" />
-                {/* Bottom loading indicator for subsequent pages */}
-                {loading && tabs.length > 0 && (
-                    <div className="flex justify-center items-center gap-2 py-3 text-xs text-muted-foreground">
-                        <Spinner />
-                        <span>Loading more...</span>
-                    </div>
-                )}
             </ScrollArea>
+
             <div className={clsx(
-                selectedIds.size > 0 ? "flex justify-center items-center " : "hidden",
+                selectedIds.size > 0 ? "flex justify-center items-center" : "hidden",
                 "relative transform translate-y-[-6px] px-4"
             )}>
                 <span>{selectedIds.size} Selected</span>

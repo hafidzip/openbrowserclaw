@@ -1526,3 +1526,10 @@ body {
     height: calc(100% - 19px);
     background-color: hsl(var(--card));
 }
+
+@keyframes flowDash {
+  to {
+    stroke-dashoffset: -20;
+  }
+}
+

@@ -9,7 +9,7 @@ import useElementSize from './components/hooks/useElementSize'
 import { Button } from './components/ui/button'
 import uuidv4 from './utils/uuid'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { KeyState, TabInfo, TabState, Viewport, Workspace, Theme, addTab, closeTab, detachTab, type ITab, deleteTab, deleteTabWithGroupSelection } from './utils/state'
+import { KeyState, TabInfo, TabState, Viewport, Workspace, Theme, addTab, closeTab, detachTab, type ITab, deleteTab, deleteTabWithGroupSelection, deleteActiveTabWithGroupSelection } from './utils/state'
 import { proxy, useSnapshot } from 'valtio'
 import MultiView, { type LayoutType } from './components/multiview'
 import { Spinner } from './components/ui/spinner'
@@ -87,10 +87,13 @@ export interface Project {
   repository?: string;
 }
 import { hideSplashScreen } from "vite-plugin-splash-screen/runtime";
-import { generateIdFromString, useMenuBar } from './index'
-import { getCurrentWindow, PhysicalPosition, PhysicalSize } from '@tauri-apps/api/window'
+import { AsyncLock, generateIdFromString, useMenuBar } from './index'
+import { cursorPosition, getCurrentWindow, PhysicalPosition, PhysicalSize } from '@tauri-apps/api/window'
 import Bar from './Bar'
 import { getAllWebviews, getCurrentWebview, Webview } from '@tauri-apps/api/webview'
+import type { ControllableBrowser } from './components/ControllableBrowsers'
+import { isRegistered, register, unregister } from '@tauri-apps/plugin-global-shortcut'
+import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 
 export default function Container({ Apps }: { Apps: Project }) {
   if (Apps.defaultTab.tabs.length === 0) {
@@ -127,55 +130,198 @@ export default function Container({ Apps }: { Apps: Project }) {
   const [showAgentsDialog, setShowAgentsDialog] = useGlobal('showAgentsDialog', { initialValue: false });
   const [, setMobileSettingsDropdown] = useGlobal('mobileSettingsDropdown', { initialValue: false });
   const [setupModel, setSetupModel] = useGlobal('setupModel', { initialValue: false });
+  const [browsers, , { ready }] = useDatabaseImpl<Record<string, ControllableBrowser>>('ControllableBrowser', { initialValue: {} });
   const snaptheme = useSnapshot(Theme);
   const currentLayout = snaptheme.layout;
-  const [intialzeTheme, setInitialzeTheme] = useState(false);
+  const [intializeTheme, setInitializeTheme] = useState(false);
+  const [intializeBrowser, setInitializeBrowser] = useState(false);
   const isFirstSave = useRef(true);
   const [MenuBar, setMenuBar] = useMenuBar();
 
   useEffect(() => {
+    if (!ready) return;
+
     (async () => {
       const all = await getAllWebviews();
-      const main = await getCurrentWebview()
+      const win = await getCurrentWindow();
+
+      // Convert the Record object into an array of [uuid, browserData] pairs
+      const browserEntries = Object.entries(browsers);
+      const target = browserEntries.length;
+      let current = 0;
+
+      // Handle the edge case where the record is completely empty
+      if (target === 0) {
+        setInitializeBrowser(true);
+        return;
+      }
+
+      browserEntries.forEach(async ([uuid, browser]) => {
+        const label = `webview-${uuid}`;
+
+        if (!all.find((wv) => wv.label === label)) {
+          await AsyncLock.acquire();
+          const w = new Webview(win, label, {
+            url: browser.url || 'about:blank',
+            width: 100,
+            height: 100,
+            x: 100,
+            y: 100,
+          });
+
+          await w.once('tauri://created', async () => {
+            await w.hide();
+            current += 1;
+
+            if (current === target) {
+              setInitializeBrowser(true);
+            }
+            AsyncLock.release();
+          });
+
+          await w.listen('page_loaded', (event) => {
+            window.dispatchEvent(new CustomEvent('page_loaded', { detail: event.payload }));
+          });
+
+          await w.listen('update_location', (event) => {
+            window.dispatchEvent(new CustomEvent('update_location', { detail: event.payload }));
+          });
+
+          await w.listen('update_location_title_icon', (event) => {
+            window.dispatchEvent(new CustomEvent('update_location_title_icon', { detail: event.payload }));
+          });
+
+          await w.listen('delete_tab', (event) => {
+            window.dispatchEvent(new CustomEvent('delete_tab', { detail: event.payload }));
+          });
+
+          await w.listen('switch_tab', (event) => {
+            window.dispatchEvent(new CustomEvent('switch_tab', { detail: event.payload }));
+          });
+
+        } else {
+          // Fallback: If the webview already exists, we still need to increment 
+          // the counter so setInitializeBrowser(true) correctly triggers.
+          current += 1;
+          if (current === target) {
+            setInitializeBrowser(true);
+          }
+        }
+      });
+    })();
+  }, [browsers, ready]);
+
+  useEffect(() => {
+    if (!mounted) return;
+    (async () => {
+      const all = await getAllWebviews();
       if (!all.find((wv) => wv.label === 'webview-empty')) {
+        const main = await getCurrentWebview()
         const position = await main.position();
         const size = await main.size();
         const win = await getCurrentWindow();
-        const wvw = new Webview(win, 'webview-empty', {
+        await AsyncLock.acquire();
+        const empty = new Webview(win, 'webview-empty', {
           url: 'about:blank',
           width: size.width,
           height: size.height,
           x: position.x,
           y: position.y
         })
-        await main.reparent(win)
+        await empty.once('tauri://created', async () => {
+          await main.reparent(win)
+          AsyncLock.release()
+        })
       }
     })()
-  }, [])
+  }, [mounted])
+
+  useEffect(() => {
+    if (!mounted) return;
+    (async () => {
+      const all = await getAllWebviews();
+      const win = await getCurrentWindow()
+      const webwin = await getCurrentWebviewWindow();
+      webwin.onDragDropEvent((event) => {
+        if (event.event == "tauri://drag-drop") {
+          console.log(event.payload)
+          window.dispatchEvent(new CustomEvent('drag_drop', { detail: event.payload }));
+        }
+      })
+      win.onFocusChanged(async ({ payload: focused }) => {
+        window.dispatchEvent(new CustomEvent('mainFocusChanged', { detail: focused }));
+      });
+      win.onMoved(() => {
+        window.dispatchEvent(new CustomEvent('mainOnMove'));
+      })
+      win.onResized(() => {
+        window.dispatchEvent(new CustomEvent('mainOnResize'));
+      })
+    })()
+  }, [mounted])
+
+  useEffect(() => {
+    if (!mounted) return;
+    const scale = window.devicePixelRatio ?? 1
+    const cleanups: (() => void)[] = []
+    let isCursorInside = false
+    let isPollInFlight = false
+    const pollCursor = async () => {
+      if (isPollInFlight) return
+      const container = vieweportRef.current
+      if (!container) return
+      isPollInFlight = true
+      try {
+        const rect = container.getBoundingClientRect()
+        const mainWin = await getCurrentWindow();
+        // Only fetch cursor position + window position; scaleFactor is cached from init
+        const [pos, cursor] = await Promise.all([
+          mainWin.innerPosition(),
+          cursorPosition()
+        ])
+
+        const minX = pos.x + rect.left * scale
+        const maxX = pos.x + rect.right * scale
+        const minY = pos.y + rect.top * scale
+        const maxY = pos.y + rect.bottom * scale
+
+        const inside = cursor.x >= minX && cursor.x <= maxX && cursor.y >= minY && cursor.y <= maxY
+        if (inside && !isCursorInside) {
+          isCursorInside = true
+          window.dispatchEvent(new CustomEvent('mainCursorEnter', {
+            detail: { x: cursor.x, y: cursor.y }
+          }))
+        } else if (!inside && isCursorInside) {
+          isCursorInside = false
+          window.dispatchEvent(new CustomEvent('mainCursorLeave', {
+            detail: { x: cursor.x, y: cursor.y }
+          }))
+        }
+      } catch (e) {
+        console.error("[Webview] Failed to poll cursor position:", e)
+      } finally {
+        isPollInFlight = false
+      }
+    }
+    const cursorInterval = setInterval(pollCursor, 250)
+    cleanups.push(() => clearInterval(cursorInterval))
+
+    return () => cleanups.forEach(fn => fn())
+  }, [mounted])
+
 
   usePythonEvent('eval', async (data) => {
+    console.log(data)
     if (data.label !== 'main') {
-      await invoke('eval_in_webview', {
-        label: data.label,
-        script: data.script,
-      });
+      await AsyncLock.run(async () => {
+        await invoke('eval_in_webview', {
+          label: data.label,
+          script: data.script,
+        });
+      })
     }
   });
 
-
-  useEffect(() => {
-    if (!mounted || !isTauri) return;
-
-    const handleKeyDown = async (e: KeyboardEvent) => {
-      if (e.key !== 'F11') return;
-      e.preventDefault();
-      const win = getCurrentWindow();
-      await win.setFullscreen(!(await win.isFullscreen()));
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [mounted]);
 
   useEffect(() => {
     (async () => {
@@ -216,12 +362,12 @@ export default function Container({ Apps }: { Apps: Project }) {
         Theme.theme = savedTheme[0]?.theme ?? 'dark';
         Theme.layout = savedTheme[0]?.layout ?? defaultLayout;
       }
-      setInitialzeTheme(true);
+      setInitializeTheme(true);
     })();
   }, []);
   useEffect(() => {
-    if (!intialzeTheme) return;
-    // Skip the first run caused by intialzeTheme flipping to true,
+    if (!intializeTheme) return;
+    // Skip the first run caused by intializeTheme flipping to true,
     // because snaptheme hasn't caught up with the newly set Theme values yet.
     if (isFirstSave.current) {
       isFirstSave.current = false;
@@ -243,7 +389,7 @@ export default function Container({ Apps }: { Apps: Project }) {
       }) as { theme?: string, layout?: string };
       console.warn("Theme :", savedTheme);
     })();
-  }, [snaptheme, intialzeTheme]);
+  }, [snaptheme, intializeTheme]);
   const checkModel = async () => {
     const res: any = await pyInvoke<{ data?: Record<string, unknown> }>('file', {
       command: "read",
@@ -556,6 +702,10 @@ export default function Container({ Apps }: { Apps: Project }) {
   }, [snaptabs]);
 
   useEffect(() => {
+    if (Object.keys(snaptabs).length == 0) setMenuBar.current = null
+  }, [snaptabs])
+
+  useEffect(() => {
     setMounted(true);
   }, []);
 
@@ -568,12 +718,22 @@ export default function Container({ Apps }: { Apps: Project }) {
     })()
   }, [workspace, active])
 
-  useEffect(() => {
+  useKeyEffect(() => {
     (async () => {
-      const mw = await getCurrentWebview()
-      await mw.reparent(await getCurrentWindow())
+      const now = Date.now();
+      if (now - lastDeleteTimeRef.current < 200) {
+        return;
+      }
+      try {
+        lastDeleteTimeRef.current = now;
+        (async () => {
+          await deleteActiveTabWithGroupSelection();
+        })()
+      } catch (Err) {
+        console.error("Error deleting tab:", Err);
+      }
     })()
-  }, [active])
+  }, ["control", "w"])
 
   useKeyEffect(() => {
     const activeElement = document.activeElement;
@@ -604,19 +764,6 @@ export default function Container({ Apps }: { Apps: Project }) {
     }
   })
 
-  useKeyEffect(() => {
-    const now = Date.now();
-    if (now - lastDeleteTimeRef.current < 80) {
-      return;
-    }
-    try {
-      lastDeleteTimeRef.current = now;
-      (async () => { await deleteTabWithGroupSelection(active); })()
-    } catch (Err) {
-      console.error("Error deleting tab:", Err);
-    }
-
-  }, ["control", "w"]);
 
   useEffect(() => {
     if (mounted) {
@@ -635,6 +782,10 @@ export default function Container({ Apps }: { Apps: Project }) {
       KeyState.setCtrl(event.ctrlKey);
       KeyState.setShift(event.shiftKey);
       KeyState.setAlt(event.altKey);
+      if (event.ctrlKey && event.key >= '1' && event.key <= '9') {
+        event.preventDefault();
+        // TODO
+      }
     }
     function onKeyUp(event: KeyboardEvent) {
       KeyState.setKey(event.key.toLowerCase(), false);
@@ -687,14 +838,14 @@ export default function Container({ Apps }: { Apps: Project }) {
   }, [viewportWidth, viewportHeight, viewportOverflowX, viewportOverflowY, viewportAspectRatio])
   const [warmup, setWarmup] = useState(true);
   useEffect(() => {
-    if (isStreamReady && intialzeTheme) {
+    if (isStreamReady && intializeTheme) {
       setTimeout(() => {
         setWarmup(false);
       }, 100)
     }
   },
-    [isStreamReady, intialzeTheme]);
-  if (!intialzeTheme) {
+    [isStreamReady, intializeTheme]);
+  if (!intializeTheme || !intializeBrowser) {
     return <AppLoading status={startupStatus} />
   }
   if (workspace === null || isSwitchWorkspace) {
@@ -1036,8 +1187,10 @@ export default function Container({ Apps }: { Apps: Project }) {
               ]}>
               <div onPointerDown={async () => {
                 if (isTauri) {
-                  const mw = await getCurrentWebview()
-                  await mw.reparent(await getCurrentWindow())
+                  await AsyncLock.run(async () => {
+                    const mw = await getCurrentWebview()
+                    await mw.reparent(await getCurrentWindow())
+                  })
                 }
               }} className='hover:bg-[hsl(var(--hover))] border border-transparent hover:border-[hsl(var(--chat-border))] p-1 rounded-lg z-10'>
                 <Settings className='w-5 h-5' />

@@ -322,11 +322,11 @@ export function useDatabaseImplBase<T = Record<string, unknown>>(
                     if (rows.length > 0 || typeof database[`${databaseName}.${tb}`].data !== "undefined") {
                         database[`${databaseName}.${tb}`]._isPrimitive = false;
                         database[`${databaseName}.${tb}`].data = finalData;
-                        if(!ready) setReady(true)
                     }
                 }
             }
         }
+        if (!ready) setReady(true)
     }
     function deepEqual(obj1: any, obj2: any): boolean {
         if (obj1 === obj2) return true;
@@ -488,7 +488,7 @@ export function useDatabaseImplBase<T = Record<string, unknown>>(
         if (db._subscriptionCount >= 1) {
             pyInvoke('db_subscribe', { db: databaseName, table: tb }).then(() => {
                 refreshTable(databaseName, tb);
-            }).catch(() => {});
+            }).catch(() => { });
         }
         // WebSocket mode: event arrives as window CustomEvent with {detail: {response: {timestamp}}}
         const handleDbChangeWS = (event: Event) => {
@@ -521,7 +521,7 @@ export function useDatabaseImplBase<T = Record<string, unknown>>(
             import("@tauri-apps/api/event").then(({ listen }) => {
                 listen<{ timestamp: number }>(sanitizeTauriEvent(eventName), (e) => handleDbChangeTauri(e.payload))
                     .then((fn) => { tauriUnlisten = fn; })
-                    .catch(() => {});
+                    .catch(() => { });
             });
         } else {
             window.addEventListener(eventName, handleDbChangeWS);
@@ -537,7 +537,7 @@ export function useDatabaseImplBase<T = Record<string, unknown>>(
                 if (currentDb) {
                     currentDb._subscriptionCount--;
                     if (currentDb._subscriptionCount === 0) {
-                        pyInvoke('db_unsubscribe', { db: databaseName, table: tb }).catch(() => {});
+                        pyInvoke('db_unsubscribe', { db: databaseName, table: tb }).catch(() => { });
                     }
                 }
             }

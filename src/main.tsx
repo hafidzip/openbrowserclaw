@@ -25,8 +25,6 @@ const Apps: Project = {
   }
 }
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
-  <React.StrictMode>
-    <Container Apps={Apps} />
-  </React.StrictMode>,
-)
+ReactDOM.createRoot(document.getElementById('root')!).render(<React.StrictMode>
+  <Container Apps={Apps} />
+</React.StrictMode>)

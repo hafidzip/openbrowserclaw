@@ -1,5 +1,11 @@
 import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react'
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "openchad-react/ui"
+import { TooltipProvider } from "openchad-react/ui"
+import {
   Plus,
   Trash2,
   ZoomIn,
@@ -7,16 +13,23 @@ import {
   Maximize2,
   Undo2,
   Redo2,
-  RotateCcw,
-  Check,
   Info,
   Play,
-  Pause,
-  Square
+  Square,
+  FileText,
+  X,
+  Scroll,
+  RefreshCcw,
+  InfoIcon,
+  Copy,
+  Check
 } from 'lucide-react'
-import { ref, useFolder, useTheme, type AppInfo } from 'openchad-react'
+import { ref, useFolder, useTheme, type AppInfo, Dropdown, useAvailableModels } from 'openchad-react'
 import clsx from 'clsx'
 import { MenuBar } from 'openchad-react/utils/state'
+import { open } from '@tauri-apps/plugin-dialog';
+
+
 
 //  Types 
 
@@ -25,11 +38,12 @@ interface AgentNode {
   name: string
   tools: string[]
   children: string[]
-  color: AgentColor
-  toolValues?: Record<string, Record<string, any>>
+  toolValues: Record<string, Record<string, any>>
+  isRunning: boolean
+  isParallel: boolean
+  model: string | null
+  skillPath?: string | null
 }
-
-type AgentColor = 'blue' | 'green' | 'rose' | 'amber' | 'neutral'
 
 //  Constants 
 
@@ -49,16 +63,11 @@ const INITIAL_AGENTS: Record<string, AgentNode> = {
     name: 'CEO',
     tools: [],
     children: [],
-    color: 'neutral'
+    isRunning: false,
+    isParallel: false,
+    toolValues: {},
+    model: null
   }
-}
-
-const COLOR_DOT: Record<AgentColor, string> = {
-  blue: '#60a5fa',
-  green: '#34d399',
-  rose: '#fb7185',
-  amber: '#fbbf24',
-  neutral: 'hsl(var(--accent))',
 }
 
 //  Auto-Resize Textarea 
@@ -113,6 +122,103 @@ const AutoResizeTextarea = React.memo(function AutoResizeTextarea({
     />
   )
 })
+
+const SearchableDropdown = React.memo(function SearchableDropdown({
+  options,
+  value,
+  onChange,
+  placeholder = "Select...",
+  className = "w-70",
+  themeStyles,
+  triggerClassName = "",
+  onOpenChange,
+}: {
+  options: string[] | { value: string; label: string; description?: string }[];
+  value: string;
+  onChange: (val: string) => void;
+  placeholder?: string;
+  className?: string;
+  themeStyles: any;
+  triggerClassName?: string;
+  onOpenChange?: (open: boolean) => void;
+}) {
+  const [search, setSearch] = useState("");
+  const [open, setOpen] = useState(false);
+
+  const normalizedOptions = useMemo(() => {
+    return options.map(opt => {
+      if (typeof opt === 'string') {
+        return { value: opt, label: opt };
+      }
+      return opt;
+    });
+  }, [options]);
+
+  const filteredOptions = useMemo(() => {
+    if (!search) return normalizedOptions;
+    const lower = search.toLowerCase();
+    return normalizedOptions.filter(opt =>
+      opt.label.toLowerCase().includes(lower) ||
+      (opt.description && opt.description.toLowerCase().includes(lower))
+    );
+  }, [normalizedOptions, search]);
+
+  const dropdownContent = useMemo(() => {
+    return filteredOptions.map(opt => ({
+      content: (
+        <div className="flex flex-col gap-0.5 w-full text-left">
+          <span>{opt.label}</span>
+          {opt.description && (
+            <span className="text-[9px] opacity-65 truncate max-w-[200px]" title={opt.description}>
+              {opt.description}
+            </span>
+          )}
+        </div>
+      ),
+      trigger: () => {
+        onChange(opt.value);
+        setOpen(false);
+        setSearch("");
+      }
+    }));
+  }, [filteredOptions, onChange]);
+
+  const selectedOption = normalizedOptions.find(opt => opt.value === value);
+
+  return (
+    <Dropdown
+      open={open}
+      onOpenChange={(isOpen) => {
+        setOpen(isOpen);
+        if (!isOpen) {
+          setSearch("");
+          if (onOpenChange) onOpenChange(isOpen);
+        }
+      }}
+      search={search}
+      setSearch={setSearch}
+      content={dropdownContent}
+      className={className}
+      align="start"
+    >
+      <button
+        type="button"
+        className={clsx(
+          "p-2 text-sm rounded-lg border outline-none text-left flex justify-between items-center",
+          triggerClassName
+        )}
+        style={{
+          background: themeStyles.muted,
+          borderColor: themeStyles.border,
+          color: themeStyles.accent
+        }}
+      >
+        <span className="truncate">{selectedOption ? selectedOption.label : placeholder}</span>
+        <span className="ml-2 opacity-50">▾</span>
+      </button>
+    </Dropdown>
+  );
+});
 
 //  Array Field Editor for Tool Settings 
 
@@ -203,22 +309,21 @@ const ArrayFieldEditor = React.memo(function ArrayFieldEditor({
               >
                 {isEditing ? (
                   isEnum ? (
-                    <select
+                    <SearchableDropdown
+                      options={items || []}
                       value={editingValue}
-                      autoFocus
-                      onChange={(e) => setEditingValue(e.target.value)}
-                      onBlur={commitEdit}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') commitEdit();
-                        if (e.key === 'Escape') setEditingIdx(null);
+                      onChange={(val) => {
+                        const newList = [...list];
+                        newList[editingIdx!] = val;
+                        onChange(newList);
+                        setEditingIdx(null);
                       }}
-                      className="bg-transparent border-none outline-none text-[10px] p-0 font-semibold"
-                      style={{ color: themeStyles.accent, background: themeStyles.muted }}
-                    >
-                      {(items || []).map((opt) => (
-                        <option key={opt} value={opt} style={{ background: themeStyles.cardBg, color: themeStyles.accent }}>{opt}</option>
-                      ))}
-                    </select>
+                      onOpenChange={(isOpen) => {
+                        if (!isOpen) setEditingIdx(null);
+                      }}
+                      themeStyles={themeStyles}
+                      triggerClassName="border-none p-0 h-auto bg-transparent! text-[10px] font-semibold"
+                    />
                   ) : (
                     <input
                       type={type === 'array:number' ? 'number' : 'text'}
@@ -259,27 +364,19 @@ const ArrayFieldEditor = React.memo(function ArrayFieldEditor({
       {/* Input row */}
       <div className="flex gap-1">
         {isEnum ? (
-          <select
+          <SearchableDropdown
+            options={items || []}
             value={inputValue}
-            onChange={(e) => {
-              const val = e.target.value;
+            onChange={(val) => {
               if (val) {
                 onChange([...list, val]);
                 setInputValue('');
               }
             }}
-            className="flex-1 px-2 py-1 text-xs rounded border outline-none"
-            style={{
-              background: themeStyles.muted,
-              borderColor: themeStyles.border,
-              color: themeStyles.accent
-            }}
-          >
-            <option value="">Add item...</option>
-            {(items || []).map((opt) => (
-              <option key={opt} value={opt} style={{ background: themeStyles.cardBg, color: themeStyles.accent }}>{opt}</option>
-            ))}
-          </select>
+            placeholder="Add item..."
+            themeStyles={themeStyles}
+            triggerClassName="flex-1"
+          />
         ) : (
           <>
             <input
@@ -324,19 +421,19 @@ interface PlaceholderAgentProps {
   id: string
   posX: number
   posY: number
-  accentColor: string
   isDark: boolean
   onClick: () => void
 }
 
 const PlaceholderAgent = React.memo(function PlaceholderAgent({
-  id, posX, posY, accentColor, isDark, onClick
+  id, posX, posY, isDark, onClick
 }: PlaceholderAgentProps) {
   const [hovered, setHovered] = useState(false)
   const border = 'hsl(var(--border))'
   const cardBg = 'hsl(var(--card))'
   const size = 32
   const halfSize = size / 2
+  const accentColor = 'hsl(var(--accent))'
 
   return (
     <div
@@ -347,7 +444,7 @@ const PlaceholderAgent = React.memo(function PlaceholderAgent({
         height: size,
         left: posX - halfSize,
         top: posY - halfSize,
-        background: hovered ? `${accentColor}18` : cardBg,
+        background: hovered ? 'hsl(var(--accent) / 0.1)' : cardBg,
         borderColor: hovered ? accentColor : border,
         color: hovered ? accentColor : isDark ? 'rgba(255,255,255,0.4)' : 'rgba(0,0,0,0.3)',
         transition: 'left 350ms cubic-bezier(0.16, 1, 0.3, 1), top 350ms cubic-bezier(0.16, 1, 0.3, 1), background 200ms ease-out, border-color 200ms ease-out, color 200ms ease-out, transform 200ms ease-out, box-shadow 200ms ease-out',
@@ -372,6 +469,7 @@ interface AgentCardProps {
   isSelected: boolean
   isHovered: boolean
   isPathHighlight: boolean
+  isRunningPath: boolean
   isDark: boolean
   onSelect: (id: string) => void
   onHover: (id: string | null) => void
@@ -379,13 +477,15 @@ interface AgentCardProps {
 }
 
 const AgentCard = React.memo(function AgentCard({
-  id, agent, posX, posY, isSelected, isHovered, isPathHighlight, isDark,
+  id, agent, posX, posY, isSelected, isHovered, isPathHighlight, isRunningPath, isDark,
   onSelect, onHover, onDelete
 }: AgentCardProps) {
-  const dotColor = COLOR_DOT[agent.color || 'neutral']
+  const dotColor = 'hsl(var(--accent))'
   const mutedFg = isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.45)'
   const cardBg = 'hsl(var(--card))'
   const border = 'hsl(var(--border))'
+  const isRunning = !!agent.isRunning
+  const runningColor = '#34d399'
 
   return (
     <div
@@ -397,16 +497,20 @@ const AgentCard = React.memo(function AgentCard({
         top: posY - CARD_HALF_H,
         transformOrigin: 'center',
         background: cardBg,
-        borderColor: isSelected
-          ? dotColor
-          : isHovered || isPathHighlight
-            ? dotColor + '80'
-            : border,
-        boxShadow: isSelected
-          ? `0 0 0 2px ${dotColor}, 0 4px 20px rgba(0,0,0,0.15)`
-          : isHovered
-            ? '0 4px 20px rgba(0,0,0,0.12)'
-            : 'none',
+        borderColor: isRunning
+          ? runningColor
+          : isSelected
+            ? dotColor
+            : isHovered || isPathHighlight
+              ? 'hsl(var(--accent) / 0.5)'
+              : border,
+        boxShadow: isRunning
+          ? `0 0 0 2px ${runningColor}60, 0 0 16px ${runningColor}40`
+          : isSelected
+            ? `0 0 0 2px ${dotColor}, 0 4px 20px rgba(0,0,0,0.15)`
+            : isHovered
+              ? '0 4px 20px rgba(0,0,0,0.12)'
+              : 'none',
         transform: isSelected ? 'scale(1.03)' : isHovered ? 'scale(1.015)' : 'scale(1)',
         transition: 'left 350ms cubic-bezier(0.16, 1, 0.3, 1), top 350ms cubic-bezier(0.16, 1, 0.3, 1), border-color 200ms ease-out, box-shadow 200ms ease-out, transform 200ms ease-out, background 200ms ease-out',
       }}
@@ -416,10 +520,18 @@ const AgentCard = React.memo(function AgentCard({
     >
       <div className="flex items-center justify-between mb-1">
         <div className="flex-1 flex justify-center items-center gap-1.5 min-w-0">
-          <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: dotColor }} />
+          {isRunning ? (
+            <RefreshCcw
+              size={10}
+              className="animate-spin flex-shrink-0"
+              style={{ color: runningColor }}
+            />
+          ) : (
+            <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: dotColor }} />
+          )}
           <span
             className="text-[10px] font-mono tracking-wider font-bold uppercase truncate block min-w-0"
-            style={{ color: mutedFg }}
+            style={{ color: isRunning ? runningColor : mutedFg }}
           >
             {agent.name}
           </span>
@@ -502,10 +614,62 @@ const AgentEditor = ({
   themeStyles,
   toolFields
 }: AgentEditorProps) => {
-  const snaptheme = useTheme()
-  const isDark = snaptheme.theme === 'dark'
+  const { models: availableModels, isLoading: modelsLoading } = useAvailableModels()
+  const modelObj = availableModels.find(m => m.id === agents[selected].model)
+  const label = modelObj?.name ?? agents[selected].model
 
-  return <div className="flex flex-col gap-4">
+  const dropZoneRef = useRef<HTMLDivElement>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [copiedId, setCopiedId] = useState(false);
+
+  const skillPath = agents[selected].skillPath || null;
+
+  const setSkillPath = (path: string | null) => {
+    handleUpdateAgentProperty(selected, { skillPath: path });
+  };
+
+  const handleCopyId = () => {
+    navigator.clipboard.writeText(selected);
+    setCopiedId(true);
+    setTimeout(() => setCopiedId(false), 1500);
+  };
+
+  useEffect(() => {
+    const handleDragDrop = (e: Event) => {
+      const customEvent = e as CustomEvent;
+      const payload = customEvent.detail;
+      if (!payload || !dropZoneRef.current) return;
+
+      const rect = dropZoneRef.current.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const x = payload.position.x / dpr;
+      const y = payload.position.y / dpr;
+
+      const isInside = x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+
+      if (payload.type === 'hover') {
+        setIsDragOver(isInside);
+      } else if (payload.type === 'drop') {
+        setIsDragOver(false);
+        if (isInside && payload.paths && payload.paths.length > 0) {
+          const filePath = payload.paths[0];
+          if (filePath.endsWith('.md')) {
+            setSkillPath(filePath);
+          }
+        }
+      } else if (payload.type === 'cancel') {
+        setIsDragOver(false);
+      }
+    };
+
+    window.addEventListener('drag_drop', handleDragDrop);
+    return () => {
+      window.removeEventListener('drag_drop', handleDragDrop);
+    };
+  }, [selected, agents]);
+
+
+  return <div className="flex flex-col gap-4 pb-10">
     <div>
       <span
         className="text-[10px] font-mono font-bold tracking-wider uppercase"
@@ -513,10 +677,44 @@ const AgentEditor = ({
       >
         Selected Agent Properties
       </span>
-      <h3 className="text-sm font-semibold mt-1" style={{ color: themeStyles.accent }}>
+      <h3 className="text-sm font-semibold mt-1 flex items-center gap-2" style={{ color: themeStyles.accent }}>
         ID: <span className="font-mono text-xs">{selected}</span>
+        {copiedId
+          ? <Check size={14} className="text-emerald-400 transition-all" />
+          : <Copy size={14} className="cursor-pointer transition-all" onClick={handleCopyId} />
+        }
       </h3>
     </div>
+
+    {/* Model selection */}
+    <div className="flex flex-col gap-1.5">
+      <label className="text-xs font-semibold" style={{ color: themeStyles.mutedFg }}>
+        Model
+      </label>
+      <SearchableDropdown
+        options={availableModels
+          .filter(m => m.id !== agents[selected].model)
+          .map(m => ({
+            value: m.id!,
+            label: m.name ?? m.id!,
+            description: m.backend?.split(':').pop(),
+          }))}
+        value=""
+        onChange={(val) => {
+          if (val) handleUpdateAgentProperty(selected, { model: val })
+        }}
+        placeholder={
+          modelsLoading
+            ? 'Loading models…'
+            : agents[selected].model
+              ? `${label}`
+              : 'Select model…'
+        }
+        themeStyles={themeStyles}
+        triggerClassName="w-full"
+      />
+    </div>
+
 
     {/* Name field */}
     <div className="flex flex-col gap-1.5">
@@ -526,7 +724,7 @@ const AgentEditor = ({
         type="text"
         value={agents[selected].name}
         onChange={(e) => handleUpdateAgentProperty(selected, { name: e.target.value }, true)}
-        className="px-3 py-2 text-xs rounded-lg outline-none transition-colors border"
+        className="p-2.5 text-xs rounded-lg outline-none transition-colors border"
         style={{
           background: themeStyles.muted,
           borderColor: themeStyles.border,
@@ -535,6 +733,71 @@ const AgentEditor = ({
         onFocus={(e) => (e.currentTarget.style.borderColor = themeStyles.accent)}
         onBlur={(e) => (e.currentTarget.style.borderColor = themeStyles.border)}
       />
+    </div>
+
+    {/* SKILL selection */}
+    <label className="text-xs font-semibold" style={{ color: themeStyles.mutedFg }}>Skill</label>
+    <div className='w-full flex items-center justify-center'>
+      {skillPath ? (
+        <div
+          ref={dropZoneRef}
+          onClick={async () => {
+            setSkillPath(await open({
+              defaultPath: ((window as any).PROJECT_ROOT as string) + "/SKILLS",
+              filters: [{ name: "Skill Files", extensions: ["md"] }]
+            }))
+          }}
+          className={[
+            "flex flex-col items-center justify-center w-48 h-36 relative group",
+            "border-2 border-solid rounded-xl transition-all cursor-pointer text-center p-4",
+            isDragOver
+              ? "border-accent bg-accent/10 scale-105"
+              : "border-accent bg-accent/5 hover:bg-accent/10 hover:border-accent/80"
+          ].join(' ')}>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              setSkillPath(null);
+            }}
+            className="absolute top-2 right-2 p-1 rounded-full bg-gray-500/10 hover:bg-red-500/20 text-gray-400 hover:text-red-400 transition-all opacity-0 group-hover:opacity-100"
+            title="Remove skill"
+          >
+            <X size={14} />
+          </button>
+          <Scroll className="w-8 h-8 text-accent mb-2 animate-pulse" style={{ animationDuration: '3s' }} />
+          <p className="text-xs font-bold truncate max-w-full" style={{ color: themeStyles.accent }}>
+            {skillPath.split(/[\\/]/).pop()}
+          </p>
+          <p
+            className="text-[10px] text-gray-400 dark:text-gray-500 truncate max-w-full mt-1.5 cursor-help"
+            title={skillPath}
+          >
+            {skillPath}
+          </p>
+        </div>
+      ) : (
+        <div
+          ref={dropZoneRef}
+          onClick={async () => {
+            setSkillPath(await open({
+              defaultPath: ((window as any).PROJECT_ROOT as string) + "/SKILLS",
+              filters: [{ name: "Skill Files", extensions: ["md"] }]
+            }))
+          }}
+          className={[
+            "flex flex-col items-center justify-center w-48 h-36",
+            "border-2 border-dotted rounded-xl transition-colors cursor-pointer text-center p-4",
+            isDragOver
+              ? "border-accent bg-accent/10 scale-105"
+              : "border-gray-400 hover:border-gray-600 dark:border-gray-600 dark:hover:border-gray-400"
+          ].join(' ')}>
+          <Scroll className="w-8 h-8 text-accent mb-2 animate-pulse" style={{ animationDuration: '3s' }} />
+          <p className="text-xs font-medium text-gray-400">
+            Select or drop <span className="font-mono px-1 rounded font-bold text-accent">SKILL.md</span>
+          </p>
+        </div>
+      )}
     </div>
 
     {/* Tools selection */}
@@ -564,17 +827,16 @@ const AgentEditor = ({
           <span className="text-[10px] italic" style={{ color: themeStyles.mutedFg }}>No tools selected</span>
         )}
       </div>
-      <select
-        id="select-add-tool"
-        className="px-2.5 py-1.5 text-xs rounded-lg outline-none transition-colors border"
-        style={{
-          background: themeStyles.muted,
-          borderColor: themeStyles.border,
-          color: themeStyles.accent
-        }}
-        defaultValue=""
-        onChange={(e) => {
-          const val = e.target.value
+      <SearchableDropdown
+        options={availableTools
+          .filter(t => !(agents[selected].tools || []).includes(t.name))
+          .map(t => ({
+            value: t.name,
+            label: `${t.name} ${t.source !== "internal" ? `(${t.source})` : ""}`,
+            description: t.description
+          }))}
+        value=""
+        onChange={(val) => {
           if (val) {
             const currentTools = agents[selected].tools || []
             if (!currentTools.includes(val)) {
@@ -582,19 +844,12 @@ const AgentEditor = ({
                 tools: [...currentTools, val]
               })
             }
-            e.target.value = "" // Reset select element
           }
         }}
-      >
-        <option value="" disabled>Add tool...</option>
-        {availableTools
-          .filter(t => !(agents[selected].tools || []).includes(t.name))
-          .map(t => (
-            <option key={t.name} value={t.name} title={t.description}>
-              {t.name} {t.source !== "internal" && (`(${t.source})`)}
-            </option>
-          ))}
-      </select>
+        placeholder="Add tool..."
+        themeStyles={themeStyles}
+        triggerClassName="w-full"
+      />
     </div>
 
     {/* Tool settings / fields */}
@@ -634,21 +889,14 @@ const AgentEditor = ({
                     {field.name}
                   </label>
                   {type === 'enum' ? (
-                    <select
+                    <SearchableDropdown
+                      options={field.value?.items || []}
                       value={currentValue}
-                      onChange={(e) => updateValue(e.target.value)}
-                      className="px-2 py-1 text-xs rounded border outline-none"
-                      style={{
-                        background: themeStyles.muted,
-                        borderColor: themeStyles.border,
-                        color: themeStyles.accent
-                      }}
-                    >
-                      <option value="">Select...</option>
-                      {(field.value?.items || []).map((item: string) => (
-                        <option key={item} value={item}>{item}</option>
-                      ))}
-                    </select>
+                      onChange={(val) => updateValue(val)}
+                      placeholder="Select..."
+                      themeStyles={themeStyles}
+                      triggerClassName="w-full"
+                    />
                   ) : type?.startsWith('array:') ? (
                     <ArrayFieldEditor
                       value={currentValue}
@@ -689,33 +937,43 @@ const AgentEditor = ({
         </div>
       ))}
 
-    {/* Accent Color selection */}
+    {/* isParallel toggle */}
     <div className="flex flex-col gap-1.5">
-      <label className="text-xs font-semibold" style={{ color: themeStyles.mutedFg }}>Accent Color</label>
+      <label className="text-xs font-semibold flex items-center gap-1" style={{ color: themeStyles.mutedFg }}>
+        <span>Parallel</span>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger>
+              <InfoIcon size={12} />
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>If enabled, all child agents will be execute at the same time.</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </label>
       <div className="flex items-center gap-2">
-        {(['blue', 'green', 'rose', 'amber', 'neutral'] as AgentColor[]).map((c) => {
-          const dot = COLOR_DOT[c]
-          const active = agents[selected].color === c
-          return (
-            <button
-              key={c}
-              id={`btn-color-${c}`}
-              onClick={() => handleUpdateAgentProperty(selected, { color: c })}
-              className="w-6 h-6 rounded-full flex items-center justify-center"
-              style={{
-                background: dot,
-                boxShadow: active
-                  ? `0 0 0 2px ${themeStyles.cardBg}, 0 0 0 3.5px ${dot}`
-                  : 'none',
-                transform: active ? 'scale(1.15)' : 'scale(1)',
-                transition: 'transform 150ms ease-out, box-shadow 150ms ease-out',
-              }}
-              title={c}
-            >
-              {active && <Check size={10} style={{ color: isDark ? '#000' : '#fff' }} />}
-            </button>
-          )
-        })}
+        <button
+          type="button"
+          id={`btn-parallel-${selected}`}
+          onClick={() => handleUpdateAgentProperty(selected, { isRunning: !agents[selected].isRunning })}
+          className="relative w-9 h-5 rounded-full flex-shrink-0 transition-colors duration-200 focus:outline-none"
+          style={{
+            background: agents[selected].isParallel ? '#34d399' : themeStyles.muted,
+            border: `1px solid ${agents[selected].isParallel ? '#34d399' : themeStyles.border}`,
+          }}
+        >
+          <span
+            className="absolute top-0.5 w-4 h-4 rounded-full shadow transition-all duration-200"
+            style={{
+              background: agents[selected].isParallel ? '#fff' : themeStyles.mutedFg,
+              left: agents[selected].isParallel ? '17px' : '2px',
+            }}
+          />
+        </button>
+        <span className="text-xs" style={{ color: agents[selected].isParallel ? '#34d399' : themeStyles.mutedFg }}>
+          {agents[selected].isParallel ? 'Active' : 'Idle'}
+        </span>
       </div>
     </div>
 
@@ -772,18 +1030,53 @@ const parseFields = (content: string) => {
   return [];
 }
 
-export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
+export function App({ pyInvoke, useActiveTabId, useTabDatabase, tabId }: AppInfo) {
   const snaptheme = useTheme()
   const isDark = snaptheme.theme === 'dark'
   const activeTabId = useActiveTabId()
+
   //  Core state 
-  const [agents, setAgents] = useState<Record<string, AgentNode>>(INITIAL_AGENTS)
+  const [agents, setAgents, { ready }] = useTabDatabase<Record<string, AgentNode>>("agents", { initialValue: INITIAL_AGENTS })
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>('1')
   const [hoveredAgentId, setHoveredAgentId] = useState<string | null>(null)
   const [isRunning, setIsRunning] = useState(false)
   const [availableTools, setAvailableTools] = useState<{ name: string; description: string; source: 'internal' | 'mcp' }[]>([])
   const [tools] = useFolder('Tools')
   const [toolFields, setToolFields] = useState<Record<string, any[]>>({})
+
+  useEffect(() => {
+    if (ready && agents) {
+      setAgents((prev) => {
+        if (!prev) return prev
+        const current = {} as Record<string, AgentNode>
+
+        Object.keys(prev).forEach((key) => {
+          const agent = prev[key]
+          if (agent) {
+            current[String(key)] = {
+              ...agent,
+              id: String(agent.id),
+              children: Array.isArray(agent.children) ? agent.children.map(String) : [],
+              tools: Array.isArray(agent.tools) ? agent.tools.map(String) : [],
+              isRunning: false
+            }
+          }
+        })
+
+        Object.keys(current).forEach((key) => {
+          current[key].children = current[key].children.filter(cid => current[cid] !== undefined)
+        })
+
+        historyRef.current = {
+          stack: [JSON.parse(JSON.stringify(current))],
+          index: 0
+        }
+        setHistoryIndex(0)
+        setHistoryLength(1)
+        return current;
+      })
+    }
+  }, [ready])
 
   useEffect(() => {
     if (activeTabId == tabId) {
@@ -801,7 +1094,7 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
       await Promise.all(fieldsPaths.map(async (fieldsPath) => {
         try {
           const folderParts = fieldsPath.split('/')
-          folderParts.pop() // Remove 'fields.ts'
+          folderParts.pop()
           const toolFolder = folderParts.join('/')
           const dirName = folderParts[folderParts.length - 1]
 
@@ -885,11 +1178,11 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     fetchTools()
   }, [pyInvoke])
 
-  //  Canvas view state (committed values for React render) 
+  //  Canvas view state 
   const [zoom, setZoom] = useState(1.0)
   const [pan, setPan] = useState({ x: 0, y: 0 })
 
-  //  Refs for real-time interaction (bypass React re-renders) 
+  //  Refs for real-time interaction 
   const panRef = useRef({ x: 0, y: 0 })
   const zoomRef = useRef(1.0)
   const isDraggingCanvas = useRef(false)
@@ -907,57 +1200,55 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
   const gridRef = useRef<HTMLDivElement>(null)
   const zoomLabelRef = useRef<HTMLDivElement>(null)
 
-  //  Undo/Redo — ref-based stack to avoid stale-closure bugs 
-  // historyRef.current = { stack: [...snapshots], index: pointer }
+  //  Undo/Redo 
   const historyRef = useRef<{ stack: Record<string, AgentNode>[]; index: number }>({
-    stack: [INITIAL_AGENTS],
+    stack: [agents || INITIAL_AGENTS],
     index: 0,
   })
-  // Mirror index in state so toolbar buttons re-render correctly
   const [historyIndex, setHistoryIndex] = useState(0)
   const [historyLength, setHistoryLength] = useState(1)
-  // Debounce timer for text-field edits (name, tasks, instruction…)
   const historyDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const [canvasDimensions, setCanvasDimensions] = useState({ width: 800, height: 600 })
 
-  //  Layout computation (Reingold-Tilford compact agent layout) 
+  //  Layout computation (Reingold-Tilford) 
   const agentPositions = useMemo(() => {
     const allChildIds = new Set<string>()
-    Object.values(agents).forEach(a => a.children.forEach(c => allChildIds.add(c)))
-    const roots = Object.keys(agents).filter(id => !allChildIds.has(id))
-    const primaryRoots = roots.length > 0 ? roots : [Object.keys(agents)[0]]
+    Object.values(agents || {}).forEach(a => a?.children?.forEach(c => allChildIds.add(String(c))))
+    const roots = Object.keys(agents || {}).filter(id => !allChildIds.has(id))
+    const primaryRoots = roots.length > 0 ? roots : (Object.keys(agents || {}).length > 0 ? [Object.keys(agents || {})[0]] : [])
 
-    // Helper to resolve a virtual structure containing placeholder nodes
+    // ─── getVirtualAgent ───────────────────────────────────────────────────────
+    // Sibling placeholders are NO LONGER included in children here.
+    // They are injected into `positions` manually after layout so they never
+    // affect centering calculations (which was causing the staircase).
     const getVirtualAgent = (id: string): AgentNode | undefined => {
-      const agent = agents[id]
+      const agent = agents?.[String(id)]
       if (agent) {
-        // If it is a real agent:
-        // - If it has no children, add a child placeholder directly below it.
-        // - If it has children, append a sibling placeholder next to its children.
-        const children = agent.children.length === 0
+        const children = (agent.children || []).length === 0
           ? [`placeholder-child-${id}`]
-          : [...agent.children, `placeholder-sibling-${id}`]
+          : agent.children.map(String)   // ← sibling placeholder removed
         return { ...agent, children }
       }
-      if (id.startsWith('placeholder-')) {
+      if (String(id).startsWith('placeholder-')) {
         return {
           id,
           name: '+',
           tools: [],
           children: [],
-          color: 'neutral'
+          toolValues: {},
+          isParallel: false,
+          isRunning: false,
+          model: null
         }
       }
       return undefined
     }
 
-    // Reingold-Tilford style: assign preliminary x, then shift subtrees
-    const prelim: Record<string, number> = {}   // preliminary x position
-    const modifier: Record<string, number> = {} // shift to apply to children
-    const levels: Record<string, number> = {}   // depth level
+    const prelim: Record<string, number> = {}
+    const modifier: Record<string, number> = {}
+    const levels: Record<string, number> = {}
 
-    // Collect left contour of a subtree rooted at `id`
     function getContour(
       id: string, mod: number, isLeft: boolean,
       contour: Record<number, number>, level: number
@@ -976,7 +1267,6 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
       }
     }
 
-    // First pass: post-order traversal to assign preliminary x values
     function firstPass(id: string, level: number) {
       const agent = getVirtualAgent(id)
       if (!agent) return
@@ -988,20 +1278,16 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
         return
       }
 
-      // Recursively layout children first
       for (const cid of agent.children) {
         firstPass(cid, level + 1)
       }
 
       if (agent.children.length === 1) {
-        // Single child: center parent above it
         prelim[id] = prelim[agent.children[0]]
         modifier[id] = 0
         return
       }
 
-      // Multiple children: place them side by side, shifting to avoid overlap
-      // Start with the first child at its prelim position
       const childShifts: Record<string, number> = {}
       childShifts[agent.children[0]] = 0
 
@@ -1009,15 +1295,12 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
         const leftSib = agent.children[i - 1]
         const rightChild = agent.children[i]
 
-        // Get right contour of left subtree
         const leftContour: Record<number, number> = {}
         getContour(leftSib, childShifts[leftSib], false, leftContour, level + 1)
 
-        // Get left contour of right subtree (at shift 0)
         const rightContour: Record<number, number> = {}
         getContour(rightChild, 0, true, rightContour, level + 1)
 
-        // Find max overlap across all shared levels
         let maxOverlap = -Infinity
         const minLvl = Math.max(Math.min(...Object.keys(leftContour).map(Number)),
           Math.min(...Object.keys(rightContour).map(Number)))
@@ -1031,7 +1314,6 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
           }
         }
 
-        // Minimum separation is node width + gap
         const minSep = CARD_W + SIBLING_SEP
         const shift = maxOverlap === -Infinity
           ? (childShifts[leftSib] + minSep)
@@ -1039,12 +1321,10 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
         childShifts[rightChild] = shift
       }
 
-      // Apply shifts: update prelim of each child subtree
       for (const cid of agent.children) {
         applyShift(cid, childShifts[cid] || 0)
       }
 
-      // Center parent over children
       const firstChildX = prelim[agent.children[0]]
       const lastChildX = prelim[agent.children[agent.children.length - 1]]
       prelim[id] = (firstChildX + lastChildX) / 2
@@ -1059,26 +1339,32 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
       }
     }
 
-    // Run layout for each root
     for (const rId of primaryRoots) {
       firstPass(rId, 0)
     }
 
-    // Convert prelim values to final positions
     const positions: Record<string, { x: number; y: number; level: number }> = {}
+
+    // ─── assignPositions ───────────────────────────────────────────────────────
+    // Sibling placeholders never enter here (they're not in the virtual tree
+    // anymore), so no special-case Y offset needed — removed.
     function assignPositions(id: string) {
       const agent = getVirtualAgent(id)
       if (!agent) return
+
+      const y = 80 + levels[id] * LEVEL_HEIGHT   // ← flat, no sibling offset
+
       positions[id] = {
         x: prelim[id],
-        y: 80 + levels[id] * LEVEL_HEIGHT,
+        y,
         level: levels[id]
       }
       for (const cid of agent.children) assignPositions(cid)
     }
+
     for (const rId of primaryRoots) assignPositions(rId)
 
-    // Shift entire tree so leftmost node has reasonable padding, and center on canvas
+    // Center tree horizontally
     const allXs = Object.values(positions).map(p => p.x)
     const minX = Math.min(...allXs)
     const maxX = Math.max(...allXs)
@@ -1089,10 +1375,28 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
       positions[id].x += offsetX
     }
 
+    // ─── Inject sibling placeholders ──────────────────────────────────────────
+    // Place them to the right of every agent that already has children.
+    // They are injected AFTER centering so they don't skew the layout.
+    // Horizontal gap between card right-edge and placeholder left-edge = 24 px
+    // (matches SIBLING_SEP).  Placeholder radius = 16 px.
+    // Center X = card-center + CARD_HALF_W (right edge) + 24 (gap) + 16 (radius)
+    for (const agentId of Object.keys(agents || {})) {
+      const agent = agents?.[agentId]
+      if (!agent || !agent.children?.length) continue
+      const ap = positions[agentId]
+      if (!ap) continue
+      positions[`placeholder-sibling-${agentId}`] = {
+        x: ap.x + CARD_HALF_W + 40,   // right-edge + gap(24) + radius(16)
+        y: ap.y,                        // same row as the parent — purely horizontal
+        level: ap.level,
+      }
+    }
+
     return positions
   }, [agents, canvasDimensions])
 
-  //  Direct DOM transform update (zero React re-renders) 
+  //  Direct DOM transform update 
   const applyTransform = useCallback(() => {
     const p = panRef.current
     const z = zoomRef.current
@@ -1111,7 +1415,6 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     }
   }, [])
 
-  // Keep refs in sync when state commits
   useEffect(() => { panRef.current = pan }, [pan])
   useEffect(() => { zoomRef.current = zoom }, [zoom])
 
@@ -1120,7 +1423,6 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     const el = containerRef.current
     if (!el) return
 
-    // Set initial size
     const rect = el.getBoundingClientRect()
     if (rect.width && rect.height) {
       setCanvasDimensions({ width: rect.width, height: rect.height })
@@ -1141,7 +1443,7 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     }
   }, [])
 
-  //  Pan/focus view helper (smooth transitions) 
+  //  Pan/focus view helper 
   const panToAgent = useCallback((agentId: string) => {
     const pos = agentPositions[agentId]
     if (!pos || !containerRef.current) return
@@ -1154,7 +1456,6 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
       y: height / 2 - pos.y * z
     }
 
-    // Apply transition temporarily
     if (agentLayerRef.current) {
       agentLayerRef.current.style.transition = 'transform 350ms cubic-bezier(0.16, 1, 0.3, 1)'
     }
@@ -1165,12 +1466,10 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
       gridRef.current.style.transition = 'background-position 350ms cubic-bezier(0.16, 1, 0.3, 1)'
     }
 
-    // Commit to refs and state
     panRef.current = newPan
     setPan(newPan)
     applyTransform()
 
-    // Remove transition after it finishes
     setTimeout(() => {
       if (agentLayerRef.current) agentLayerRef.current.style.transition = ''
       if (svgGroupRef.current) svgGroupRef.current.style.transition = ''
@@ -1178,7 +1477,6 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     }, 350)
   }, [agentPositions, canvasDimensions, applyTransform])
 
-  //  Handle autofocusing on newly added/deleted agent 
   useEffect(() => {
     if (pendingFocusAgentIdRef.current) {
       const { id, selectText } = pendingFocusAgentIdRef.current
@@ -1187,7 +1485,6 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
         panToAgent(id)
 
         if (selectText) {
-          // Select agent name input field for fast editing
           setTimeout(() => {
             const input = document.getElementById('input-agent-name')
             if (input) {
@@ -1199,7 +1496,7 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     }
   }, [agentPositions, panToAgent])
 
-  //  Native wheel listener (passive: false so preventDefault works) 
+  //  Native wheel listener 
   useEffect(() => {
     const el = containerRef.current
     if (!el) return
@@ -1225,7 +1522,6 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
       cancelAnimationFrame(rafId.current)
       rafId.current = requestAnimationFrame(applyTransform)
 
-      // Debounce React state commit (single re-render after scrolling stops)
       clearTimeout(commitTimeout.current)
       commitTimeout.current = window.setTimeout(() => {
         setPan({ ...panRef.current })
@@ -1239,10 +1535,8 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
 
   //  History helpers 
 
-  // Push a snapshot immediately (structural changes: add/delete agent)
   const pushHistory = useCallback((newAgents: Record<string, AgentNode>) => {
     const h = historyRef.current
-    // Skip push if the new snapshot is identical to the current one
     const current = h.stack[h.index]
     if (current && JSON.stringify(current) === JSON.stringify(newAgents)) return
     const stack = h.stack.slice(0, h.index + 1)
@@ -1255,7 +1549,6 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     setHistoryLength(stack.length)
   }, [])
 
-  // Push a snapshot after a debounce delay (text-field edits)
   const pushHistoryDebounced = useCallback((newAgents: Record<string, AgentNode>) => {
     if (historyDebounceRef.current) clearTimeout(historyDebounceRef.current)
     historyDebounceRef.current = setTimeout(() => {
@@ -1263,19 +1556,15 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     }, 600)
   }, [pushHistory])
 
-  // Find the most relevant agent that changed between two snapshots.
-  // Prefers added agents, then falls back to the first field-changed agent.
   const findChangedAgentId = useCallback((
     from: Record<string, AgentNode>,
     to: Record<string, AgentNode>
   ): string | null => {
     const fromIds = new Set(Object.keys(from))
     const toIds = new Set(Object.keys(to))
-    // Agent added in `to`
     for (const id of toIds) {
       if (!fromIds.has(id)) return id
     }
-    // Agent removed — return its parent in `to`
     for (const id of fromIds) {
       if (!toIds.has(id)) {
         for (const [pid, a] of Object.entries(to)) {
@@ -1286,7 +1575,6 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
         return null
       }
     }
-    // Field-level change — pick the first differing agent
     for (const id of toIds) {
       if (JSON.stringify(from[id]) !== JSON.stringify(to[id])) return id
     }
@@ -1295,7 +1583,6 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
 
   const handleUndo = useCallback(() => {
     const h = historyRef.current
-    // Flush any pending debounced entry before undoing
     if (historyDebounceRef.current) {
       clearTimeout(historyDebounceRef.current)
       historyDebounceRef.current = null
@@ -1350,12 +1637,10 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     rafId.current = requestAnimationFrame(applyTransform)
   }, [applyTransform])
 
-  // Global keyboard shortcuts: Ctrl+Z = Undo, Ctrl+Shift+Z / Ctrl+Y = Redo
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       const ctrl = e.ctrlKey || e.metaKey
       if (!ctrl) return
-      // Skip when focus is inside an input/textarea so normal text editing works
       const tag = (e.target as HTMLElement).tagName
       if (tag === 'INPUT' || tag === 'TEXTAREA') return
       if (e.key === 'z' && !e.shiftKey) {
@@ -1370,7 +1655,7 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [handleUndo, handleRedo])
 
-  //  Toolbar zoom (discrete clicks — direct state update) 
+  //  Toolbar zoom 
   const adjustZoom = useCallback((zoomIn: boolean) => {
     if (!containerRef.current) return
     const rect = containerRef.current.getBoundingClientRect()
@@ -1386,7 +1671,7 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     zoomRef.current = newZ
   }, [zoom, pan])
 
-  //  Pan interaction (ref-based, no re-renders during drag) 
+  //  Pan interaction 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement
     if (target.closest('.node-card') || target.closest('.ui-control')) return
@@ -1414,7 +1699,6 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
   const handleMouseUp = useCallback(() => {
     if (!isDraggingCanvas.current) return
     isDraggingCanvas.current = false
-    // Single React commit when drag ends
     setPan({ ...panRef.current })
   }, [])
 
@@ -1434,7 +1718,7 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     setSelectedAgentId(null)
   }, [])
 
-  //  Agent CRUD (stable callbacks) 
+  //  Agent CRUD 
   const handleAddAgent = useCallback((parentId: string) => {
     const newId = String(Date.now())
     const newAgent: AgentNode = {
@@ -1442,14 +1726,17 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
       name: 'New Agent',
       tools: [],
       children: [],
-      color: 'neutral'
+      toolValues: {},
+      isParallel: false,
+      isRunning: false,
+      model: null
     }
     pendingFocusAgentIdRef.current = { id: newId, selectText: true }
     setAgents(prev => {
       const updated = {
         ...prev,
         [newId]: newAgent,
-        [parentId]: { ...prev[parentId], children: [...prev[parentId].children, newId] }
+        [parentId]: { ...prev[parentId], children: [...prev[parentId].children.map(String), newId] }
       }
       pushHistory(updated)
       return updated
@@ -1466,10 +1753,9 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
       if (!confirmed) return
     }
 
-    // Find parent ID of the agent to be deleted to select/pan to it next
     let parentId: string | null = null
     for (const [id, a] of Object.entries(agents)) {
-      if (a.children.includes(idToDelete)) {
+      if (a.children.map(String).includes(String(idToDelete))) {
         parentId = id
         break
       }
@@ -1479,14 +1765,14 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
       const updated = { ...prev }
       delete updated[idToDelete]
       Object.keys(updated).forEach(id => {
-        if (updated[id].children.includes(idToDelete)) {
-          updated[id] = { ...updated[id], children: updated[id].children.filter(c => c !== idToDelete) }
+        if (updated[id].children.map(String).includes(String(idToDelete))) {
+          updated[id] = { ...updated[id], children: updated[id].children.map(String).filter(c => c !== String(idToDelete)) }
         }
       })
       const removeSubtree = (id: string) => {
         const a = prev[id]
         if (!a) return
-        for (const cid of a.children) { delete updated[cid]; removeSubtree(cid) }
+        for (const cid of a.children) { delete updated[String(cid)]; removeSubtree(String(cid)) }
       }
       removeSubtree(idToDelete)
       pushHistory(updated)
@@ -1501,7 +1787,6 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     }
   }, [agents, pushHistory, panToAgent])
 
-  // isTextField: true = debounce (name/tasks/instruction edits); false = immediate (color, tools)
   const handleUpdateAgentProperty = useCallback((id: string, fields: Partial<AgentNode>, isTextField = false) => {
     setAgents(prev => {
       const updated = { ...prev, [id]: { ...prev[id], ...fields } }
@@ -1530,6 +1815,28 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     return ids
   }, [hoveredAgentId, agents])
 
+  const runningSubtreeAgentIds = useMemo(() => {
+    const ids = new Set<string>()
+    const runningIds = Object.keys(agents).filter(id => agents[id]?.isRunning)
+    if (runningIds.length === 0) return ids
+
+    const parentOf: Record<string, string> = {}
+    for (const [pid, a] of Object.entries(agents)) {
+      for (const cid of a.children) {
+        parentOf[String(cid)] = pid
+      }
+    }
+
+    for (const rid of runningIds) {
+      let cur: string | undefined = rid
+      while (cur) {
+        ids.add(cur)
+        cur = parentOf[cur]
+      }
+    }
+    return ids
+  }, [agents])
+
   //  Memoised theme styles 
   const themeStyles = useMemo(() => ({
     canvasBg: 'hsl(var(--bg))',
@@ -1537,7 +1844,7 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     border: 'hsl(var(--border))',
     accent: 'hsl(var(--accent))',
     accentFg: 'hsl(var(--accent-foreground))',
-    muted: 'hsl(var(--muted))',
+    muted: 'hsl(var(--float))',
     mutedFg: isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.45)',
     toolbarBg: isDark ? 'rgba(18,18,18,0.92)' : 'rgba(255,255,255,0.92)',
     lineBase: isDark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.12)',
@@ -1548,19 +1855,41 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     selectedBg: isDark ? 'rgba(255,255,255,0.04)' : 'rgba(0,0,0,0.04)',
   }), [isDark])
 
-  //  Pre-compute SVG connector paths (avoids work inside render) 
+  // ─── connectorData ─────────────────────────────────────────────────────────
+  // Changes vs. original:
+  //   1. Sibling placeholder removed from virtualChildren (no staircase).
+  //   2. A short horizontal stub line is drawn from the card's right edge to
+  //      the sibling placeholder circle (replaces the old diagonal path).
+  //   3. childHalfH no longer has a special branch for sibling placeholders.
   const connectorData = useMemo(() => {
     const result: { parentId: string; d: string }[] = []
     const agentIds = Object.keys(agents)
+
     for (const parentId of agentIds) {
       const parentPos = agentPositions[parentId]
       const parentAgent = agents[parentId]
       if (!parentPos || !parentAgent) continue
 
-      // Resolve children including virtual placeholders
+      // ── Horizontal stub to sibling placeholder ────────────────────────────
+      // Only drawn when the agent already has children (the + sits to the
+      // right on the same row, reached by a short horizontal line).
+      if (parentAgent.children.length > 0) {
+        const sibPos = agentPositions[`placeholder-sibling-${parentId}`]
+        if (sibPos) {
+          // Line from right edge of card → left edge of placeholder circle
+          result.push({
+            parentId: `${parentId}-sib`,
+            d: `M ${parentPos.x + CARD_HALF_W} ${parentPos.y} L ${sibPos.x - 16} ${parentPos.y}`
+          })
+        }
+      }
+
+      // ── Vertical tree connectors (trunk + bus + branches) ─────────────────
+      // Sibling placeholder is intentionally excluded — only real children
+      // and the child-placeholder (for leaf nodes) participate in the layout.
       const virtualChildren = parentAgent.children.length === 0
         ? [`placeholder-child-${parentId}`]
-        : [...parentAgent.children, `placeholder-sibling-${parentId}`]
+        : parentAgent.children.map(String)
 
       const childPosArr: { id: string; x: number; y: number }[] = []
       for (const cid of virtualChildren) {
@@ -1583,7 +1912,8 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
       }
 
       for (const cp of childPosArr) {
-        const isPlaceholder = cp.id.startsWith('placeholder-')
+        const isPlaceholder = String(cp.id).startsWith('placeholder-')
+        // ← isSiblingPlaceholder branch removed; sibling is no longer in list
         const childHalfH = isPlaceholder ? 16 : CARD_HALF_H
         const childTopY = cp.y - childHalfH
         d += ` M ${cp.x} ${busY} L ${cp.x} ${childTopY}`
@@ -1593,6 +1923,97 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
     }
     return result
   }, [agents, agentPositions])
+
+  // ─── connectorSegments ─────────────────────────────────────────────────────
+  // Same virtualChildren fix: sibling placeholder excluded.
+  const connectorSegments = useMemo(() => {
+    const segments: {
+      key: string
+      d: string
+      totalLength: number
+    }[] = []
+
+    const runningIds = Object.keys(agents).filter(id => agents[id]?.isRunning)
+    if (runningIds.length === 0) return segments
+
+    const agentIds = Object.keys(agents)
+    for (const parentId of agentIds) {
+      const parentPos = agentPositions[parentId]
+      const parentAgent = agents[parentId]
+      if (!parentPos || !parentAgent) continue
+
+      const virtualChildren = parentAgent.children.length === 0
+        ? [`placeholder-child-${parentId}`]
+        : parentAgent.children.map(String)   // ← sibling placeholder excluded
+
+      const childPosArr: { id: string; x: number; y: number }[] = []
+      for (const cid of virtualChildren) {
+        const cp = agentPositions[cid]
+        if (cp) childPosArr.push({ id: cid, ...cp })
+      }
+      if (childPosArr.length === 0) continue
+
+      const parentBottomX = parentPos.x
+      const parentBottomY = parentPos.y + CARD_HALF_H
+      const childTopYStandard = childPosArr[0].y - CARD_HALF_H
+      const busY = parentBottomY + (childTopYStandard - parentBottomY) / 2
+
+      const isTrunkRunning = childPosArr.some(c => !String(c.id).startsWith('placeholder-') && runningSubtreeAgentIds.has(String(c.id)))
+      if (isTrunkRunning) {
+        const trunkD = `M ${parentBottomX} ${parentBottomY} L ${parentBottomX} ${busY}`
+        const trunkLen = Math.abs(busY - parentBottomY)
+        segments.push({
+          key: `trunk-${parentId}`,
+          d: trunkD,
+          totalLength: trunkLen
+        })
+      }
+
+      for (const cp of childPosArr) {
+        const isPlaceholder = String(cp.id).startsWith('placeholder-')
+        const isBranchRunning = !isPlaceholder && runningSubtreeAgentIds.has(String(cp.id))
+        if (isBranchRunning) {
+          const childHalfH = CARD_HALF_H
+          const childTopY = cp.y - childHalfH
+
+          const branchD = `M ${cp.x} ${busY} L ${cp.x} ${childTopY}`
+          const branchLen = Math.abs(childTopY - busY)
+          segments.push({
+            key: `branch-${parentId}-${cp.id}`,
+            d: branchD,
+            totalLength: branchLen
+          })
+        }
+      }
+
+      const xPoints = Array.from(new Set([parentBottomX, ...childPosArr.map(c => c.x)])).sort((a, b) => a - b)
+      for (let i = 0; i < xPoints.length - 1; i++) {
+        const x1 = xPoints[i]
+        const x2 = xPoints[i + 1]
+
+        const horizLen = x2 - x1
+        let horizD = `M ${x1} ${busY} L ${x2} ${busY}`
+        let isHorizRunning = false
+
+        if (x2 <= parentBottomX) {
+          horizD = `M ${x2} ${busY} L ${x1} ${busY}`
+          isHorizRunning = childPosArr.some(c => c.x <= x1 && !String(c.id).startsWith('placeholder-') && runningSubtreeAgentIds.has(String(c.id)))
+        } else if (x1 >= parentBottomX) {
+          horizD = `M ${x1} ${busY} L ${x2} ${busY}`
+          isHorizRunning = childPosArr.some(c => c.x >= x2 && !String(c.id).startsWith('placeholder-') && runningSubtreeAgentIds.has(String(c.id)))
+        }
+
+        if (isHorizRunning) {
+          segments.push({
+            key: `horiz-${parentId}-${x1}-${x2}`,
+            d: horizD,
+            totalLength: horizLen
+          })
+        }
+      }
+    }
+    return segments
+  }, [agents, agentPositions, runningSubtreeAgentIds])
 
   //  Render 
   return (
@@ -1633,17 +2054,31 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
             ref={svgGroupRef}
             transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}
           >
-            {connectorData.map(({ parentId, d }) => {
-              const isSubtreeHighlighted =
-                hoveredAgentId === parentId ||
-                (hoveredAgentId !== null && highlightedAgentSubtreeIds.has(parentId))
+            {/* Base static background lines */}
+            {connectorData.map(({ parentId, d }) => (
+              <path
+                key={`base-${parentId}`}
+                d={d} fill="none"
+                stroke={themeStyles.lineBase}
+                strokeWidth={1.5}
+                strokeLinecap="round"
+                style={{
+                  transition: 'd 350ms cubic-bezier(0.16, 1, 0.3, 1), stroke 300ms ease-out, stroke-width 300ms ease-out'
+                }}
+              />
+            ))}
+
+            {/* Active running lines & dash flow animations */}
+            {connectorSegments.map(({ key, d, totalLength }) => {
+              const dashLen = 10
+              const gapLen = 10
 
               return (
-                <g key={`conn-${parentId}`}>
+                <g key={`active-${key}`}>
                   <path
                     d={d} fill="none"
-                    stroke={isSubtreeHighlighted ? themeStyles.lineGlowHover : 'transparent'}
-                    strokeWidth={isSubtreeHighlighted ? 7 : 0}
+                    stroke="#34d39940"
+                    strokeWidth={8}
                     strokeLinecap="round"
                     style={{
                       transition: 'd 350ms cubic-bezier(0.16, 1, 0.3, 1), stroke 300ms ease-out, stroke-width 300ms ease-out'
@@ -1651,11 +2086,24 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
                   />
                   <path
                     d={d} fill="none"
-                    stroke={isSubtreeHighlighted ? themeStyles.lineHover : themeStyles.lineBase}
-                    strokeWidth={isSubtreeHighlighted ? 2 : 1.5}
+                    stroke="#34d39966"
+                    strokeWidth={2}
                     strokeLinecap="round"
                     style={{
                       transition: 'd 350ms cubic-bezier(0.16, 1, 0.3, 1), stroke 300ms ease-out, stroke-width 300ms ease-out'
+                    }}
+                  />
+                  <path
+                    d={d} fill="none"
+                    stroke="#34d399"
+                    strokeWidth={2.5}
+                    strokeLinecap="round"
+                    strokeDasharray={`${dashLen} ${gapLen}`}
+                    strokeDashoffset={0}
+                    style={{
+                      transition: 'd 350ms cubic-bezier(0.16, 1, 0.3, 1)',
+                      animation: `flowDash 1s linear infinite`,
+                      ['--path-len' as any]: totalLength,
                     }}
                   />
                 </g>
@@ -1677,18 +2125,15 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
             const pos = agentPositions[id]
             if (!pos) return null
 
-            const isPlaceholder = id.startsWith('placeholder-')
+            const isPlaceholder = String(id).startsWith('placeholder-')
             if (isPlaceholder) {
               const parentId = id.replace('placeholder-child-', '').replace('placeholder-sibling-', '')
-              const parentAgent = agents[parentId]
-              const accentColor = parentAgent ? COLOR_DOT[parentAgent.color || 'neutral'] : 'hsl(var(--accent))'
               return (
                 <PlaceholderAgent
                   key={id}
                   id={id}
                   posX={pos.x}
                   posY={pos.y}
-                  accentColor={accentColor}
                   isDark={isDark}
                   onClick={() => handleAddAgent(parentId)}
                 />
@@ -1707,6 +2152,7 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
                 isSelected={selectedAgentId === id}
                 isHovered={hoveredAgentId === id}
                 isPathHighlight={highlightedAgentSubtreeIds.has(id)}
+                isRunningPath={runningSubtreeAgentIds.has(id)}
                 isDark={isDark}
                 onSelect={handleAgentSelect}
                 onHover={handleAgentHover}
@@ -1802,19 +2248,6 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
           </button>
 
         </div>
-
-        {/* Zoom display */}
-        <div
-          ref={zoomLabelRef}
-          className="absolute bottom-4 left-4 px-2.5 py-1 backdrop-blur-md rounded-md text-[10px] font-mono border"
-          style={{
-            background: themeStyles.toolbarBg,
-            borderColor: themeStyles.border,
-            color: themeStyles.mutedFg,
-          }}
-        >
-          Zoom: {Math.round(zoom * 100)}%
-        </div>
       </div>
 
       {/*  Editor Sidebar Panel  */}
@@ -1826,7 +2259,16 @@ export function App({ pyInvoke, useActiveTabId, tabId }: AppInfo) {
         <div className="flex flex-col gap-6 p-5">
 
           {selectedAgentId && agents[selectedAgentId] ? (
-            <AgentEditor selected={selectedAgentId} agents={agents} handleUpdateAgentProperty={handleUpdateAgentProperty} handleAddAgent={handleAddAgent} handleDeleteAgent={handleDeleteAgent} themeStyles={themeStyles} availableTools={availableTools} toolFields={toolFields} />
+            <AgentEditor
+              selected={selectedAgentId}
+              agents={agents}
+              handleUpdateAgentProperty={handleUpdateAgentProperty}
+              handleAddAgent={handleAddAgent}
+              handleDeleteAgent={handleDeleteAgent}
+              themeStyles={themeStyles}
+              availableTools={availableTools}
+              toolFields={toolFields}
+            />
           ) : (
             <div
               className="flex flex-col items-center justify-center py-10 text-center gap-2"

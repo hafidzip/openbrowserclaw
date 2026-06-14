@@ -44,6 +44,9 @@ import { useGlobal } from "./useGlobal"
 import Agents from "./Agents"
 import ControllableBrowsers from "./ControllableBrowsers"
 import Skiils from "./Skills"
+import { AsyncLock } from ".."
+import { getCurrentWebview } from "@tauri-apps/api/webview"
+import { getCurrentWindow } from "@tauri-apps/api/window"
 
 // Sortable Tab Item Component
 interface SortableTabItemProps {
@@ -116,7 +119,8 @@ function SortableTabItem({ defaultTitle, isPinned, id, icon, title, isCollapsedS
       onClick={onClick}
       className={clsx(
         "w-full h-[36px] flex items-center gap-1 rounded-lg text-xs transition-colors relative group",
-        (isActive) ? "bg-neutral-300 dark:bg-[hsl(var(--hover))]" : isHovered ? "bg-neutral-200 dark:bg-[hsl(var(--hover))]/50" : "",
+        
+        (isActive) ? (id.startsWith("agent") ? "bg-purple-300 dark:bg-purple-800" : "bg-neutral-300 dark:bg-[hsl(var(--hover))]") : isHovered ? (id.startsWith("agent") ? "bg-purple-800/40 dark:bg-purple-900/75" : "bg-neutral-200 dark:bg-[hsl(var(--hover))]/50") : (id.startsWith("agent") && "bg-purple-900/25 dark:bg-purple-900/50"), 
       )}
       data-tab-id={id}
     >
@@ -488,8 +492,17 @@ export default function Sidebar({
   useEffect(() => {
     if (!showPopup) {
       setEditingTitleTabId(null);
+      window.dispatchEvent(new CustomEvent('hide-popup'));
     }
   }, [showPopup]);
+
+  useEffect(() => {
+    if (!editingTitleTabId) {
+      window.dispatchEvent(new CustomEvent('hide-popup'));
+    }
+  }, [editingTitleTabId])
+
+
   const sidebarRef = useRef<HTMLDivElement>(null);
   const isAllowCollapseRef = useRef<boolean>(true);
   const tabContainerRef = useRef<HTMLDivElement>(null);
@@ -682,6 +695,12 @@ export default function Sidebar({
   };
   const handleTabContextMenu = (id: string, e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault();
+    (async () => {
+      await AsyncLock.run(async () => {
+        const mw = await getCurrentWebview()
+        await mw.reparent(await getCurrentWindow())
+      })
+    })()
     if (editingTitleTabId) return;
     if (hideTimeoutRef.current) {
       clearTimeout(hideTimeoutRef.current);

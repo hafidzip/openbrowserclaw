@@ -14,6 +14,7 @@ use pyo3_utils::{
     serde::PySerde,
 };
 use pytauri_core::{tauri_runtime::Runtime, utils::TauriError};
+use tauri_plugin_prevent_default::Flags;
 use tauri::{
     image::Image,
     ipc::RuntimeCapability,
@@ -319,7 +320,12 @@ pub fn builder_factory(
     _args: &Bound<'_, PyTuple>,
     _kwargs: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<tauri::Builder<Runtime>> {
+    let prevent_plugin = tauri_plugin_prevent_default::Builder::new()
+    .with_flags(Flags::RELOAD)
+    .build();
+
     Ok(tauri::Builder::default()
+        .plugin(prevent_plugin)
         .on_page_load(|webview, payload| {
             if payload.event() != tauri::webview::PageLoadEvent::Finished {
                 return;
@@ -327,13 +333,22 @@ pub fn builder_factory(
             let script = r#"
                 (async () => {
                     const _emitLocation = async (url) => {
+                        const label = await window.__TAURI__.webview.getCurrentWebview().label;
                         await window.__TAURI__.event.emit('update_location', {
-                            target: window.__TAURI__.webview.getCurrentWebview().label,
+                            target: label,
                             url
                         });
                     };
 
+                    const _emitPageLoaded = async () => {
+                        const label = await window.__TAURI__.webview.getCurrentWebview().label;
+                        await window.__TAURI__.event.emit('page_loaded', {
+                            target: label
+                        });
+                    };
+
                     const _emitUpdateLocationTitleIcon = async (url) => {
+                        const label = await window.__TAURI__.webview.getCurrentWebview().label;
                         const getIconBase64 = async () => {
                             try {
                                 const iconUrl = `${location.origin}/favicon.ico`;
@@ -352,7 +367,7 @@ pub fn builder_factory(
                             }
                         };
                         await window.__TAURI__.event.emit('update_location_title_icon', {
-                            target: window.__TAURI__.webview.getCurrentWebview().label,
+                            target: label,
                             title: window.document.title,
                             icon: await getIconBase64(),
                             url
@@ -361,6 +376,7 @@ pub fn builder_factory(
 
                     await _emitLocation(window.location.href);
                     await _emitUpdateLocationTitleIcon(window.location.href);
+                    await _emitPageLoaded();
 
                     if (!window.__listenToLocationChange) {
                         window.__listenToLocationChange = true;
@@ -390,6 +406,57 @@ pub fn builder_factory(
                             }
                         }, 1000);
                     }
+
+                    if (!window.__listenToKeyDown) {
+                        window.__listenToKeyDown = true;
+                        window.addEventListener('keydown', async (event) => {
+                            const label = await window.__TAURI__.webview.getCurrentWebview().label;
+
+                            if (event.ctrlKey && event.key === 'w') {
+                                event.preventDefault();
+                                await window.__TAURI__.event.emit('delete_tab', { target: label });
+                            }
+
+                            if (event.ctrlKey && event.key >= '1' && event.key <= '9') {
+                                event.preventDefault();
+                                const n = parseInt(event.key);
+                                const tab_index = n === 9 ? -1 : n - 1;
+                                await window.__TAURI__.event.emit('switch_tab', { target: label, tab_index });
+                            }
+                        });
+                    }
+
+                    if (!window.AsyncLock) {
+                        class AsyncMutex {
+                            constructor() {
+                                this._locked = false;
+                                this._queue = [];
+                            }
+                            acquire() {
+                                return new Promise(resolve => {
+                                    if (!this._locked) {
+                                        this._locked = true;
+                                        resolve();
+                                    } else {
+                                        this._queue.push(resolve);
+                                    }
+                                });
+                            }
+                            release() {
+                                const next = this._queue.shift();
+                                if (next) next();
+                                else this._locked = false;
+                            }
+                            async run(fn) {
+                                await this.acquire();
+                                try { return await fn(); }
+                                finally { this.release(); }
+                            }
+                        }
+                        window.AsyncLock = new AsyncMutex();
+                    }
+                        
+                    
                 })();
             "#.to_string();
             if let Err(e) = webview.eval(&script) {

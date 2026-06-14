@@ -5,6 +5,7 @@ import * as Icons from "lucide-react"
 import type { AppInfo } from "./utils";
 import clsx from 'clsx';
 import { getAllWebviews } from '@tauri-apps/api/webview';
+import { AsyncLock } from '..';
 
 export const LucideIcons = Icons
 
@@ -680,9 +681,17 @@ export const reorderTabsInGroup = (group: string | null, fromIndex: number, toIn
  * @returns The ID of the newly selected tab, or null if no tabs remain
  */
 
+export const deleteActiveTabWithGroupSelection = async (): Promise<string | null> => {
+    return await deleteTabWithGroupSelection(TabInfo.active);
+}
+
 export const deleteTabWithGroupSelection = async (uuid: string): Promise<string | null> => {
+    await AsyncLock.acquire();
     const tabToDelete = TabState[uuid];
-    if (!tabToDelete) return null;
+    if (!tabToDelete) {
+        AsyncLock.release();
+        return null
+    }
     const group = tabToDelete.group;
     const groupTabs = Object.keys(getTabsByGroup(group));
     const indexInGroup = groupTabs.indexOf(uuid);
@@ -692,7 +701,11 @@ export const deleteTabWithGroupSelection = async (uuid: string): Promise<string 
     Object.keys(tabToDelete.childrenProps).map(async (t: string) => {
         const w = all.find((wv) => wv.label === `webview-${t}`)
         if (w) {
-            await w.close()
+            if (!t.startsWith('agent')) {
+                await w.close()
+            } else {
+                await w.hide()
+            }
         }
     })
     if (groupTabs.length > 1) {
@@ -711,14 +724,15 @@ export const deleteTabWithGroupSelection = async (uuid: string): Promise<string 
             nextTabId = ungroupedTabs.length > 0 ? ungroupedTabs[0] : allTabs[0];
         }
     }
-
-
+    
+    
     // Delete the tab
     deleteTab(uuid);
     // Update active tab if the deleted tab was active
     if (TabInfo.active === uuid && nextTabId && typeof TabState[nextTabId].childrenProps !== "undefined" && TabState[nextTabId].childrenProps !== null) {
         TabInfo.SetActive(nextTabId);
     }
+    AsyncLock.release();
     return nextTabId;
 };
 /**

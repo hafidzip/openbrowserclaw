@@ -1,5 +1,5 @@
 import Container, { type Project } from "./Container"
-import type { AppInfo } from "./utils/utils"
+import type { AppInfo, Model } from "./utils/utils"
 import { usePython, usePythonEvent } from "./components/usePython"
 import { sha256 } from 'js-sha256';
 import { useDatabaseImplBase } from "./components/useDatabase/useDatabase"
@@ -13,8 +13,10 @@ import ContainerSingleApp from "./ContainerSingleApp";
 import ContainerOverlayApp from "./ContainerOverlayApp";
 import { proxy, ref, useSnapshot } from "valtio";
 import { MenuBar, Theme, Workspace } from "./utils/state";
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { uuidv4 } from "./utils";
+import { AsyncMutex } from "./components/Mutex/mutex";
+import { Dropdown, type DropdownMenuItemProps } from "./components/dropdown";
 
 function generateIdFromString(input: string): string {
     /**
@@ -88,7 +90,68 @@ const useMenuBar = () => {
     return [snap.current, MenuBar] as const;
 }
 
+
+const AsyncLock = new AsyncMutex();
+
+function useAvailableModels() {
+    const { pyInvoke } = usePython()
+    const [models, setModels] = useState<Model[]>([])
+    const [isLoading, setLoading] = useState(true)
+
+    useEffect(() => {
+        let cancelled = false
+            ; (async () => {
+                try {
+                    const res: any = await pyInvoke('file', {
+                        command: 'read',
+                        filename: 'config.json',
+                        base_dir: 'python',
+                    })
+                    if (cancelled) return
+                    const raw = res?.data?.content as string | undefined
+                    if (!raw) return
+
+                    const parsed = JSON.parse(raw)
+                    if (!parsed.available_models) return
+
+                    const list: Model[] = (
+                        Object.entries(parsed.available_models) as [string, Record<string, unknown>][]
+                    )
+                        .map(([id, m]) => ({
+                            id,
+                            name: (m.name as string) ?? 'Unknown',
+                            backend: (m.backend as string) ?? null,
+                            modelType: (m.model_type as string[]) ?? null,
+                            modelPath: (m.model_path as string) ?? null,
+                            mmproj: (m.mmproj as string) ?? null,
+                            fileName: (m.filename as string) ?? null,
+                            apiBase: (m.api_base as string) ?? null,
+                            isLocal: (m.is_local as boolean) ?? false,
+                            isLoaded: false,
+                            lastError: null,
+                        } satisfies Model))
+                        .filter(m =>
+                            (m.modelType?.includes('llm') || m.modelType?.includes('vlm')) === true &&
+                            m.backend != null
+                        )
+
+                    if (!cancelled) setModels(list)
+                } catch (e) {
+                    if (!cancelled) console.error('Failed to load models:', e)
+                } finally {
+                    if (!cancelled) setLoading(false)
+                }
+            })()
+        return () => { cancelled = true }
+    }, [pyInvoke])
+
+    return { models, isLoading }
+}
+
+
 export {
+    useAvailableModels,
+    AsyncLock,
     proxy,
     ref,
     useSnapshot,
@@ -96,6 +159,8 @@ export {
     ContainerOverlayApp,
     ContainerSingleApp,
     Container,
+    Dropdown,
+    type DropdownMenuItemProps,
     useDatabase,
     useTool,
     useFile,
@@ -104,7 +169,7 @@ export {
     useGlobal,
     generateIdFromString,
     usePython,
-    usePythonEvent, 
+    usePythonEvent,
     OpenChadIcon,
     useTheme,
     useEvent,

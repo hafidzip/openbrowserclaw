@@ -1,3 +1,4 @@
+import { TooltipProvider } from "@radix-ui/react-tooltip"
 
 export * from "../components/ui/aspect-ratio"
 
@@ -54,3 +55,5 @@ export * from "../components/ui/switch"
 export * from "../components/ui/table"
 
 export * from "../components/ui/tooltip"
+
+export { TooltipProvider } from "../components/ui/tooltip"

@@ -183,41 +183,6 @@ export default function SiteRegistry({
         if (ids.length === 0) return;
         try {
             const db = workspace ?? "global";
-            for (const i of ids) {
-                try {
-                    const initTb = generateIdFromString(i + "/" + "message_state");
-                    const res = await pyInvoke("sqlite", {
-                        db: db,
-                        table: initTb,
-                        command: "query",
-                        sql: `SELECT id, _v FROM ${initTb} WHERE id IN ('isStreaming', 'activeId')`
-                    });
-                    const rows = res?.data ?? (Array.isArray(res) ? res : []);
-                    if (Array.isArray(rows)) {
-                        let isStreaming = false;
-                        let activeId = "";
-                        rows.forEach((row: any) => {
-                            let val = row._v;
-                            if (typeof val === 'string') {
-                                try {
-                                    val = JSON.parse(val);
-                                } catch { }
-                            }
-                            if (row.id === 'isStreaming') {
-                                isStreaming = !!val;
-                            } else if (row.id === 'activeId') {
-                                activeId = String(val || "");
-                            }
-                        });
-                        if (isStreaming && activeId) {
-                            await pyInvoke("v1/chat/stop", { id: activeId });
-                        }
-                    }
-                } catch (e) {
-                    console.error("Failed to check/stop task", i, e);
-                }
-            }
-
             const placeholders = ids.map(() => "?").join(",");
             await pyInvoke("sqlite", {
                 db,
