@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
-import { Plus, Trash2, Edit2, Check, X, ChevronDown, Clock, Repeat, Calendar } from "lucide-react";
+import { Plus, Trash2, Edit2, Check, X, ChevronDown, Clock, Repeat, Calendar, Mic, Video, Volume2, FileText, File as FileIcon, FileCode } from "lucide-react";
 import { Checkbox } from "./ui/checkbox";
 import { ScrollArea } from "./ui/scroll-area";
 import { Table, TableBody, TableCell, TableRow } from "./ui/table";
@@ -14,6 +14,144 @@ import { Button } from "./ui";
 import type { Model } from "../utils/utils";
 import { parseModelsFromConfig, INTERVAL_OPTIONS, ScheduleInterval } from "./composer";
 import { Dropdown } from "./dropdown";
+import { renderToStaticMarkup } from "react-dom/server";
+import { open } from "@tauri-apps/plugin-dialog";
+import Record from "./record";
+import { ensureTextAfter, ensureTextBefore, placeCaret, plainToBlocks, blocksToPlain, MIME_MAP } from "./composer";
+
+const CODE_EXTS = new Set(['js', 'jsx', 'ts', 'tsx', 'py', 'java', 'c', 'cpp', 'h', 'css', 'html', 'json', 'xml', 'yaml', 'yml', 'go', 'rs', 'php', 'rb']);
+const DOC_EXTS = new Set(['pdf', 'csv', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx']);
+const VIDEO_EXTS = new Set(['mp4', 'mkv', 'avi', 'mov', 'webm']);
+const AUDIO_EXTS = new Set(['mp3', 'wav', 'ogg', 'flac']);
+
+function getMimeType(ext: string): string {
+    return MIME_MAP[ext] ?? 'application/octet-stream';
+}
+
+function buildChipHTML_tasks(url: string, name: string, fileType?: string): string {
+    const safeName = name.replace(/"/g, '&quot;');
+    const isImage = !fileType || fileType.startsWith('image/');
+    let previewHTML: string;
+    if (isImage) {
+        previewHTML = `<img src="${url}" alt="${safeName}" draggable="false" class="h-4 w-4 object-cover rounded-sm border border-black/10 dark:border-white/10 block shrink-0">`;
+    } else {
+        const ext = name.split('.').pop()?.toLowerCase() ?? '';
+        let IconComponent: React.ElementType = FileIcon;
+        let strokeColor = '#6b7280';
+        if (fileType!.startsWith('video/') || VIDEO_EXTS.has(ext)) { IconComponent = Video; strokeColor = '#a855f7'; }
+        else if (fileType!.startsWith('audio/') || AUDIO_EXTS.has(ext)) { IconComponent = Volume2; strokeColor = '#22c55e'; }
+        else if (DOC_EXTS.has(ext) || fileType === 'application/pdf' || fileType!.includes('csv')) { IconComponent = FileText; strokeColor = '#f97316'; }
+        else if (CODE_EXTS.has(ext)) { IconComponent = FileCode; strokeColor = '#3b82f6'; }
+        const iconSVG = renderToStaticMarkup(<IconComponent color={strokeColor} width="14" height="14" />);
+        const dataURI = `data:image/svg+xml,${encodeURIComponent(iconSVG)}`;
+        previewHTML = `<img src="${dataURI}" alt="${safeName}" draggable="false" class="h-4 w-4 object-contain shrink-0">`;
+    }
+    const textHTML = `<span class="text-xs font-medium text-black/70 dark:text-white/70 truncate select-none max-w-[120px]">${safeName}</span>`;
+    return (
+        `<span contenteditable="false" data-img="true" data-url="${url}" data-name="${safeName}" ${fileType ? `data-filetype="${fileType}"` : ''} class="inline-flex align-baseline relative top-0.5 group/chip mx-[2px] items-center gap-1 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-[5px] p-[2px] pr-1.5">` +
+        previewHTML + textHTML +
+        `<button type="button" class="absolute right-1 top-1/2 transform -translate-y-1/2 h-[14px] w-[14px] rounded-full bg-black/80 dark:bg-white/90 text-white dark:text-black flex items-center justify-center opacity-0 group-hover/chip:opacity-100 transition-opacity z-10 shadow-sm" data-rm-chip="true">` +
+        `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>` +
+        `</button></span>`
+    );
+}
+
+function buildQueryHTML(query: string): string {
+    const blocks = plainToBlocks(query);
+    return blocks.map(block => {
+        if (block.type === 'text') {
+            return (block.value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;');
+        }
+        return buildChipHTML_tasks(block.url!, block.name!, block.fileType);
+    }).join('');
+}
+
+function serializeMsgNode(root: Node): any[] {
+    const blocks: any[] = [];
+    const stripZW = (s: string) => s.replace(/\u200B/g, '');
+    const walk = (node: Node) => {
+        if (node.nodeType === Node.TEXT_NODE) {
+            const v = stripZW(node.textContent ?? '');
+            if (v) blocks.push({ type: 'text', value: v });
+        } else if (node instanceof HTMLElement) {
+            if (node.dataset.img) {
+                const fileType = node.dataset.filetype;
+                const isFile = !!fileType && !fileType.startsWith('image/');
+                blocks.push(isFile
+                    ? { type: 'file', url: node.dataset.url!, name: node.dataset.name!, fileType }
+                    : { type: 'image', url: node.dataset.url!, name: node.dataset.name! }
+                );
+            } else if (node.tagName === 'BR') {
+                if (node.previousSibling || node.nextSibling) {
+                    blocks.push({ type: 'text', value: '\n' });
+                }
+            } else if (node.tagName === 'DIV' || node.tagName === 'P') {
+                if (blocks.length > 0) blocks.push({ type: 'text', value: '\n' });
+                node.childNodes.forEach(walk);
+            } else {
+                node.childNodes.forEach(walk);
+            }
+        }
+    };
+    root.childNodes.forEach(walk);
+    return blocks;
+}
+
+function QueryContent({ query }: { query: string }) {
+    const blocks = plainToBlocks(query);
+    return (
+        <>
+            {blocks.map((block, i) => {
+                if (block.type === 'text') return <span key={i} className="whitespace-pre-wrap">{block.value}</span>;
+                const name = block.name ?? '';
+                const url = block.url ?? '';
+                const fileType = block.fileType ?? '';
+                const isImage = !fileType || fileType.startsWith('image/');
+                let preview: React.ReactNode;
+                if (isImage) {
+                    preview = <img src={url} alt={name} draggable={false} className="h-4 w-4 object-cover rounded-sm border border-black/10 dark:border-white/10 block shrink-0" />;
+                } else {
+                    const ext = name.split('.').pop()?.toLowerCase() ?? '';
+                    let IconComp: React.ElementType = FileIcon;
+                    let strokeColor = '#6b7280';
+                    if (fileType.startsWith('video/') || VIDEO_EXTS.has(ext)) { IconComp = Video; strokeColor = '#a855f7'; }
+                    else if (fileType.startsWith('audio/') || AUDIO_EXTS.has(ext)) { IconComp = Volume2; strokeColor = '#22c55e'; }
+                    else if (DOC_EXTS.has(ext) || fileType === 'application/pdf' || fileType.includes('csv')) { IconComp = FileText; strokeColor = '#f97316'; }
+                    else if (CODE_EXTS.has(ext)) { IconComp = FileCode; strokeColor = '#3b82f6'; }
+                    preview = <IconComp color={strokeColor} width={14} height={14} />;
+                }
+                return (
+                    <span key={i} className="inline-flex align-baseline relative top-0.5 mx-[2px] items-center gap-1 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-[5px] p-[2px] pr-1.5 max-w-[180px]">
+                        {preview}
+                        <span className="text-[11px] font-medium text-black/70 dark:text-white/70 truncate select-none max-w-[120px]">{name}</span>
+                    </span>
+                );
+            })}
+        </>
+    );
+}
+
+const isTargetInDropdownPortal = (target: Node | null): boolean => {
+    let curr = target;
+    while (curr && curr !== document.body) {
+        if (curr instanceof HTMLElement) {
+            if (
+                curr.hasAttribute('data-radix-menu-content') ||
+                curr.hasAttribute('data-radix-popper-content-wrapper') ||
+                curr.getAttribute('role') === 'menu' ||
+                curr.classList.contains('DropdownMenuContent') ||
+                curr.classList.contains('DropdownMenuPortal')
+            ) {
+                return true;
+            }
+        }
+        curr = curr.parentNode;
+    }
+    return false;
+};
 
 
 const truncate = (text: string, length = 50) => {
@@ -78,7 +216,7 @@ const IntervalBadge = memo(({ value }: { value: string | undefined }) => {
 
 
 const TabRow = memo((
-    { tab, isSelected, onToggle, onOpen, onDelete, availableModels, onUpdateTab }: {
+    { tab, isSelected, onToggle, onOpen, onDelete, availableModels, onUpdateTab, workspace }: {
         tab: any;
         isSelected: boolean;
         onToggle: (id: string) => void;
@@ -86,6 +224,7 @@ const TabRow = memo((
         onDelete: (id: string) => void;
         availableModels: Model[];
         onUpdateTab: (id: string, updatedFields: Partial<any>) => void;
+        workspace?: string | null;
     }
 ) => {
     const handleToggle = useCallback(() => onToggle(tab.id), [tab.id, onToggle]);
@@ -106,49 +245,142 @@ const TabRow = memo((
             context: "",
         },
     });
+
     const [isEditingQuery, setIsEditingQuery] = useState(false);
-    const [editQuery, setEditQuery] = useState(tab.query || "");
     const editContainerRef = useRef<HTMLDivElement>(null);
-    const textareaRef = useRef<HTMLTextAreaElement>(null);
+    const queryRef = useRef<HTMLDivElement>(null);
+    const savedRange = useRef<Range | null>(null);
+    const escaping = useRef(false);
 
+    const syncState = useCallback(() => {
+        const div = queryRef.current;
+        if (!div) return;
+        const chips = div.querySelectorAll<HTMLElement>('[data-img]');
+        chips.forEach(chip => {
+            ensureTextBefore(chip);
+            ensureTextAfter(chip);
+        });
+    }, []);
+
+    // MutationObserver to sanitize contentEditable state
     useEffect(() => {
-        setEditQuery(tab.query || "");
-    }, [tab.query]);
+        const div = queryRef.current;
+        if (!div) return;
+        const observer = new MutationObserver(() => {
+            const children = Array.from(div.childNodes);
+            let dirty = false;
+            for (const node of children) {
+                if (node.nodeName === 'BR') {
+                    div.removeChild(node); dirty = true; continue;
+                }
+                if (node.nodeName === 'DIV') {
+                    const el = node as HTMLElement;
+                    if (el.dataset.img) continue;
+                    if (el.innerHTML === '<br>' || el.innerHTML === '' || el.innerHTML === '&nbsp;') {
+                        div.removeChild(el);
+                    } else {
+                        const frag = document.createDocumentFragment();
+                        if (el.previousSibling) frag.appendChild(document.createTextNode('\n'));
+                        while (el.firstChild) frag.appendChild(el.firstChild);
+                        div.replaceChild(frag, el);
+                    }
+                    dirty = true;
+                }
+            }
+            if (dirty) syncState();
+        });
+        observer.observe(div, { childList: true });
+        return () => observer.disconnect();
+    }, [syncState, isEditingQuery]);
 
+    // selectionchange listener for caret escaping around chips
+    useEffect(() => {
+        const onSelectionChange = () => {
+            if (escaping.current) return;
+            const div = queryRef.current;
+            if (!div || !isEditingQuery) return;
+            if (!div.querySelector('[data-img]')) return;
+            const sel = window.getSelection();
+            if (!sel?.rangeCount || !sel.isCollapsed) return;
+            const { focusNode } = sel;
+            if (!focusNode || (!div.contains(focusNode) && focusNode !== div)) return;
+            const { startContainer, startOffset } = sel.getRangeAt(0);
+            let target: Text | null = null;
+            let offset = 0;
+            let chip: HTMLElement | null = null;
+            if (startContainer instanceof HTMLElement && startContainer.dataset.img) {
+                chip = startContainer;
+            } else if (startContainer.nodeType === Node.TEXT_NODE && startContainer.parentElement?.closest('[data-img="true"]')) {
+                chip = startContainer.parentElement.closest('[data-img="true"]') as HTMLElement;
+            } else if (startContainer instanceof HTMLElement && startContainer.closest('[data-img="true"]')) {
+                chip = startContainer.closest('[data-img="true"]') as HTMLElement;
+            }
+            if (chip) {
+                if (startOffset === 0) { target = ensureTextBefore(chip); offset = target.length; }
+                else { target = ensureTextAfter(chip); offset = 0; }
+            } else if (startContainer === div) {
+                if (startOffset < div.childNodes.length) {
+                    const child = div.childNodes[startOffset];
+                    if (child instanceof HTMLElement && child.dataset.img) {
+                        target = ensureTextBefore(child); offset = target.length;
+                    }
+                }
+                if (!target && startOffset > 0) {
+                    const prev = div.childNodes[startOffset - 1];
+                    if (prev instanceof HTMLElement && prev.dataset.img) {
+                        target = ensureTextAfter(prev); offset = 0;
+                    }
+                }
+            }
+            if (target) {
+                escaping.current = true;
+                placeCaret(target, offset);
+                requestAnimationFrame(() => { escaping.current = false; });
+            }
+        };
+        document.addEventListener('selectionchange', onSelectionChange);
+        return () => document.removeEventListener('selectionchange', onSelectionChange);
+    }, [isEditingQuery]);
+
+    // Populate contentEditable with chip HTML when editing starts
+    useEffect(() => {
+        if (!isEditingQuery || !queryRef.current) return;
+        const el = queryRef.current;
+        el.innerHTML = buildQueryHTML(tab.query || '');
+        el.focus();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+    }, [isEditingQuery, tab.query]);
+
+    // Click outside listener to abort editing
     useEffect(() => {
         if (!isEditingQuery) return;
         const handleClickOutside = (event: MouseEvent) => {
-            if (editContainerRef.current && !editContainerRef.current.contains(event.target as Node)) {
+            const target = event.target as Node;
+            if (isTargetInDropdownPortal(target)) {
+                return; // Do not abort when selecting dropdowns
+            }
+            if (editContainerRef.current && !editContainerRef.current.contains(target)) {
                 setIsEditingQuery(false);
-                setEditQuery(tab.query || "");
             }
         };
         document.addEventListener("mousedown", handleClickOutside);
         return () => {
             document.removeEventListener("mousedown", handleClickOutside);
         };
-    }, [isEditingQuery, tab.query]);
-
-    const adjustHeight = useCallback(() => {
-        const textarea = textareaRef.current;
-        if (textarea) {
-            textarea.style.height = "auto";
-            textarea.style.height = `${Math.max(64, textarea.scrollHeight)}px`;
-        }
-    }, []);
-
-    useEffect(() => {
-        if (isEditingQuery) {
-            adjustHeight();
-        }
-    }, [editQuery, isEditingQuery, adjustHeight]);
+    }, [isEditingQuery]);
 
     const handleSaveQuery = useCallback(() => {
-        if (editQuery !== tab.query) {
-            onUpdateTab(tab.id, { query: editQuery });
+        const plainText = queryRef.current ? blocksToPlain(serializeMsgNode(queryRef.current)) : "";
+        if (plainText !== tab.query) {
+            onUpdateTab(tab.id, { query: plainText });
         }
         setIsEditingQuery(false);
-    }, [editQuery, tab.query, tab.id, onUpdateTab]);
+    }, [tab.query, tab.id, onUpdateTab]);
 
     const handleSaveAgent = useCallback((newAgent: string) => {
         if (newAgent !== tab.agent) {
@@ -161,6 +393,255 @@ const TabRow = memo((
             onUpdateTab(tab.id, { interval: newInterval });
         }
     }, [tab.interval, tab.id, onUpdateTab]);
+
+    const insertChipAtCursor = useCallback((url: string, name: string, fileType: string) => {
+        const el = queryRef.current;
+        if (!el) return;
+        el.focus();
+        const sel = window.getSelection();
+        if (savedRange.current) {
+            const anc = savedRange.current.commonAncestorContainer;
+            if (el === anc || el.contains(anc)) {
+                sel?.removeAllRanges();
+                sel?.addRange(savedRange.current);
+            }
+        }
+        if (sel?.rangeCount && !sel.isCollapsed) {
+            document.execCommand('delete', false);
+        }
+        document.execCommand('insertHTML', false, buildChipHTML_tasks(url, name, fileType) + '&nbsp;');
+        const chips = el.querySelectorAll('[data-img]');
+        if (chips.length > 0) {
+            const lastChip = chips[chips.length - 1] as HTMLElement;
+            placeCaret(ensureTextAfter(lastChip), 0);
+        }
+        savedRange.current = null;
+        syncState();
+    }, [syncState]);
+
+    const handlePlusClick = useCallback(async () => {
+        const el = queryRef.current;
+        if (!el) return;
+        const sel = window.getSelection();
+        if (sel?.rangeCount) {
+            const r = sel.getRangeAt(0);
+            const anc = r.commonAncestorContainer;
+            savedRange.current = (el === anc || el.contains(anc)) ? r.cloneRange() : null;
+        } else {
+            savedRange.current = null;
+        }
+        const result = await open({ multiple: true });
+        if (!result) return;
+        const paths = Array.isArray(result) ? result : [result];
+        for (const filePath of paths) {
+            const name = filePath.split(/[\\/]/).pop() ?? filePath;
+            const ext = name.split('.').pop()?.toLowerCase() ?? '';
+            insertChipAtCursor(`/file/${filePath}`, name, getMimeType(ext));
+        }
+    }, [insertChipAtCursor]);
+
+    const handleEditorPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+        const target = e.target as HTMLElement;
+        if (!target.closest('[data-rm-chip="true"]')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const chip = target.closest('[data-img="true"]');
+        if (!chip) return;
+        queryRef.current?.focus();
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNode(chip);
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+        document.execCommand('delete', false);
+    }, []);
+
+    const handleCopy = useCallback((e: React.ClipboardEvent) => {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+        const blocks = serializeMsgNode(sel.getRangeAt(0).cloneContents());
+        if (!blocks.length) return;
+        e.preventDefault();
+        navigator.clipboard.writeText(blocksToPlain(blocks)).catch(() => { });
+    }, []);
+
+    const handleCut = useCallback((e: React.ClipboardEvent) => {
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+        handleCopy(e);
+        document.execCommand('delete', false);
+    }, [handleCopy]);
+
+    const insertBlocks = useCallback((blocks: any[]) => {
+        const div = queryRef.current;
+        if (!div) return;
+        div.focus();
+        const sel = window.getSelection();
+        if (sel?.rangeCount && !sel.isCollapsed) {
+            document.execCommand('delete', false);
+        }
+        for (const block of blocks) {
+            if (block.type === 'text' && block.value) {
+                document.execCommand('insertText', false, block.value);
+            } else if ((block.type === 'image' || block.type === 'file') && block.url) {
+                document.execCommand('insertHTML', false, buildChipHTML_tasks(block.url, block.name ?? '', block.fileType));
+                const chips = div.querySelectorAll('[data-img]');
+                if (chips.length > 0) {
+                    const lastChip = chips[chips.length - 1] as HTMLElement;
+                    placeCaret(ensureTextAfter(lastChip), 0);
+                }
+            }
+        }
+        syncState();
+    }, [syncState]);
+
+    const handlePaste = useCallback(async (e: React.ClipboardEvent) => {
+        e.preventDefault();
+        if (e.clipboardData?.files?.length) {
+            Array.from(e.clipboardData.files).forEach(file => {
+                insertChipAtCursor(URL.createObjectURL(file), file.name, file.type);
+            });
+            return;
+        }
+        let plain = '';
+        try {
+            plain = await navigator.clipboard.readText();
+        } catch {
+            plain = e.clipboardData?.getData('text/plain') ?? '';
+        }
+        if (!plain) return;
+        const blocks = plainToBlocks(plain);
+        if (blocks.some(b => b.type !== 'text')) {
+            insertBlocks(blocks);
+        } else {
+            document.execCommand('insertText', false, plain);
+        }
+    }, [insertBlocks, insertChipAtCursor]);
+
+    const handleEditorKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
+        if (e.key === 'Enter') {
+            if (!e.shiftKey) {
+                e.preventDefault();
+                handleSaveQuery();
+                return;
+            }
+            e.preventDefault();
+            {
+                const div = queryRef.current!;
+                const sel2 = window.getSelection();
+                if (!sel2?.rangeCount) { syncState(); return; }
+                const range2 = sel2.getRangeAt(0);
+                if (!range2.collapsed) range2.deleteContents();
+                const endRange = document.createRange();
+                endRange.selectNodeContents(div);
+                endRange.collapse(false);
+                let atEnd = range2.compareBoundaryPoints(Range.END_TO_END, endRange) === 0;
+                if (!atEnd) {
+                    const r = range2.cloneRange();
+                    r.setEnd(endRange.endContainer, endRange.endOffset);
+                    atEnd = r.toString().replace(/\u200B/g, '').length === 0;
+                }
+                const nlNode = document.createTextNode(atEnd ? '\n\u200B' : '\n');
+                range2.insertNode(nlNode);
+                placeCaret(nlNode, 1);
+            }
+            syncState();
+            return;
+        }
+        if (e.key === 'Escape') {
+            setIsEditingQuery(false);
+            return;
+        }
+        const sel = window.getSelection();
+        if (!sel?.rangeCount) return;
+        const range = sel.getRangeAt(0);
+        if (!range.collapsed) {
+            if (e.key === 'Backspace' || e.key === 'Delete') {
+                e.preventDefault();
+                document.execCommand('delete', false);
+                syncState();
+            }
+            return;
+        }
+        const { startContainer, startOffset } = range;
+        if (e.key === 'Backspace') {
+            if (startContainer.nodeType === Node.TEXT_NODE) {
+                if (startOffset === 0 || (e.ctrlKey && (startContainer.textContent?.slice(0, startOffset) ?? '').trim() === '')) {
+                    const prev = startContainer.previousSibling;
+                    if (prev instanceof HTMLElement && prev.dataset.img) {
+                        e.preventDefault();
+                        const dr = document.createRange();
+                        dr.setStartBefore(prev);
+                        dr.setEnd(startContainer, startOffset);
+                        sel.removeAllRanges(); sel.addRange(dr);
+                        document.execCommand('delete', false);
+                        syncState(); return;
+                    }
+                }
+            }
+            if (startContainer === queryRef.current && startOffset > 0) {
+                const prev = queryRef.current.childNodes[startOffset - 1];
+                if (prev instanceof HTMLElement && prev.dataset.img) {
+                    e.preventDefault();
+                    const dr = document.createRange();
+                    dr.selectNode(prev);
+                    sel.removeAllRanges(); sel.addRange(dr);
+                    document.execCommand('delete', false);
+                    syncState(); return;
+                }
+            }
+        }
+        if (e.key === 'ArrowRight') {
+            if (startContainer.nodeType === Node.TEXT_NODE && startOffset === (startContainer as Text).length) {
+                const next = startContainer.nextSibling;
+                if (next instanceof HTMLElement && next.dataset.img) {
+                    e.preventDefault();
+                    const afterText = ensureTextAfter(next);
+                    e.shiftKey
+                        ? sel.setBaseAndExtent(range.startContainer, range.startOffset, afterText, 0)
+                        : placeCaret(afterText, 0);
+                    return;
+                }
+            }
+            const editor = queryRef.current;
+            if (editor && startContainer === editor && startOffset < editor.childNodes.length) {
+                const next = editor.childNodes[startOffset];
+                if (next instanceof HTMLElement && next.dataset.img) {
+                    e.preventDefault();
+                    const afterText = ensureTextAfter(next);
+                    e.shiftKey
+                        ? sel.setBaseAndExtent(range.startContainer, range.startOffset, afterText, 0)
+                        : placeCaret(afterText, 0);
+                    return;
+                }
+            }
+        }
+        if (e.key === 'ArrowLeft') {
+            if (startContainer.nodeType === Node.TEXT_NODE && startOffset === 0) {
+                const prev = startContainer.previousSibling;
+                if (prev instanceof HTMLElement && prev.dataset.img) {
+                    e.preventDefault();
+                    const beforeText = ensureTextBefore(prev);
+                    e.shiftKey
+                        ? sel.setBaseAndExtent(range.endContainer, range.endOffset, beforeText, beforeText.length)
+                        : placeCaret(beforeText, beforeText.length);
+                    return;
+                }
+            }
+            const editor = queryRef.current;
+            if (editor && startContainer === editor && startOffset > 0) {
+                const prev = editor.childNodes[startOffset - 1];
+                if (prev instanceof HTMLElement && prev.dataset.img) {
+                    e.preventDefault();
+                    const beforeText = ensureTextBefore(prev);
+                    e.shiftKey
+                        ? sel.setBaseAndExtent(range.endContainer, range.endOffset, beforeText, beforeText.length)
+                        : placeCaret(beforeText, beforeText.length);
+                    return;
+                }
+            }
+        }
+    }, [syncState, handleSaveQuery]);
 
     const modelDropdownContent = useMemo(() => {
         return availableModels.map(m => ({
@@ -188,29 +669,19 @@ const TabRow = memo((
             {isEditingQuery ? (
                 <TableCell colSpan={4} onClick={e => e.stopPropagation()} className="py-2.5 align-top">
                     <div ref={editContainerRef} className="flex flex-col gap-2 w-full">
-                        <textarea
-                            ref={textareaRef}
-                            value={editQuery}
-                            onChange={e => setEditQuery(e.target.value)}
-                            onKeyDown={e => {
-                                if (e.key === 'Enter' && !e.shiftKey) {
-                                    e.preventDefault();
-                                    handleSaveQuery();
-                                } else if (e.key === 'Escape') {
-                                    setIsEditingQuery(false);
-                                    setEditQuery(tab.query || "");
-                                }
-                            }}
-                            autoFocus
-                            onFocus={e => {
-                                e.target.select();
-                                adjustHeight();
-                            }}
-                            className="w-full bg-accent/5 border border-accent/20 rounded-lg p-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring resize-none overflow-hidden transition-all font-sans min-h-[64px] max-h-[300px]"
-                            placeholder="Enter task query prompt..."
+                        <div
+                            ref={queryRef}
+                            contentEditable
+                            suppressContentEditableWarning
+                            onKeyDown={handleEditorKeyDown}
+                            onPointerDown={handleEditorPointerDown}
+                            onCopy={handleCopy}
+                            onCut={handleCut}
+                            onPaste={handlePaste}
+                            className="w-full bg-accent/5 border border-accent/20 rounded-lg p-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring overflow-y-auto transition-all font-sans min-h-[64px] max-h-[300px] outline-none whitespace-pre-wrap break-words"
                         />
                         <div className="flex justify-between items-center gap-3 mt-1">
-                            {/* Inner Model & Interval Selectors */}
+                            {/* Inner Model, Interval & Attachment Selectors */}
                             <div className="flex items-center gap-2">
                                 {/* Agent Selector */}
                                 <Dropdown
@@ -241,13 +712,49 @@ const TabRow = memo((
                                         <IntervalBadge value={tab.interval} />
                                     </button>
                                 </Dropdown>
+
+                                {/* File Attachment (Plus) */}
+                                <button
+                                    type="button"
+                                    onClick={handlePlusClick}
+                                    className="h-7 w-7 flex items-center justify-center rounded-md opacity-60 hover:opacity-100 hover:bg-accent/10 border border-accent/10 hover:border-accent/25 transition-all"
+                                    title="Attach file"
+                                >
+                                    <Plus className="w-4 h-4" />
+                                </button>
+
+                                {/* Audio Recorder (Mic) */}
+                                <Record
+                                    workspace={workspace ?? "global"}
+                                    onFileSaved={(filePath) => {
+                                        const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+                                        const fileName = filePath.split(/[\\/]+/).pop() ?? filePath;
+                                        insertChipAtCursor(`/file/${filePath}`, fileName, getMimeType(ext));
+                                    }}
+                                >
+                                    {({ isRecording, startRecording, stopRecording }) => (
+                                        <button
+                                            type="button"
+                                            onClick={isRecording ? stopRecording : startRecording}
+                                            className={clsx(
+                                                "h-7 w-7 flex items-center justify-center rounded-md border transition-all",
+                                                isRecording
+                                                    ? "text-red-500 opacity-100 bg-red-500/10 border-red-500/20"
+                                                    : "opacity-60 hover:opacity-100 hover:bg-accent/10 border-accent/10 hover:border-accent/25"
+                                            )}
+                                            title={isRecording ? "Stop recording" : "Record audio"}
+                                        >
+                                            <Mic className="w-4 h-4" />
+                                        </button>
+                                    )}
+                                </Record>
                             </div>
 
                             {/* Help Text / Actions */}
                             <div className="flex items-center gap-2 text-[11px]">
                                 <span className="text-[10px] opacity-60 hidden sm:inline">Press Enter to save, Shift+Enter for newline</span>
                                 <button 
-                                    onClick={() => { setIsEditingQuery(false); setEditQuery(tab.query || ""); }} 
+                                    onClick={() => { setIsEditingQuery(false); }} 
                                     className="px-2 py-1 rounded hover:bg-accent/10 hover:text-foreground transition-all cursor-pointer font-medium"
                                 >
                                     Cancel
@@ -267,7 +774,9 @@ const TabRow = memo((
                     {/* Normal Query Cell */}
                     <TableCell className="w-full font-medium group/query cursor-pointer h-12 min-w-[200px]" onClick={handleOpen}>
                         <div className="flex items-center gap-1.5 justify-between w-full">
-                            <span className="truncate max-w-[400px]" title={tab.query}>{tab.query || "-"}</span>
+                            <div className="truncate max-w-[400px] flex items-center gap-1.5" title={tab.query}>
+                                {tab.query ? <QueryContent query={tab.query} /> : "-"}
+                            </div>
                             <button
                                 onClick={(e) => {
                                     e.stopPropagation();
@@ -635,6 +1144,7 @@ export default function Tasks({
                                     onDelete={handleDeleteRow}
                                     availableModels={availableModels}
                                     onUpdateTab={handleUpdateTab}
+                                    workspace={workspace}
                                 />
                             ))
                         )}
