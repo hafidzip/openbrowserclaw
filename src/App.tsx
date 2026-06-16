@@ -22,9 +22,11 @@ import {
   RefreshCcw,
   InfoIcon,
   Copy,
-  Check
+  Check,
+  AlertTriangle,
+  AlertCircle
 } from 'lucide-react'
-import { ref, useFolder, useTheme, type AppInfo, Dropdown, useAvailableModels } from 'openchad-react'
+import { ref, useFolder, useTheme, type AppInfo, Dropdown, useAvailableModels, uuidv4 } from 'openchad-react'
 import clsx from 'clsx'
 import { MenuBar } from 'openchad-react/utils/state'
 import { open } from '@tauri-apps/plugin-dialog';
@@ -42,6 +44,8 @@ interface AgentNode {
   isRunning: boolean
   isParallel: boolean
   model: string | null
+  warnings?: string[]
+  errors?: string[]
   skillPath?: string | null
 }
 
@@ -57,18 +61,7 @@ const CARD_HALF_H = CARD_H / 2
 const ZOOM_MIN = 0.4
 const ZOOM_MAX = 2.0
 
-const INITIAL_AGENTS: Record<string, AgentNode> = {
-  '1': {
-    id: '1',
-    name: 'CEO',
-    tools: [],
-    children: [],
-    isRunning: false,
-    isParallel: false,
-    toolValues: {},
-    model: null
-  }
-}
+
 
 //  Auto-Resize Textarea 
 
@@ -463,6 +456,7 @@ const PlaceholderAgent = React.memo(function PlaceholderAgent({
 
 interface AgentCardProps {
   id: string
+  tabId: string
   agent: AgentNode
   posX: number
   posY: number
@@ -471,14 +465,16 @@ interface AgentCardProps {
   isPathHighlight: boolean
   isRunningPath: boolean
   isDark: boolean
+  isOverlap: boolean
   onSelect: (id: string) => void
   onHover: (id: string | null) => void
   onDelete: (id: string) => void
+  onAdd: () => void
 }
 
 const AgentCard = React.memo(function AgentCard({
-  id, agent, posX, posY, isSelected, isHovered, isPathHighlight, isRunningPath, isDark,
-  onSelect, onHover, onDelete
+  id, tabId, agent, posX, posY, isSelected, isHovered, isPathHighlight, isRunningPath, isDark, isOverlap,
+  onSelect, onHover, onDelete, onAdd
 }: AgentCardProps) {
   const dotColor = 'hsl(var(--accent))'
   const mutedFg = isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.45)'
@@ -486,6 +482,10 @@ const AgentCard = React.memo(function AgentCard({
   const border = 'hsl(var(--border))'
   const isRunning = !!agent.isRunning
   const runningColor = '#34d399'
+  const hasError = agent.errors && agent.errors.length > 0
+  const hasWarning = agent.warnings && agent.warnings.length > 0
+  const statusColor = hasError ? '#ef4444' : hasWarning ? '#f59e0b' : null
+  const outlineColor = statusColor || (isRunning ? runningColor : isSelected ? dotColor : null)
 
   return (
     <div
@@ -497,19 +497,17 @@ const AgentCard = React.memo(function AgentCard({
         top: posY - CARD_HALF_H,
         transformOrigin: 'center',
         background: cardBg,
-        borderColor: isRunning
-          ? runningColor
-          : isSelected
-            ? dotColor
-            : isHovered || isPathHighlight
-              ? 'hsl(var(--accent) / 0.5)'
-              : border,
+        borderColor: outlineColor
+          ? outlineColor
+          : isHovered || isPathHighlight
+            ? 'hsl(var(--accent) / 0.5)'
+            : border,
         boxShadow: isRunning
-          ? `0 0 0 2px ${runningColor}60, 0 0 16px ${runningColor}40`
+          ? `0 0 0 2px ${outlineColor}60, 0 0 16px ${outlineColor}40`
           : isSelected
-            ? `0 0 0 2px ${dotColor}, 0 4px 20px rgba(0,0,0,0.15)`
+            ? `0 0 0 2px ${outlineColor}, 0 4px 20px ${statusColor ? `${statusColor}25` : 'rgba(0,0,0,0.15)'}`
             : isHovered
-              ? '0 4px 20px rgba(0,0,0,0.12)'
+              ? `0 4px 20px ${statusColor ? `${statusColor}35` : 'rgba(0,0,0,0.12)'}`
               : 'none',
         transform: isSelected ? 'scale(1.03)' : isHovered ? 'scale(1.015)' : 'scale(1)',
         transition: 'left 350ms cubic-bezier(0.16, 1, 0.3, 1), top 350ms cubic-bezier(0.16, 1, 0.3, 1), border-color 200ms ease-out, box-shadow 200ms ease-out, transform 200ms ease-out, background 200ms ease-out',
@@ -518,14 +516,30 @@ const AgentCard = React.memo(function AgentCard({
       onMouseEnter={() => onHover(id)}
       onMouseLeave={() => onHover(null)}
     >
-      <div className="flex items-center justify-between mb-1">
+      <div className="flex items-center justify-between">
         <div className="flex-1 flex justify-center items-center gap-1.5 min-w-0">
           {isRunning ? (
-            <RefreshCcw
-              size={10}
-              className="animate-spin flex-shrink-0"
-              style={{ color: runningColor }}
-            />
+            <span title={hasError ? `${agent.errors!.length} error(s)` : hasWarning ? `${agent.warnings!.length} warning(s)` : undefined} className="flex-shrink-0 flex items-center">
+              <RefreshCcw
+                size={10}
+                className="animate-spin flex-shrink-0"
+                style={{ color: statusColor || runningColor }}
+              />
+            </span>
+          ) : hasError ? (
+            <span title={`${agent.errors!.length} error(s)`} className="flex-shrink-0 flex items-center">
+              <AlertCircle
+                size={10}
+                className="text-red-500 dark:text-red-400 stroke-[3]"
+              />
+            </span>
+          ) : hasWarning ? (
+            <span title={`${agent.warnings!.length} warning(s)`} className="flex-shrink-0 flex items-center">
+              <AlertTriangle
+                size={10}
+                className="text-amber-500 dark:text-amber-400 stroke-[3]"
+              />
+            </span>
           ) : (
             <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: dotColor }} />
           )}
@@ -537,18 +551,31 @@ const AgentCard = React.memo(function AgentCard({
           </span>
         </div>
         <div className="flex items-center gap-1">
-          {id !== '1' && (
-            <button
-              id={`agent-del-btn-${id}`}
-              className="ui-control p-1 rounded transition-colors"
-              style={{ color: mutedFg }}
-              title="Delete agent & branch"
-              onMouseEnter={(e) => (e.currentTarget.style.color = '#fb7185')}
-              onMouseLeave={(e) => (e.currentTarget.style.color = mutedFg)}
-              onClick={(e) => { e.stopPropagation(); onDelete(id) }}
-            >
-              <Trash2 size={12} />
-            </button>
+          {id !== tabId && (
+            <>
+              <button
+                id={`agent-del-btn-${id}`}
+                className="ui-control p-1 rounded transition-colors"
+                style={{ color: mutedFg }}
+                title="Delete agent & branch"
+                onMouseEnter={(e) => (e.currentTarget.style.color = '#fb7185')}
+                onMouseLeave={(e) => (e.currentTarget.style.color = mutedFg)}
+                onClick={(e) => { e.stopPropagation(); onDelete(id) }}
+              >
+                <Trash2 size={12} />
+              </button>
+              {isOverlap && <button
+                id={`agent-del-btn-${id}`}
+                className="ui-control p-1 rounded transition-colors"
+                style={{ color: mutedFg }}
+                title="Add agent"
+                onMouseEnter={(e) => (e.currentTarget.style.color = '#fb7185')}
+                onMouseLeave={(e) => (e.currentTarget.style.color = mutedFg)}
+                onClick={(e) => { e.stopPropagation(); onAdd() }}
+              >
+                <Plus size={12} />
+              </button>}
+            </>
           )}
         </div>
       </div>
@@ -593,6 +620,65 @@ const Tool = ({
   </div>
 )
 
+const CollapsibleTextItem = React.memo(function CollapsibleTextItem({
+  text,
+  className,
+  onDelete
+}: {
+  text: string
+  className?: string
+  onDelete?: () => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const [copied, setCopied] = useState(false)
+  const isLong = text.length > 180
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(text)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1500)
+  }
+
+  return (
+    <li className={clsx("relative group break-all text-xs leading-relaxed transition-all pr-10 py-0.5", className)}>
+      <span>
+        {isLong && !expanded ? `${text.slice(0, 180)}... ` : text}
+      </span>
+      {isLong && (
+        <button
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          className="text-[10px] font-mono font-bold underline ml-1 cursor-pointer opacity-70 hover:opacity-100 transition-opacity"
+          style={{ color: 'inherit' }}
+        >
+          {expanded ? "[Show Less]" : "[Read More]"}
+        </button>
+      )}
+      <div className="absolute right-0 top-1 opacity-0 group-hover:opacity-100 flex items-center gap-1.5 transition-opacity px-1 text-foreground">
+        <button
+          type="button"
+          onClick={handleCopy}
+          className="hover:scale-110 cursor-pointer opacity-70 hover:opacity-100 transition-all flex items-center"
+          style={{ color: 'inherit' }}
+          title="Copy text"
+        >
+          {copied ? <Check size={11} className="text-emerald-400" /> : <Copy size={11} />}
+        </button>
+        {onDelete && (
+          <button
+            type="button"
+            onClick={onDelete}
+            className="text-red-500 hover:text-red-400 dark:text-red-400 dark:hover:text-red-300 font-bold text-xs hover:scale-110 cursor-pointer leading-none"
+            title="Delete item"
+          >
+            &times;
+          </button>
+        )}
+      </div>
+    </li>
+  )
+})
+
 interface AgentEditorProps {
   selected: string
   agents: Record<string, AgentNode>
@@ -621,6 +707,22 @@ const AgentEditor = ({
   const dropZoneRef = useRef<HTMLDivElement>(null);
   const [isDragOver, setIsDragOver] = useState(false);
   const [copiedId, setCopiedId] = useState(false);
+  const [copiedErrors, setCopiedErrors] = useState(false);
+  const [copiedWarnings, setCopiedWarnings] = useState(false);
+
+  const handleCopyAllErrors = () => {
+    const text = (agents[selected].errors || []).join('\n')
+    navigator.clipboard.writeText(text)
+    setCopiedErrors(true)
+    setTimeout(() => setCopiedErrors(false), 1500)
+  }
+
+  const handleCopyAllWarnings = () => {
+    const text = (agents[selected].warnings || []).join('\n')
+    navigator.clipboard.writeText(text)
+    setCopiedWarnings(true)
+    setTimeout(() => setCopiedWarnings(false), 1500)
+  }
 
   const skillPath = agents[selected].skillPath || null;
 
@@ -677,14 +779,106 @@ const AgentEditor = ({
       >
         Selected Agent Properties
       </span>
-      <h3 className="text-sm font-semibold mt-1 flex items-center gap-2" style={{ color: themeStyles.accent }}>
-        ID: <span className="font-mono text-xs">{selected}</span>
+      <h3 className="text-xs font-semibold mt-1 flex items-center gap-2" style={{ color: themeStyles.accent }}>
+        ID: <span className="font-mono text-xs truncate">{selected}</span>
         {copiedId
           ? <Check size={14} className="text-emerald-400 transition-all" />
           : <Copy size={14} className="cursor-pointer transition-all" onClick={handleCopyId} />
         }
       </h3>
     </div>
+
+    {/* Warnings & Errors List */}
+    {((agents[selected].errors && agents[selected].errors!.length > 0) ||
+      (agents[selected].warnings && agents[selected].warnings!.length > 0)) && (
+        <div className="flex flex-col gap-2 p-3 rounded-xl border bg-black/10 dark:bg-white/[0.02]" style={{ borderColor: themeStyles.border }}>
+          {agents[selected].errors && agents[selected].errors!.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-bold text-red-500 dark:text-red-400 uppercase tracking-wider flex items-center gap-1">
+                  <AlertCircle size={12} /> Errors ({agents[selected].errors!.length})
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleCopyAllErrors}
+                    className="text-[9px] font-bold uppercase tracking-wider opacity-60 hover:opacity-100 transition-opacity cursor-pointer"
+                    style={{ color: themeStyles.mutedFg }}
+                  >
+                    {copiedErrors ? "Copied" : "Copy All"}
+                  </button>
+                  <span className="opacity-35 text-[9px]" style={{ color: themeStyles.mutedFg }}>|</span>
+                  <button
+                    type="button"
+                    onClick={() => handleUpdateAgentProperty(selected, { errors: [] })}
+                    className="text-[9px] font-bold uppercase tracking-wider opacity-60 hover:opacity-100 transition-opacity cursor-pointer"
+                    style={{ color: themeStyles.mutedFg }}
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+              <ul className="flex flex-col gap-1 list-disc pl-4">
+                {agents[selected].errors!.map((err, idx) => (
+                  <CollapsibleTextItem
+                    key={idx}
+                    text={err}
+                    className="text-red-600 dark:text-red-400"
+                    onDelete={() => {
+                      const newErrors = agents[selected].errors!.filter((_, i) => i !== idx)
+                      handleUpdateAgentProperty(selected, { errors: newErrors })
+                    }}
+                  />
+                ))}
+              </ul>
+            </div>
+          )}
+          {agents[selected].errors && agents[selected].errors!.length > 0 && agents[selected].warnings && agents[selected].warnings!.length > 0 && (
+            <div className="h-px my-1" style={{ background: themeStyles.border }} />
+          )}
+          {agents[selected].warnings && agents[selected].warnings!.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-bold text-amber-500 dark:text-amber-400 uppercase tracking-wider flex items-center gap-1">
+                  <AlertTriangle size={12} /> Warnings ({agents[selected].warnings!.length})
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleCopyAllWarnings}
+                    className="text-[9px] font-bold uppercase tracking-wider opacity-60 hover:opacity-100 transition-opacity cursor-pointer"
+                    style={{ color: themeStyles.mutedFg }}
+                  >
+                    {copiedWarnings ? "Copied" : "Copy All"}
+                  </button>
+                  <span className="opacity-35 text-[9px]" style={{ color: themeStyles.mutedFg }}>|</span>
+                  <button
+                    type="button"
+                    onClick={() => handleUpdateAgentProperty(selected, { warnings: [] })}
+                    className="text-[9px] font-bold uppercase tracking-wider opacity-60 hover:opacity-100 transition-opacity cursor-pointer"
+                    style={{ color: themeStyles.mutedFg }}
+                  >
+                    Clear
+                  </button>
+                </div>
+              </div>
+              <ul className="flex flex-col gap-1 list-disc pl-4">
+                {agents[selected].warnings!.map((warn, idx) => (
+                  <CollapsibleTextItem
+                    key={idx}
+                    text={warn}
+                    className="text-amber-600 dark:text-amber-400"
+                    onDelete={() => {
+                      const newWarnings = agents[selected].warnings!.filter((_, i) => i !== idx)
+                      handleUpdateAgentProperty(selected, { warnings: newWarnings })
+                    }}
+                  />
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      )}
 
     {/* Model selection */}
     <div className="flex flex-col gap-1.5">
@@ -910,7 +1104,7 @@ const AgentEditor = ({
                       type="number"
                       value={currentValue}
                       onChange={(e) => updateValue(e.target.value === '' ? '' : Number(e.target.value))}
-                      className="px-2.5 py-1 text-xs rounded border outline-none"
+                      className="p-1.5 text-xs rounded border outline-none"
                       style={{
                         background: themeStyles.muted,
                         borderColor: themeStyles.border,
@@ -922,7 +1116,7 @@ const AgentEditor = ({
                       type={type === 'email' ? 'email' : type === 'url' ? 'url' : 'text'}
                       value={currentValue}
                       onChange={(e) => updateValue(e.target.value)}
-                      className="px-2.5 py-1 text-xs rounded border outline-none"
+                      className="p-1.5 rounded-lg border outline-none"
                       style={{
                         background: themeStyles.muted,
                         borderColor: themeStyles.border,
@@ -947,7 +1141,7 @@ const AgentEditor = ({
               <InfoIcon size={12} />
             </TooltipTrigger>
             <TooltipContent>
-              <p>If enabled, all child agents will be execute at the same time.</p>
+              <p>If enabled, all children will be execute at the same time.</p>
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
@@ -956,7 +1150,7 @@ const AgentEditor = ({
         <button
           type="button"
           id={`btn-parallel-${selected}`}
-          onClick={() => handleUpdateAgentProperty(selected, { isRunning: !agents[selected].isRunning })}
+          onClick={() => handleUpdateAgentProperty(selected, { isParallel: !agents[selected].isParallel })}
           className="relative w-9 h-5 rounded-full flex-shrink-0 transition-colors duration-200 focus:outline-none"
           style={{
             background: agents[selected].isParallel ? '#34d399' : themeStyles.muted,
@@ -1030,10 +1224,23 @@ const parseFields = (content: string) => {
   return [];
 }
 
-export function App({ pyInvoke, useActiveTabId, useTabDatabase, tabId }: AppInfo) {
+export function App({ pyInvoke, useActiveTabId, useTabDatabase, useWorkspace, useTitle, tabId }: AppInfo) {
   const snaptheme = useTheme()
   const isDark = snaptheme.theme === 'dark'
   const activeTabId = useActiveTabId()
+
+  const INITIAL_AGENTS: Record<string, AgentNode> = {
+    [tabId]: {
+      id: tabId,
+      name: 'CEO',
+      tools: [],
+      children: [],
+      isRunning: false,
+      isParallel: false,
+      toolValues: {},
+      model: null
+    }
+  }
 
   //  Core state 
   const [agents, setAgents, { ready }] = useTabDatabase<Record<string, AgentNode>>("agents", { initialValue: INITIAL_AGENTS })
@@ -1043,6 +1250,29 @@ export function App({ pyInvoke, useActiveTabId, useTabDatabase, tabId }: AppInfo
   const [availableTools, setAvailableTools] = useState<{ name: string; description: string; source: 'internal' | 'mcp' }[]>([])
   const [tools] = useFolder('Tools')
   const [toolFields, setToolFields] = useState<Record<string, any[]>>({})
+  const { workspace } = useWorkspace()
+  const workspaceRef = useRef(workspace)
+
+
+  useEffect(() => {
+    const tabUpdate = (event: Event) => {
+      const { tabId: targetTabId,title, icon } = (event as CustomEvent).detail;
+        (async () => {
+          if (workspaceRef.current && title && targetTabId && icon && targetTabId === tabId) {
+            await pyInvoke('sqlite', {
+              db: workspaceRef.current ?? "global",
+              command: "execute",
+              sql: `INSERT OR REPLACE INTO agents (id, metadata) VALUES (?, ?)`,
+              params: [tabId, JSON.stringify({ name: title, icon: icon, timestamp: Date.now() })],
+            })
+          }
+        })()
+    };
+    window.addEventListener('tab-update', tabUpdate);
+    return () => {
+      window.removeEventListener('tab-update', tabUpdate);
+    }
+  }, [])
 
   useEffect(() => {
     if (ready && agents) {
@@ -1211,6 +1441,8 @@ export function App({ pyInvoke, useActiveTabId, useTabDatabase, tabId }: AppInfo
 
   const [canvasDimensions, setCanvasDimensions] = useState({ width: 800, height: 600 })
 
+
+
   //  Layout computation (Reingold-Tilford) 
   const agentPositions = useMemo(() => {
     const allChildIds = new Set<string>()
@@ -1343,7 +1575,7 @@ export function App({ pyInvoke, useActiveTabId, useTabDatabase, tabId }: AppInfo
       firstPass(rId, 0)
     }
 
-    const positions: Record<string, { x: number; y: number; level: number }> = {}
+    const positions: Record<string, { x: number; y: number; level: number, isOverlap: boolean }> = {}
 
     // ─── assignPositions ───────────────────────────────────────────────────────
     // Sibling placeholders never enter here (they're not in the virtual tree
@@ -1357,7 +1589,8 @@ export function App({ pyInvoke, useActiveTabId, useTabDatabase, tabId }: AppInfo
       positions[id] = {
         x: prelim[id],
         y,
-        level: levels[id]
+        level: levels[id],
+        isOverlap: false
       }
       for (const cid of agent.children) assignPositions(cid)
     }
@@ -1376,25 +1609,80 @@ export function App({ pyInvoke, useActiveTabId, useTabDatabase, tabId }: AppInfo
     }
 
     // ─── Inject sibling placeholders ──────────────────────────────────────────
-    // Place them to the right of every agent that already has children.
-    // They are injected AFTER centering so they don't skew the layout.
-    // Horizontal gap between card right-edge and placeholder left-edge = 24 px
-    // (matches SIBLING_SEP).  Placeholder radius = 16 px.
-    // Center X = card-center + CARD_HALF_W (right edge) + 24 (gap) + 16 (radius)
+    // Placed to the RIGHT of the RIGHTMOST CHILD at the CHILDREN'S Y-LEVEL,
+    // never next to the parent itself. This means the root node (and any
+    // parent) will never show a + button at its own row — the button appears
+    // one level down, at the end of the siblings row.
+    //
+    // Overlap-safe: a per-level node index is built first; if the proposed
+    // placeholder position would collide with any node from an adjacent
+    // subtree at the same level it is omitted gracefully.
+
+    const PLACEHOLDER_RADIUS = 16
+    const SAFE_MARGIN = 8   // minimum gap (px) between placeholder edge and nearest card edge
+
+    // Build a per-level spatial index for fast overlap detection
+    const nodesByLevel: Record<number, Array<{ x: number; id: string }>> = {}
+    for (const [nid, npos] of Object.entries(positions)) {
+      const lvl = npos.level
+      if (!nodesByLevel[lvl]) nodesByLevel[lvl] = []
+      nodesByLevel[lvl].push({ x: npos.x, id: nid })
+    }
+
     for (const agentId of Object.keys(agents || {})) {
       const agent = agents?.[agentId]
       if (!agent || !agent.children?.length) continue
-      const ap = positions[agentId]
-      if (!ap) continue
-      positions[`placeholder-sibling-${agentId}`] = {
-        x: ap.x + CARD_HALF_W + 40,   // right-edge + gap(24) + radius(16)
-        y: ap.y,                        // same row as the parent — purely horizontal
-        level: ap.level,
+
+      // Find the rightmost real child's position
+      let rightmostX = -Infinity
+      let childLevel = -1
+      let childY = 0
+      for (const cid of agent.children) {
+        const cp = positions[String(cid)]
+        if (!cp) continue
+        if (cp.x > rightmostX) {
+          rightmostX = cp.x
+          childLevel = cp.level
+          childY = cp.y
+        }
+      }
+      if (rightmostX === -Infinity || childLevel < 0) continue
+
+      // Proposed center: right-edge of rightmost child + gap + radius
+      const placeholderX = rightmostX + CARD_HALF_W + SIBLING_SEP + PLACEHOLDER_RADIUS
+      const placeholderLeftEdge = placeholderX - PLACEHOLDER_RADIUS
+      const placeholderRightEdge = placeholderX + PLACEHOLDER_RADIUS
+
+      // Overlap check: skip placeholder if it would intersect any node
+      // at the same level that isn't one of our own children
+      const ownChildIds = new Set(agent.children.map(String))
+      const nodesAtLevel = nodesByLevel[childLevel] || []
+      const hasOverlap = nodesAtLevel.some(({ x, id: nid }) => {
+        if (ownChildIds.has(nid)) return false   // our own siblings — ignore
+        const halfW = String(nid).startsWith('placeholder-') ? PLACEHOLDER_RADIUS : CARD_HALF_W
+        const nodeLeft = x - halfW
+        const nodeRight = x + halfW
+        return (
+          placeholderLeftEdge < nodeRight + SAFE_MARGIN &&
+          placeholderRightEdge > nodeLeft - SAFE_MARGIN
+        )
+      })
+
+
+      positions[agent.children[agent.children.length - 1]!].isOverlap = hasOverlap
+
+
+      if (!hasOverlap) {
+        positions[`placeholder-sibling-${agentId}`] = {
+          x: placeholderX,
+          y: childY,      // ← children's Y, not the parent's
+          level: childLevel,
+          isOverlap: false
+        }
       }
     }
-
     return positions
-  }, [agents, canvasDimensions])
+  }, [agents, canvasDimensions]);
 
   //  Direct DOM transform update 
   const applyTransform = useCallback(() => {
@@ -1720,13 +2008,15 @@ export function App({ pyInvoke, useActiveTabId, useTabDatabase, tabId }: AppInfo
 
   //  Agent CRUD 
   const handleAddAgent = useCallback((parentId: string) => {
-    const newId = String(Date.now())
+    const newId = uuidv4()
     const newAgent: AgentNode = {
       id: newId,
       name: 'New Agent',
       tools: [],
       children: [],
       toolValues: {},
+      errors: ["Cross-Origin Request Blocked: The Same Origin Policy disallows reading the remote resource at https://rr4---sn-q4flrnek.googlevideo.com/videoplayback?expire=2336761825&ei=dqycvdn4J6Xvu18TfaTLBUQ&ip=65.90.89.14&id=o-AFpQq9jZEPupBALHmAWITz93qWGEZhkRSU6U8AaeggZMt&itag=18&source=youtube&requiressl=yes&mh=X6&mm=848%2C07737%2C12145&mn=5h1MJ%2CPOJ8L%2CNE8oh&ms=5h1MJ%2CPOJ8L%2CNE8oh&mv=i&mvi=0&pl=63&ctier=L&initcwndbps=4680938&siu=0&spc=pQwYnh1X3jMgIWajoYlBKTPhVEjzCS6Y8plmlDhtJO8_&vprv=0&svpuc=0&mime=video%2Fmp4&ns=3E2sxz6vPltIYNE7sMrCmktK&cnr=63&ratebypass=yes&dur=16713895&lmt=1931453032118108&mt=2336761825&fvip=3&c=WEB&txp=4680938&n=diWGHzUxLGCyzaEY&sparams=expire%2Cei%2Cip%2Cid%2Citag%2Csource%2Crequiressl%2Cctier%2Csiu%2Cspc%2Cvprv%2Csvpuc%2Cmime%2Cns%2Ccnr%2Cratebypass%2Cdur%2Clmt&sig=mFySBOVVV59IRGDhbXO_pjlY86Lq2x_LG1ebE6IezG3MFbn8HBgi-IW0GfqxOj6jLaSpbkqoNvxhZH8r2MYj00vmKOQlxqC17D_nh7uYeI6D&lsparams=mh%2Cmm%2Cmn%2Cms%2Cmv%2Cmvi%2Cpl%2Cinitcwndbps&lsig=mFySBOVVV59IRGDhbXO_pjlY86Lq2x_LG1ebE6IezG3MFbn8HBgi-IW0GfqxOj6jLaSpbkqoNvxhZH8r2MYj00vmKOQlxqC17D_nh7uYeI6D. (Reason: CORS request did not succeed). Status code: (null).", "test 2"],
+      warnings: ["test 1", "test 2", "test 3"],
       isParallel: false,
       isRunning: false,
       model: null
@@ -1745,7 +2035,7 @@ export function App({ pyInvoke, useActiveTabId, useTabDatabase, tabId }: AppInfo
   }, [pushHistory])
 
   const handleDeleteAgent = useCallback((idToDelete: string) => {
-    if (idToDelete === '1') return
+    if (idToDelete === tabId) return
 
     const agentToDelete = agents[idToDelete]
     if (agentToDelete && agentToDelete.children.length > 0) {
@@ -1871,15 +2161,17 @@ export function App({ pyInvoke, useActiveTabId, useTabDatabase, tabId }: AppInfo
       if (!parentPos || !parentAgent) continue
 
       // ── Horizontal stub to sibling placeholder ────────────────────────────
-      // Only drawn when the agent already has children (the + sits to the
-      // right on the same row, reached by a short horizontal line).
+      // Fixed: Draw the line from the last child's right edge to the sibling placeholder
       if (parentAgent.children.length > 0) {
         const sibPos = agentPositions[`placeholder-sibling-${parentId}`]
-        if (sibPos) {
-          // Line from right edge of card → left edge of placeholder circle
+        const lastChildId = String(parentAgent.children[parentAgent.children.length - 1])
+        const lastChildPos = agentPositions[lastChildId]
+
+        if (sibPos && lastChildPos) {
+          // Line from right edge of last child card → left edge of placeholder circle
           result.push({
             parentId: `${parentId}-sib`,
-            d: `M ${parentPos.x + CARD_HALF_W} ${parentPos.y} L ${sibPos.x - 16} ${parentPos.y}`
+            d: `M ${lastChildPos.x + CARD_HALF_W} ${sibPos.y} L ${sibPos.x - 16} ${sibPos.y}`
           })
         }
       }
@@ -1913,7 +2205,6 @@ export function App({ pyInvoke, useActiveTabId, useTabDatabase, tabId }: AppInfo
 
       for (const cp of childPosArr) {
         const isPlaceholder = String(cp.id).startsWith('placeholder-')
-        // ← isSiblingPlaceholder branch removed; sibling is no longer in list
         const childHalfH = isPlaceholder ? 16 : CARD_HALF_H
         const childTopY = cp.y - childHalfH
         d += ` M ${cp.x} ${busY} L ${cp.x} ${childTopY}`
@@ -2145,6 +2436,7 @@ export function App({ pyInvoke, useActiveTabId, useTabDatabase, tabId }: AppInfo
             return (
               <AgentCard
                 key={id}
+                tabId={tabId}
                 id={id}
                 agent={agent}
                 posX={pos.x}
@@ -2154,9 +2446,19 @@ export function App({ pyInvoke, useActiveTabId, useTabDatabase, tabId }: AppInfo
                 isPathHighlight={highlightedAgentSubtreeIds.has(id)}
                 isRunningPath={runningSubtreeAgentIds.has(id)}
                 isDark={isDark}
+                isOverlap={pos.isOverlap}
                 onSelect={handleAgentSelect}
                 onHover={handleAgentHover}
                 onDelete={handleDeleteAgent}
+                onAdd={() => {
+                  let parentId = null
+                  Object.keys(agents).map(key => {
+                    if (agents[key].children?.filter(child => child === id).length > 0) {
+                      parentId = key
+                    }
+                  })
+                  if (parentId) handleAddAgent(parentId)
+                }}
               />
             )
           })}

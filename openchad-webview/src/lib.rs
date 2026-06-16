@@ -330,13 +330,26 @@ pub fn builder_factory(
             if payload.event() != tauri::webview::PageLoadEvent::Finished {
                 return;
             }
-            let script = r#"
-                (async () => {
+            // injection.js is embedded at compile time and runs first,
+            // then the inline Tauri event-bridge script runs after it.
+            static INJECTION_JS: &str = include_str!("scripts/injection.js");
+
+            let script = format!(
+                "{}\n{}",
+                INJECTION_JS,
+                r#"(async () => {
                     const _emitLocation = async (url) => {
                         const label = await window.__TAURI__.webview.getCurrentWebview().label;
                         await window.__TAURI__.event.emit('update_location', {
                             target: label,
                             url
+                        });
+                    };
+
+                    const _emitFocus = async () => {
+                        const label = await window.__TAURI__.webview.getCurrentWebview().label;
+                        await window.__TAURI__.event.emit('focus', {
+                            target: label,
                         });
                     };
 
@@ -390,7 +403,7 @@ pub fn builder_factory(
                                 }
                             });
                         }
-                            
+
                         setInterval(async () => {
                             const currentHref = window.location.href;
                             const currentTitle = document.title;
@@ -409,6 +422,9 @@ pub fn builder_factory(
 
                     if (!window.__listenToKeyDown) {
                         window.__listenToKeyDown = true;
+                        window.addEventListener('pointerdown', async (event) => {
+                            await _emitFocus();
+                        });
                         window.addEventListener('keydown', async (event) => {
                             const label = await window.__TAURI__.webview.getCurrentWebview().label;
 
@@ -416,6 +432,12 @@ pub fn builder_factory(
                                 event.preventDefault();
                                 await window.__TAURI__.event.emit('delete_tab', { target: label });
                             }
+
+                            if (event.ctrlKey && event.key === 't') {
+                                event.preventDefault();
+                                await window.__TAURI__.event.emit('create_task', { target: label });
+                            }
+
 
                             if (event.ctrlKey && event.key >= '1' && event.key <= '9') {
                                 event.preventDefault();
@@ -455,16 +477,14 @@ pub fn builder_factory(
                         }
                         window.AsyncLock = new AsyncMutex();
                     }
-                        
-                    
-                })();
-            "#.to_string();
+                })();"#
+            );
             if let Err(e) = webview.eval(&script) {
                 eprintln!("❌ script inject failed: {}", e);
             }
         })
         .invoke_handler(tauri::generate_handler![
-            eval_in_webview,
+            eval_in_webview
         ]))
 }
 #[tauri::command]

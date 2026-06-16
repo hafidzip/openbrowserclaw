@@ -2,7 +2,7 @@ import { Suspense, useEffect, useRef, useState } from 'react'
 import Sidebar from './components/sidebar'
 import Topbar from './components/topbar'
 import clsx from 'clsx'
-import { motion } from "motion/react"
+import { AnimatePresence, motion, type Variants } from "motion/react"
 import { useFileImpl } from './components/useFile'
 import { ArrowLeftRight, Copy, GitBranch, Globe, HardDrive, Key, Minus, Plus, Search, Settings, X, type LucideIcon } from 'lucide-react'
 import useElementSize from './components/hooks/useElementSize'
@@ -86,7 +86,15 @@ export interface Project {
   size?: number[];
   repository?: string;
 }
-import { hideSplashScreen } from "vite-plugin-splash-screen/runtime";
+import { hideSplashScreen } from "vite-plugin-splash-screen/runtime"
+
+const composerVariants: Variants = {
+  initial: { opacity: 0, y: 0, scale: 0.95 },
+  animate: { opacity: 1, y: 0, scale: 1 },
+  exit: (custom: boolean) => custom
+    ? { opacity: [1, 1, 0], scale: 0.85, transition: { duration: 0.3, ease: 'easeOut' } }
+    : { opacity: 0, transition: { duration: 0 } }
+};
 import { AsyncLock, generateIdFromString, useMenuBar } from './index'
 import { cursorPosition, getCurrentWindow, PhysicalPosition, PhysicalSize } from '@tauri-apps/api/window'
 import Bar from './Bar'
@@ -94,6 +102,8 @@ import { getAllWebviews, getCurrentWebview, Webview } from '@tauri-apps/api/webv
 import type { ControllableBrowser } from './components/ControllableBrowsers'
 import { isRegistered, register, unregister } from '@tauri-apps/plugin-global-shortcut'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
+import Chat from './components/chat'
+import Composer, { ScheduleInterval } from './components/composer'
 
 export default function Container({ Apps }: { Apps: Project }) {
   if (Apps.defaultTab.tabs.length === 0) {
@@ -118,6 +128,11 @@ export default function Container({ Apps }: { Apps: Project }) {
     }, {})
   });
   const [mounted, setMounted] = useState(false);
+  const [isCreateTask, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: true });
+  const [animateExit, setAnimateExit] = useState(false);
+  const [model, setModel] = useDatabaseImpl<Model>("model", { initialValue: { name: null, id: null } });
+  const [taskInterval, setTaskInterval] = useDatabaseImpl<ScheduleInterval>("taskInterval", { initialValue: 'once' });
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const [showSearchDialog, setShowSearchDialog] = useGlobal('showSearchDialog', { initialValue: false });
   const [showMcpDialog, setShowMcpDialog] = useGlobal('showMcpDialog', { initialValue: false });
   const [showCredentialsDialog, setShowCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false });
@@ -126,10 +141,15 @@ export default function Container({ Apps }: { Apps: Project }) {
   const [showSettingsDialog, setShowSettingsDialog] = useGlobal('showSettingsDialog', { initialValue: false });
   const [showTaskDialog, setShowTaskDialog] = useGlobal('showTaskDialog', { initialValue: false });
   const [showControllableBrowsersDialog, setShowControllableBrowsersDialog] = useGlobal('showControllableBrowsersDialog', { initialValue: false });
-  const [showSkillsDialog, setShowSkillsDialog] = useGlobal('showSkillsDialog', { initialValue: false });
   const [showAgentsDialog, setShowAgentsDialog] = useGlobal('showAgentsDialog', { initialValue: false });
   const [, setMobileSettingsDropdown] = useGlobal('mobileSettingsDropdown', { initialValue: false });
   const [setupModel, setSetupModel] = useGlobal('setupModel', { initialValue: false });
+  const [isMobileSearching, setIsMobileSearching] = useGlobal('isMobileSearching', { initialValue: false });
+
+  const handleMobileSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Escape') { setIsMobileSearching(false); setMobileSearchText(''); }
+  };
+
   const [browsers, , { ready }] = useDatabaseImpl<Record<string, ControllableBrowser>>('ControllableBrowser', { initialValue: {} });
   const snaptheme = useSnapshot(Theme);
   const currentLayout = snaptheme.layout;
@@ -161,6 +181,7 @@ export default function Container({ Apps }: { Apps: Project }) {
 
         if (!all.find((wv) => wv.label === label)) {
           await AsyncLock.acquire();
+          console.log(browser);
           const w = new Webview(win, label, {
             url: browser.url || 'about:blank',
             width: 100,
@@ -183,6 +204,10 @@ export default function Container({ Apps }: { Apps: Project }) {
             window.dispatchEvent(new CustomEvent('page_loaded', { detail: event.payload }));
           });
 
+          await w.listen('focus', (event) => {
+            window.dispatchEvent(new CustomEvent('focus', { detail: event.payload }));
+          });
+
           await w.listen('update_location', (event) => {
             window.dispatchEvent(new CustomEvent('update_location', { detail: event.payload }));
           });
@@ -198,6 +223,10 @@ export default function Container({ Apps }: { Apps: Project }) {
           await w.listen('switch_tab', (event) => {
             window.dispatchEvent(new CustomEvent('switch_tab', { detail: event.payload }));
           });
+
+          await w.listen('create_task', async (event) => {
+            window.dispatchEvent(new CustomEvent('create_task', { detail: event.payload }));
+          })
 
         } else {
           // Fallback: If the webview already exists, we still need to increment 
@@ -489,6 +518,9 @@ export default function Container({ Apps }: { Apps: Project }) {
       setTitle: (title: string) => {
         if (TabState[tabId] && typeof TabState[tabId].childrenProps !== "undefined") TabState[tabId] = { ...TabState[tabId], title };
       },
+      setIcon: (icon: string) => {
+        if (TabState[tabId] && typeof TabState[tabId].childrenProps !== "undefined") TabState[tabId] = { ...TabState[tabId], iconOverride: icon };
+      },
       useNotchVisible: () => {
         const slotIndex = children.indexOf(tabId);
         if (slotIndex === -1) return false;
@@ -736,6 +768,14 @@ export default function Container({ Apps }: { Apps: Project }) {
   }, ["control", "w"])
 
   useKeyEffect(() => {
+    setIsCreateTask(true);
+  }, ["control", "t"])
+
+  useKeyEffect(() => {
+    setIsCreateTask(false);
+  }, ["escape"])
+
+  useKeyEffect(() => {
     const activeElement = document.activeElement;
     const isInputFocused =
       activeElement instanceof HTMLInputElement ||
@@ -796,38 +836,30 @@ export default function Container({ Apps }: { Apps: Project }) {
     function onBlur() {
       KeyState.clearKeys();
     }
+    const blockContextMenu = (e: MouseEvent) => {
+      // const target = e.target as HTMLElement;
+      // const isEditable =
+      //   target instanceof HTMLInputElement ||
+      //   target instanceof HTMLTextAreaElement ||
+      //   !!target.closest('[contenteditable]');   // catches nested contenteditable too
+      // if (!isEditable) e.preventDefault();
+    };
+
+    // true = capture phase → fires before ANY child handler
+    window.addEventListener('contextmenu', blockContextMenu);
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
     return () => {
+      window.removeEventListener('contextmenu', blockContextMenu);
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
     };
   }, [mounted]);
-  // Mobile bottom bar search
-  const [isMobileSearching, setIsMobileSearching] = useState(false);
+  // Mobile bottom bar search  
   const [mobileSearchText, setMobileSearchText] = useState('');
-  const [selectedMobileTab, setSelectedMobileTab] = useState({ name: 'Blank', icon: TabInfo.icon });
   const mobileSearchInputRef = useRef<HTMLInputElement>(null);
-  const mobileTabItems = [
-    { name: 'Blank', icon: TabInfo.icon },
-    { name: 'Blank 1', icon: TabInfo.icon },
-    { name: 'Modern Page', icon: TabInfo.icon },
-    { name: 'Outlaw', icon: TabInfo.icon },
-  ];
-  const filteredMobileItems = mobileTabItems.filter(item =>
-    item.name.toLowerCase().includes(mobileSearchText.toLowerCase())
-  );
-  const handleMobileSelectItem = (item: typeof mobileTabItems[0]) => {
-    setSelectedMobileTab(item);
-    setIsMobileSearching(false);
-    setMobileSearchText('');
-  };
-  const handleMobileSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter' && filteredMobileItems.length > 0) handleMobileSelectItem(filteredMobileItems[0]);
-    if (e.key === 'Escape') { setIsMobileSearching(false); setMobileSearchText(''); }
-  };
   const [vieweportRef, { width: viewportWidth, height: viewportHeight, overflowX: viewportOverflowX, overflowY: viewportOverflowY, aspectRatio: viewportAspectRatio }] = useElementSize<HTMLDivElement>();
   useEffect(() => {
     Viewport.width = viewportWidth;
@@ -861,7 +893,7 @@ export default function Container({ Apps }: { Apps: Project }) {
     </motion.div>
   }
   return (
-    <div>
+    <div className='overflow-hidden'>
       <style>{`
                 html, body {
                     background: transparent !important;
@@ -872,8 +904,130 @@ export default function Container({ Apps }: { Apps: Project }) {
         style={{
           zIndex: -99999,
         }}
-        className='opacity-0 absolute select-none pointer-events-none'
+        className='opacity-0 absolute select-none pointer-events-none overflow-hidden'
       />
+      <AnimatePresence custom={animateExit}>
+        {isCreateTask && (
+          <motion.div
+            key="composer-overlay"
+            custom={animateExit}
+            variants={composerVariants}
+            initial="initial"
+            animate="animate"
+            exit="exit"
+            transition={{ duration: 0.2, ease: 'easeOut' }}
+            className={clsx(
+              'w-full h-full absolute',
+              isCreateTask && 'bg-black/90'
+            )}
+            style={{ zIndex: 50 }}
+          >
+            <div className='w-full h-full flex items-center justify-center'>
+              <div onClick={() => {
+                setIsCreateTask(false);
+                setAnimateExit(false);
+              }} className='w-full h-full absolute top-0 left-0 bg-transparent'>
+
+              </div>
+              <Composer
+                showModelSelection={true}
+                showInterval={true}
+                showHeader={false}
+                workspace={workspace}
+                model={model}
+                setModel={setModel}
+                interval={taskInterval}
+                onIntervalChange={setTaskInterval}
+                onSubmit={async (value: string) => {
+                  console.log(value);
+                  setAnimateExit(true);
+                  setIsCreateTask(false);
+                  const taskId = uuidv4()
+                  const db = workspace ?? 'global';
+                  const sql = `INSERT OR REPLACE INTO tasks (id, metadata) VALUES (?, ?)`;
+                  await pyInvoke("sqlite", {
+                    db,
+                    command: "execute",
+                    sql: `CREATE TABLE IF NOT EXISTS tasks (
+                                                    id    TEXT PRIMARY KEY,
+                                                    metadata TEXT
+                                                )`,
+                    params: []
+                  });
+                  
+                  await pyInvoke("sqlite", {
+                    db,
+                    command: "execute",
+                    sql,
+                    params: [
+                      taskId,
+                      JSON.stringify({
+                        icon: 'AlarmClockCheck',
+                        query: value,
+                        interval: taskInterval,
+                        agent: model.id,
+                        timestamp: Date.now(),
+                      })
+                    ]
+                  });
+
+
+
+                  const branch = sha256("0").slice(0, 32);
+                  const tbRaw = "msg_" + branch + "_0";
+                  // Note: do NOT pre-hash tbRaw — the backend hashes it as
+                  // generateIdFromString(tab_id + "/" + tb), matching MessageContainer's useDatabase.
+                  const branchId = sha256(branch).slice(0, 32);
+                  const branchIndex = 0;
+                  const activeId = taskId + "_response_" + branchId + "_0_" + branchIndex;
+
+                  const initTb = generateIdFromString(taskId + "/" + "message_state");
+                  const initialValue = {
+                    title: { _v: value },
+                    activeId: { _v: activeId },
+                    errorMsg: { _v: "" },
+                    initialized: { _v: true },
+                    isStreaming: { _v: true },
+                    context: { _v: "" },
+                  }
+
+                  await pyInvoke("sqlite", {
+                    db, table: initTb, command: 'sync_table', data: initialValue
+                  });
+
+                  const streamRes = await pyInvoke("v1/chat/completions", {
+                    id: activeId,
+                    query: value,
+                    stream: true,
+                    model: model.id,
+                    tab_id: taskId,
+                    branch_id: branchId,
+                    index: branchIndex,
+                    response_branch: 0,
+                    tb: tbRaw,
+                    workspace: db,
+                    app_name: "",
+                    pipeline: settings["Others/app_settings/string.pipeline"]?.value || "openchad/chat"
+                  });
+                  if (streamRes && typeof streamRes === 'object' && Symbol.asyncIterator in streamRes) {
+                    for await (const _ of streamRes as any) { /* consume stream */ }
+                  }
+                }}
+                width={1920}
+                height={1080}
+                isStreaming={false}
+                style={{ maxWidth: `100vw` }}
+                ref={composerRef}
+                maxHeight={'90vh'}
+                className={clsx(
+                  "w-[768px] mx-auto z-30",
+                  'relative',
+                )}
+              />
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
       <motion.div
         animate={{
           opacity: isSearchChatOpen ? 1 : 0,
@@ -909,7 +1063,7 @@ export default function Container({ Apps }: { Apps: Project }) {
           <div className='w-full h-[800px]'></div>
         </div>
       </motion.div>
-      <div ref={vieweportRef} id="app"
+      <div ref={vieweportRef}
         className={clsx(
           "flex h-screen overflow-hidden",
           currentLayout === "rightToLeft" && 'flex-row-reverse',
@@ -943,8 +1097,6 @@ export default function Container({ Apps }: { Apps: Project }) {
             setShowTaskDialog={setShowTaskDialog}
             showControllableBrowsersDialog={showControllableBrowsersDialog}
             setShowControllableBrowsersDialog={setShowControllableBrowsersDialog}
-            showSkillsDialog={showSkillsDialog}
-            setShowSkillsDialog={setShowSkillsDialog}
             showAgentsDialog={showAgentsDialog}
             setShowAgentsDialog={setShowAgentsDialog}
             layout={snaptheme.layout}
@@ -961,7 +1113,7 @@ export default function Container({ Apps }: { Apps: Project }) {
           }>
           {/*  */}
           <div className={clsx(
-            "w-full overflow-hidden",
+            "w-full overflow-hidden flex flex-col",
             "h-[calc(100%)] md:h-full"
           )}>
             <Bar theme={snaptheme.theme} isRightToLeft={currentLayout === "rightToLeft"}>
@@ -971,8 +1123,8 @@ export default function Container({ Apps }: { Apps: Project }) {
               id="app"
               className={
                 clsx(
-                  "flex",
-                  "relative w-full h-full border-[0px] border-solid border-[hsl(var(--chat-border))] border-t-[1px]",
+                  "flex flex-1",
+                  "relative w-full border-[0px] border-solid border-[hsl(var(--chat-border))] border-t-[1px]",
                   currentLayout === "rightToLeft" ? 'border-r-[1px]' : 'border-l-[1px]',
                 )
               }>
@@ -992,7 +1144,7 @@ export default function Container({ Apps }: { Apps: Project }) {
                 )
               }
               <div className={clsx(
-                "relative overflow-hidden",
+                "relative overflow-hidden ",
                 "flex-1",
               )}>
                 {Object.keys(snaptabs).length > 0 && <MultiView actives={actives} className='relative top-0 left-0' layout={layout as LayoutType}>
@@ -1005,198 +1157,200 @@ export default function Container({ Apps }: { Apps: Project }) {
                 </MultiView>}
               </div>
             </div>
-          </div>
-          <div className='w-full flex md:hidden h-[50px] bg-[hsl(var(--bg))] absolute bottom-[0px] z-10 gap-2 items-center justify-center border-t border-[hsl(var(--chat-border))] px-3'>
-            {isMobileSearching && (
-              <div
-                className='fixed inset-0 z-0'
-                onClick={() => { setIsMobileSearching(false); setMobileSearchText(''); }}
-              />
-            )}
-            <div className='relative flex-1 z-10'>
+            <div className='w-full flex md:hidden h-[50px] bg-[hsl(var(--bg))] gap-2 items-center justify-center border-t border-[hsl(var(--chat-border))] px-3'>
               {isMobileSearching && (
-                <>
-                  {Object.keys(snaptabs).length > 0 ? (
-                    <div className='fixed w-[98vw] mx-1 bottom-[50px] left-0 right-0 bg-[hsl(var(--bg))] border border-[hsl(var(--chat-border))] rounded-xl overflow-hidden z-20'>
-                      {Object.entries(snaptabs).filter(([, item]) => (item.title || "Untitled").toLowerCase().includes(mobileSearchText.toLowerCase())).map(([key, item], i) => (
-                        <div
-                          onClick={() => {
-                            SetActive(key)
-                          }}
-                          key={i}
-                          className='flex items-center gap-2 px-3 py-2 hover:bg-[hsl(var(--hover))] cursor-pointer'
-                          onMouseDown={e => { e.preventDefault(); }}
-                        >
-                          <div className='p-1 bg-white/10 rounded-lg'>
-                            {item.icon({ className: 'w-4 h-4' })}
-                          </div>
-                          <span className='text-sm'>{item.title || "Untitled"}</span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : <div className="fixed w-[98vw] mx-1 p-2 text-center text-gray-500 bottom-[50px] left-0 right-0 bg-[hsl(var(--bg))] border border-[hsl(var(--chat-border))] rounded-xl overflow-hidden z-20">
-                    No results found
-                  </div>}
-                </>
+                <div
+                  className='fixed inset-0 z-0'
+                  onClick={() => { setIsMobileSearching(false); setMobileSearchText(''); }}
+                />
               )}
-              <div
-                className='flex items-center h-[35px] bg-card hover:bg-[hsl(var(--hover))] transition-colors rounded-xl border border-[hsl(var(--chat-border))] cursor-text'
-                onClick={() => {
-                  if (!isMobileSearching) {
-                    setIsMobileSearching(true);
-                    setTimeout(() => mobileSearchInputRef.current?.focus(), 0);
-                  }
-                }}
-              >
-                <div className='px-2 flex-shrink-0'>
-                  <div className='p-1 bg-white/10 rounded-lg'>
-                    {isMobileSearching
-                      ? <Search className='w-4 h-4' />
-                      : TabInfo.icon({ className: "w-4 h-4" })
-                    }
-                  </div>
-                </div>
-                {isMobileSearching ? (
-                  <input
-                    ref={mobileSearchInputRef}
-                    className='flex-1 bg-transparent outline-none text-sm min-w-0 pr-2'
-                    value={mobileSearchText}
-                    onChange={e => setMobileSearchText(e.target.value)}
-                    onKeyDown={handleMobileSearchKeyDown}
-                    placeholder={selectedMobileTab.name}
-                  />
-                ) : (
-                  <span className='flex-1 text-sm'>{selectedMobileTab.name}</span>
+              <div className='relative flex-1 z-10'>
+                {isMobileSearching && (
+                  <>
+                    {Object.keys(snaptabs).length > 0 ? (
+                      <div className='fixed w-[98vw] mx-1 bottom-[50px] left-0 right-0 bg-[hsl(var(--bg))] border border-[hsl(var(--chat-border))] rounded-xl overflow-hidden z-20'>
+                        {Object.entries(snaptabs).filter(([, item]) => (item.title || "Untitled").toLowerCase().includes(mobileSearchText.toLowerCase())).map(([key, item], i) => (
+                          <div
+                            onClick={() => {
+                              SetActive(key)
+                              setIsMobileSearching(false);
+                            }}
+                            key={i}
+                            className='flex items-center gap-2 px-3 py-2 hover:bg-[hsl(var(--hover))] cursor-pointer'
+                            onMouseDown={e => { e.preventDefault(); }}
+                          >
+                            <div className='p-1 bg-white/10 rounded-lg'>
+                              {item.icon({ className: 'w-4 h-4' })}
+                            </div>
+                            <span className='text-sm'>{item.title || "Untitled"}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : <div className="fixed w-[98vw] mx-1 p-2 text-center text-gray-500 bottom-[50px] left-0 right-0 bg-[hsl(var(--bg))] border border-[hsl(var(--chat-border))] rounded-xl overflow-hidden z-20">
+                      No results found
+                    </div>}
+                  </>
                 )}
-              </div>
-            </div>
-            <div
-              onClick={() => {
-                setShowSearchDialog(true)
-              }}
-              className=' hover:bg-[hsl(var(--hover))] border border-transparent hover:border-[hsl(var(--chat-border))] p-1 rounded-lg z-10'>
-              <Copy className='w-5 h-5 scale-x-[-1]' />
-            </div>
-            <div
-              onClick={() => {
-                addTab()
-              }}
-              className='hover:bg-[hsl(var(--hover))] border border-transparent hover:border-[hsl(var(--chat-border))] p-1 rounded-lg z-10'>
-              <Plus className='w-5 h-5' />
-            </div>
-            <Dropdown
-              onOpenChange={setMobileSettingsDropdown}
-              content={[
-                {
-                  content: <div> Switch Workspace </div>,
-                  shortcut: <ArrowLeftRight size={16} />,
-                  children: null,
-                  separator: false,
-                  trigger: () => {
-                    setIsSwitchWorkspace(true);
-                  }
-                },
-                ...(typeof window !== 'undefined' && !!(window as any).__TAURI__) ? [{
-                  content: <div> Local Models </div>,
-                  shortcut: <HardDrive size={16} />,
-                  children: null,
-                  separator: false,
-                  trigger: async () => {
-                    setShowLocalModelDialog(true);
-                  }
-                }] : [],
-                {
-                  content: <div> Credentials </div>,
-                  shortcut: <Key size={16} />,
-                  children: null,
-                  separator: false,
-                  trigger: () => {
-                    setShowCredentialsDialog(true);
-                  }
-                },
-                {
-                  content: <div> Custom Endpoints </div>,
-                  shortcut: <Globe size={16} />,
-                  children: null,
-                  separator: false,
-                  trigger: () => {
-                    setShowCustomEndpointDialog(true);
-                  }
-                },
-                {
-                  content: <div> MCP Servers </div>,
-                  shortcut: <svg fill="currentColor" fillRule="evenodd" height="1.25em" viewBox="0 0 24 24" width="1.25em" xmlns="http://www.w3.org/2000/svg">
-                    <title>ModelContextProtocol</title>
-                    <path d="M15.688 2.343a2.588 2.588 0 00-3.61 0l-9.626 9.44a.863.863 0 01-1.203 0 .823.823 0 010-1.18l9.626-9.44a4.313 4.313 0 016.016 0 4.116 4.116 0 011.204 3.54 4.3 4.3 0 013.609 1.18l.05.05a4.115 4.115 0 010 5.9l-8.706 8.537a.274.274 0 000 .393l1.788 1.754a.823.823 0 010 1.18.863.863 0 01-1.203 0l-1.788-1.753a1.92 1.92 0 010-2.754l8.706-8.538a2.47 2.47 0 000-3.54l-.05-.049a2.588 2.588 0 00-3.607-.003l-7.172 7.034-.002.002-.098.097a.863.863 0 01-1.204 0 .823.823 0 010-1.18l7.273-7.133a2.47 2.47 0 00-.003-3.537z" />
-                    <path d="M14.485 4.703a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a4.115 4.115 0 000 5.9 4.314 4.314 0 006.016 0l7.12-6.982a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a2.588 2.588 0 01-3.61 0 2.47 2.47 0 010-3.54l7.12-6.982z" /></svg>,
-                  children: null,
-                  separator: false,
-                  trigger: () => {
-                    setShowMcpDialog(true);
-                  }
-                },
-                {
-                  content: <div> Dark Theme </div>,
-                  shortcut: snaptheme.theme === "dark" ? <div>On</div> : <div>Off</div>,
-                  children: null,
-                  separator: false,
-                  trigger: () => {
-                    Theme.theme = snaptheme.theme === "dark" ? "light" : "dark";
-                  }
-                },
-                {
-                  content: <div> Layout </div>,
-                  shortcut: snaptheme.layout === "leftToRight" ? <div>Left To Right</div> : <div>Right To Left</div>,
-                  children: null,
-                  separator: false,
-                  trigger: () => {
-                    Theme.layout = snaptheme.layout === "leftToRight" ? "rightToLeft" : "leftToRight";
-                  }
-                },
-                {
-                  content: <div> View Repository </div>,
-                  shortcut: <GitBranch size={16} />,
-                  children: null,
-                  separator: false,
-                  trigger: () => {
-                    if (isTauri) {
-                      openUrl(Apps.repository || 'https://github.com/openchad/openchad')
-                    } else {
-                      window.open(Apps.repository || 'https://github.com/openchad/openchad', '_blank')
+                <div
+                  className='flex items-center h-[35px] bg-card hover:bg-[hsl(var(--hover))] transition-colors rounded-xl border border-[hsl(var(--chat-border))] cursor-text'
+                  onClick={() => {
+                    if (!isMobileSearching) {
+                      setIsMobileSearching(true);
+                      setTimeout(() => mobileSearchInputRef.current?.focus(), 0);
                     }
-                  }
-                },
-                {
-                  content: <div> Join Our Discord </div>,
-                  shortcut: <svg className="cursor-pointer rounded-full w-4 h-4 flex items-center overflow-hidden relative" width="64px" height="64px" viewBox="0 -28.5 256 256" version="1.1" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid" fill="#000000">
-                    <g id="SVGRepo_bgCarrier" />
-                    <g id="SVGRepo_tracerCarrier" />
-                    <g id="SVGRepo_iconCarrier"> <g>
-                      <path d="M216.856339,16.5966031 C200.285002,8.84328665 182.566144,3.2084988 164.041564,0 C161.766523,4.11318106 159.108624,9.64549908 157.276099,14.0464379 C137.583995,11.0849896 118.072967,11.0849896 98.7430163,14.0464379 C96.9108417,9.64549908 94.1925838,4.11318106 91.8971895,0 C73.3526068,3.2084988 55.6133949,8.86399117 39.0420583,16.6376612 C5.61752293,67.146514 -3.4433191,116.400813 1.08711069,164.955721 C23.2560196,181.510915 44.7403634,191.567697 65.8621325,198.148576 C71.0772151,190.971126 75.7283628,183.341335 79.7352139,175.300261 C72.104019,172.400575 64.7949724,168.822202 57.8887866,164.667963 C59.7209612,163.310589 61.5131304,161.891452 63.2445898,160.431257 C105.36741,180.133187 151.134928,180.133187 192.754523,160.431257 C194.506336,161.891452 196.298154,163.310589 198.110326,164.667963 C191.183787,168.842556 183.854737,172.420929 176.223542,175.320965 C180.230393,183.341335 184.861538,190.991831 190.096624,198.16893 C211.238746,191.588051 232.743023,181.531619 254.911949,164.955721 C260.227747,108.668201 245.831087,59.8662432 216.856339,16.5966031 Z M85.4738752,135.09489 C72.8290281,135.09489 62.4592217,123.290155 62.4592217,108.914901 C62.4592217,94.5396472 72.607595,82.7145587 85.4738752,82.7145587 C98.3405064,82.7145587 108.709962,94.5189427 108.488529,108.914901 C108.508531,123.290155 98.3405064,135.09489 85.4738752,135.09489 Z M170.525237,135.09489 C157.88039,135.09489 147.510584,123.290155 147.510584,108.914901 C147.510584,94.5396472 157.658606,82.7145587 170.525237,82.7145587 C183.391518,82.7145587 193.761324,94.5189427 193.539891,108.914901 C193.539891,123.290155 183.391518,135.09489 170.525237,135.09489 Z" fill="currentColor" fillRule="nonzero"> </path> </g> </g>
-                  </svg>,
-                  children: null,
-                  separator: false,
-                  trigger: () => {
-                    if (isTauri) {
-                      openUrl('https://discord.gg/JWeqhecqBD')
-                    } else {
-                      window.open('https://discord.gg/JWeqhecqBD', '_blank')
-                    }
-                  }
-                },
-              ]}>
-              <div onPointerDown={async () => {
-                if (isTauri) {
-                  await AsyncLock.run(async () => {
-                    const mw = await getCurrentWebview()
-                    await mw.reparent(await getCurrentWindow())
-                  })
-                }
-              }} className='hover:bg-[hsl(var(--hover))] border border-transparent hover:border-[hsl(var(--chat-border))] p-1 rounded-lg z-10'>
-                <Settings className='w-5 h-5' />
+                  }}
+                >
+                  <div className='px-2 flex-shrink-0'>
+                    <div className='p-1 bg-white/10 rounded-lg'>
+                      {isMobileSearching
+                        ? <Search className='w-4 h-4' />
+                        : TabInfo.icon({ className: "w-4 h-4" })
+                      }
+                    </div>
+                  </div>
+                  {isMobileSearching ? (
+                    <input
+                      ref={mobileSearchInputRef}
+                      className='flex-1 bg-transparent outline-none text-sm min-w-0 pr-2'
+                      value={mobileSearchText}
+                      onChange={e => setMobileSearchText(e.target.value)}
+                      onKeyDown={handleMobileSearchKeyDown}
+                      placeholder={snaptabs[active]?.title || "Untitled"}
+                    />
+                  ) : (
+                    <span className='flex-1 text-sm truncate'>{(active && snaptabs[active]?.title) ? snaptabs[active].title || "Untitled" : "Untitled"}</span>
+                  )}
+                </div>
               </div>
-            </Dropdown>
+              <div
+                onClick={() => {
+                  setShowSearchDialog(true)
+                }}
+                className=' hover:bg-[hsl(var(--hover))] border border-transparent hover:border-[hsl(var(--chat-border))] p-1 rounded-lg z-10'>
+                <Copy className='w-5 h-5 scale-x-[-1]' />
+              </div>
+              <div
+                onClick={() => {
+                  addTab()
+                }}
+                className='hover:bg-[hsl(var(--hover))] border border-transparent hover:border-[hsl(var(--chat-border))] p-1 rounded-lg z-10'>
+                <Plus className='w-5 h-5' />
+              </div>
+              <Dropdown
+                onOpenChange={setMobileSettingsDropdown}
+                content={[
+                  {
+                    content: <div> Switch Workspace </div>,
+                    shortcut: <ArrowLeftRight size={16} />,
+                    children: null,
+                    separator: false,
+                    trigger: () => {
+                      setIsSwitchWorkspace(true);
+                    }
+                  },
+                  ...(typeof window !== 'undefined' && !!(window as any).__TAURI__) ? [{
+                    content: <div> Local Models </div>,
+                    shortcut: <HardDrive size={16} />,
+                    children: null,
+                    separator: false,
+                    trigger: async () => {
+                      setShowLocalModelDialog(true);
+                    }
+                  }] : [],
+                  {
+                    content: <div> Credentials </div>,
+                    shortcut: <Key size={16} />,
+                    children: null,
+                    separator: false,
+                    trigger: () => {
+                      setShowCredentialsDialog(true);
+                    }
+                  },
+                  {
+                    content: <div> Custom Endpoints </div>,
+                    shortcut: <Globe size={16} />,
+                    children: null,
+                    separator: false,
+                    trigger: () => {
+                      setShowCustomEndpointDialog(true);
+                    }
+                  },
+                  {
+                    content: <div> MCP Servers </div>,
+                    shortcut: <svg fill="currentColor" fillRule="evenodd" height="1.25em" viewBox="0 0 24 24" width="1.25em" xmlns="http://www.w3.org/2000/svg">
+                      <title>ModelContextProtocol</title>
+                      <path d="M15.688 2.343a2.588 2.588 0 00-3.61 0l-9.626 9.44a.863.863 0 01-1.203 0 .823.823 0 010-1.18l9.626-9.44a4.313 4.313 0 016.016 0 4.116 4.116 0 011.204 3.54 4.3 4.3 0 013.609 1.18l.05.05a4.115 4.115 0 010 5.9l-8.706 8.537a.274.274 0 000 .393l1.788 1.754a.823.823 0 010 1.18.863.863 0 01-1.203 0l-1.788-1.753a1.92 1.92 0 010-2.754l8.706-8.538a2.47 2.47 0 000-3.54l-.05-.049a2.588 2.588 0 00-3.607-.003l-7.172 7.034-.002.002-.098.097a.863.863 0 01-1.204 0 .823.823 0 010-1.18l7.273-7.133a2.47 2.47 0 00-.003-3.537z" />
+                      <path d="M14.485 4.703a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a4.115 4.115 0 000 5.9 4.314 4.314 0 006.016 0l7.12-6.982a.823.823 0 000-1.18.863.863 0 00-1.204 0l-7.119 6.982a2.588 2.588 0 01-3.61 0 2.47 2.47 0 010-3.54l7.12-6.982z" /></svg>,
+                    children: null,
+                    separator: false,
+                    trigger: () => {
+                      setShowMcpDialog(true);
+                    }
+                  },
+                  {
+                    content: <div> Dark Theme </div>,
+                    shortcut: snaptheme.theme === "dark" ? <div>On</div> : <div>Off</div>,
+                    children: null,
+                    separator: false,
+                    trigger: () => {
+                      Theme.theme = snaptheme.theme === "dark" ? "light" : "dark";
+                    }
+                  },
+                  {
+                    content: <div> Layout </div>,
+                    shortcut: snaptheme.layout === "leftToRight" ? <div>Left To Right</div> : <div>Right To Left</div>,
+                    children: null,
+                    separator: false,
+                    trigger: () => {
+                      Theme.layout = snaptheme.layout === "leftToRight" ? "rightToLeft" : "leftToRight";
+                    }
+                  },
+                  {
+                    content: <div> View Repository </div>,
+                    shortcut: <GitBranch size={16} />,
+                    children: null,
+                    separator: false,
+                    trigger: () => {
+                      if (isTauri) {
+                        openUrl(Apps.repository || 'https://github.com/openchad/openchad')
+                      } else {
+                        window.open(Apps.repository || 'https://github.com/openchad/openchad', '_blank')
+                      }
+                    }
+                  },
+                  {
+                    content: <div> Join Our Discord </div>,
+                    shortcut: <svg className="cursor-pointer rounded-full w-4 h-4 flex items-center overflow-hidden relative" width="64px" height="64px" viewBox="0 -28.5 256 256" version="1.1" xmlns="http://www.w3.org/2000/svg" preserveAspectRatio="xMidYMid" fill="#000000">
+                      <g id="SVGRepo_bgCarrier" />
+                      <g id="SVGRepo_tracerCarrier" />
+                      <g id="SVGRepo_iconCarrier"> <g>
+                        <path d="M216.856339,16.5966031 C200.285002,8.84328665 182.566144,3.2084988 164.041564,0 C161.766523,4.11318106 159.108624,9.64549908 157.276099,14.0464379 C137.583995,11.0849896 118.072967,11.0849896 98.7430163,14.0464379 C96.9108417,9.64549908 94.1925838,4.11318106 91.8971895,0 C73.3526068,3.2084988 55.6133949,8.86399117 39.0420583,16.6376612 C5.61752293,67.146514 -3.4433191,116.400813 1.08711069,164.955721 C23.2560196,181.510915 44.7403634,191.567697 65.8621325,198.148576 C71.0772151,190.971126 75.7283628,183.341335 79.7352139,175.300261 C72.104019,172.400575 64.7949724,168.822202 57.8887866,164.667963 C59.7209612,163.310589 61.5131304,161.891452 63.2445898,160.431257 C105.36741,180.133187 151.134928,180.133187 192.754523,160.431257 C194.506336,161.891452 196.298154,163.310589 198.110326,164.667963 C191.183787,168.842556 183.854737,172.420929 176.223542,175.320965 C180.230393,183.341335 184.861538,190.991831 190.096624,198.16893 C211.238746,191.588051 232.743023,181.531619 254.911949,164.955721 C260.227747,108.668201 245.831087,59.8662432 216.856339,16.5966031 Z M85.4738752,135.09489 C72.8290281,135.09489 62.4592217,123.290155 62.4592217,108.914901 C62.4592217,94.5396472 72.607595,82.7145587 85.4738752,82.7145587 C98.3405064,82.7145587 108.709962,94.5189427 108.488529,108.914901 C108.508531,123.290155 98.3405064,135.09489 85.4738752,135.09489 Z M170.525237,135.09489 C157.88039,135.09489 147.510584,123.290155 147.510584,108.914901 C147.510584,94.5396472 157.658606,82.7145587 170.525237,82.7145587 C183.391518,82.7145587 193.761324,94.5189427 193.539891,108.914901 C193.539891,123.290155 183.391518,135.09489 170.525237,135.09489 Z" fill="currentColor" fillRule="nonzero"> </path> </g> </g>
+                    </svg>,
+                    children: null,
+                    separator: false,
+                    trigger: () => {
+                      if (isTauri) {
+                        openUrl('https://discord.gg/JWeqhecqBD')
+                      } else {
+                        window.open('https://discord.gg/JWeqhecqBD', '_blank')
+                      }
+                    }
+                  },
+                ]}>
+                <div onPointerDown={async () => {
+                  if (isTauri) {
+                    await AsyncLock.run(async () => {
+                      const mw = await getCurrentWebview()
+                      await mw.reparent(await getCurrentWindow())
+                    })
+                  }
+                }} className='hover:bg-[hsl(var(--hover))] border border-transparent hover:border-[hsl(var(--chat-border))] p-1 rounded-lg z-10'>
+                  <Settings className='w-5 h-5' />
+                </div>
+              </Dropdown>
+            </div>
           </div>
+
         </div>
       </div>
       {setupModel && <>

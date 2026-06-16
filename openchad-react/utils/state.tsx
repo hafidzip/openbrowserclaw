@@ -9,11 +9,25 @@ import { AsyncLock } from '..';
 
 export const LucideIcons = Icons
 
-export const iconList = Object.keys(LucideIcons).filter((key) => {
-    // Icons are React components (functions or objects with render) and usually start with uppercase
-    // Some exports might be 'createLucideIcon', 'icons', etc.
-    return key !== "icons" && key !== "createLucideIcon" && key !== "Icon" && /^[A-Z]/.test(key)
-}) as (keyof typeof LucideIcons)[];
+export const iconList = (() => {
+    const seen = new Set<unknown>();
+    const result: string[] = [];
+
+    for (const [key, value] of Object.entries(LucideIcons)) {
+        if (
+            key !== "icons" &&
+            key !== "createLucideIcon" &&
+            key !== "Icon" &&
+            /^[A-Z]/.test(key) &&
+            !seen.has(value)          // skip if we've already added this component
+        ) {
+            seen.add(value);
+            result.push(key);
+        }
+    }
+
+    return result;
+})() as (keyof typeof LucideIcons)[];
 
 export interface Model {
     id: string;
@@ -28,7 +42,7 @@ export interface Model {
     downloaded?: boolean;
 }
 
-export const MenuBar = proxy<{ current: React.JSX.Element | null }>({ current: null })
+export const MenuBar = proxy<{ tabId: string, appId: string, current: React.JSX.Element | null }>({ tabId: "", appId: "", current: null })
 
 export const Workspace = proxy({
     workspace: null as string | null,
@@ -180,7 +194,13 @@ export function createTab({
         },
         get icon() {
             return ({ className }: { className: string }) => {
-                if (typeof this.iconOverride === 'string' && (this.iconOverride.startsWith('/') || this.iconOverride.startsWith('http') || /\.(png|jpg|jpeg|ico|svg|webp)$/i.test(this.iconOverride))) {
+                if (typeof this.iconOverride === 'string' &&
+                    (
+                        this.iconOverride.startsWith('/') ||
+                        this.iconOverride.startsWith('http') ||
+                        this.iconOverride.startsWith('data:') ||
+                        /\.(png|jpg|jpeg|ico|svg|webp)$/i.test(this.iconOverride)
+                    )) {
                     return <img src={this.iconOverride} className={clsx(className, "object-contain")} alt="" />;
                 }
                 const Icon = LucideIcons[this.iconOverride as keyof typeof LucideIcons] as React.ComponentType<{ className: string }>;
@@ -724,8 +744,8 @@ export const deleteTabWithGroupSelection = async (uuid: string): Promise<string 
             nextTabId = ungroupedTabs.length > 0 ? ungroupedTabs[0] : allTabs[0];
         }
     }
-    
-    
+
+
     // Delete the tab
     deleteTab(uuid);
     // Update active tab if the deleted tab was active

@@ -1,4 +1,4 @@
-import { ArrowUp, Plus, Mic, Square, FileCode, Video, Volume2, FileText, File as FileIcon, ChevronDown, Unplug } from 'lucide-react'
+import { ArrowUp, Plus, Mic, Square, FileCode, Video, Volume2, FileText, File as FileIcon, ChevronDown, Unplug, Info } from 'lucide-react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { useState, useRef, useEffect, useCallback, useMemo, memo, type CSSProperties } from 'react'
 import clsx from 'clsx'
@@ -64,16 +64,10 @@ export function blocksToPlain(blocks: ContentBlock[]): string {
   }).join('')
 }
 
-function truncate(text: string, maxLength = 16): string {
-  if (text.length > maxLength) {
-    return text.slice(0, maxLength - 1) + '…'
-  }
-  return text
-}
 
 // ─── Model-selection helpers ──────────────────────────────────────────────────
 
-const MODEL_SLICE = 14
+const MODEL_SLICE = 10
 const MODEL_DEBOUNCE_MS = 150
 
 function truncateModel(name: string | null | undefined): string {
@@ -81,7 +75,26 @@ function truncateModel(name: string | null | undefined): string {
   return name.length > MODEL_SLICE ? `${name.slice(0, MODEL_SLICE)}…` : name
 }
 
-function isLLMorVLM(m: Model): boolean {
+// ─── Schedule interval ───────────────────────────────────────────────────────
+
+export type ScheduleInterval =
+  | 'once'
+  | 'infinite'
+  | '1h'
+  | '1d'
+  | '1w'
+  | '1m'
+
+export const INTERVAL_OPTIONS: { value: ScheduleInterval; label: string }[] = [
+  { value: 'once', label: 'One-Time Execution' },
+  { value: 'infinite', label: 'Automatically Re-run When Finished' },
+  { value: '1h', label: 'Every 1 Hour' },
+  { value: '1d', label: 'Every 1 Day' },
+  { value: '1w', label: 'Every 1 Week' },
+  { value: '1m', label: 'Every 1 Month' },
+]
+
+export function isLLMorVLM(m: Model): boolean {
   return (
     (m.modelType?.includes('llm') || m.modelType?.includes('vlm')) === true &&
     m.backend != null
@@ -99,7 +112,7 @@ function useDebounce<T>(value: T, delay: number): T {
   return debounced
 }
 
-function parseModelsFromConfig(raw: string): Model[] {
+export function parseModelsFromConfig(raw: string): Model[] {
   const parsed = JSON.parse(raw)
   if (!parsed.available_models) return []
   return (Object.entries(parsed.available_models) as [string, Record<string, unknown>][])
@@ -139,7 +152,7 @@ const ModelItem = memo(function ModelItem({ model, onUnload }: ModelItemProps) {
     <div className="selectmodel flex items-center w-full gap-2">
       <Tooltip disableHoverableContent>
         <TooltipTrigger>
-          <span className="flex items-center">{truncateModel(model.name)}</span>
+          <span className="flex items-center">{model.name}</span>
         </TooltipTrigger>
         <TooltipContent sideOffset={10}><p>{model.name}</p></TooltipContent>
       </Tooltip>
@@ -302,8 +315,12 @@ export default function Composer({
   height,
   maxHeight = '200px',
   showModelSelection,
+  showHeader,
   model,
   setModel,
+  showInterval,
+  interval = 'once',
+  onIntervalChange,
   isStreaming,
 }: {
   workspace: string
@@ -315,8 +332,12 @@ export default function Composer({
   height: number
   maxHeight?: string
   showModelSelection?: boolean
+  showHeader?: boolean
   model?: Model
   setModel?: (model: Model) => void
+  showInterval?: boolean
+  interval?: ScheduleInterval
+  onIntervalChange?: (interval: ScheduleInterval) => void
   isStreaming: boolean
 }) {
   const [isEmpty, setIsEmpty] = useState(true)
@@ -331,12 +352,13 @@ export default function Composer({
   }, [ref])
   useEffect(() => {
     const w = width || 0
-    maxCharsRef.current = w > 800 ? w / ( showModelSelection ? 36: 28) : w > 400 ? w / 14 : w / 11
-  }, [width, height])
+    maxCharsRef.current = w > 800 ? w / (28 + (showModelSelection ? 8 : 0) + (showInterval ? 5 : 0)) : w > 400 ? w / 14 : w / 11
+  }, [width, showInterval, showModelSelection, height])
 
   // ─── Model selection state ──────────────────────────────────────────────────
   const { pyInvoke } = usePython()
   const [modelDropOpen, setModelDropOpen] = useState(false)
+  const [intervalDropOpen, setIntervalDropOpen] = useState(false)
   const [availableModels, setAvailableModels] = useState<Model[]>([])
   const [modelSearch, setModelSearch] = useState('')
   const debouncedModelSearch = useDebounce(modelSearch, MODEL_DEBOUNCE_MS)
@@ -347,22 +369,22 @@ export default function Composer({
     setIsScanning(true)
     setModelSearch('')
     let cancelled = false
-    ;(async () => {
-      try {
-        const res: any = await pyInvoke<{ data?: Record<string, unknown> }>('file', {
-          command: 'read',
-          filename: 'config.json',
-          base_dir: 'python',
-        })
-        if (cancelled) return
-        const config = res?.data?.content as string | undefined
-        if (!config) return
-        setAvailableModels(parseModelsFromConfig(config))
-        setIsScanning(false)
-      } catch (e) {
-        if (!cancelled) console.error('Failed to load models:', e)
-      }
-    })()
+      ; (async () => {
+        try {
+          const res: any = await pyInvoke<{ data?: Record<string, unknown> }>('file', {
+            command: 'read',
+            filename: 'config.json',
+            base_dir: 'python',
+          })
+          if (cancelled) return
+          const config = res?.data?.content as string | undefined
+          if (!config) return
+          setAvailableModels(parseModelsFromConfig(config))
+          setIsScanning(false)
+        } catch (e) {
+          if (!cancelled) console.error('Failed to load models:', e)
+        }
+      })()
     return () => { cancelled = true }
   }, [modelDropOpen, pyInvoke])
 
@@ -804,7 +826,7 @@ export default function Composer({
     overflowWrap: 'anywhere' as const,
     maxHeight: maxHeight,
   }), [isExpanded, maxHeight])
-  
+
   const plusCls = useMemo(() => clsx(
     isExpanded ? bottomExpanded : centerY,
     'focus:outline-none h-5 w-5 absolute flex items-center justify-center opacity-70 hover:opacity-100 transition-opacity',
@@ -833,6 +855,7 @@ export default function Composer({
 
   return (
     <div style={style} className={className}>
+      {showHeader && <h1 className='text-center w-full py-5 text-3xl font-bold'>Add Task</h1>}
       <div className={wrapperCls}>
         {isEmpty && (
           <span
@@ -857,25 +880,61 @@ export default function Composer({
           style={editorStyle}
           data-tauri-cursor-region={true}
         />
-        {showModelSelection && (
+        {(showModelSelection || showInterval) && (
           <TooltipProvider>
             <div className={clsx(
-              'absolute flex right-20 bottom-0 h-full',
+              'absolute flex right-20 bottom-0 h-full gap-1',
               isExpanded ? 'items-end pb-4' : 'items-center'
             )}>
-              <Dropdown
-                open={modelDropOpen}
-                onOpenChange={setModelDropOpen}
-                search={modelSearch}
-                setSearch={setModelSearch}
-                className="max-w-none min-w-70 max-h-[345px] flex flex-col"
-                content={modelDropdownContent}
-                align="end"
-              >
-                <button className='bg-accent/5 text-xs p-2 rounded-xl flex items-center gap-1 justify-center w-32 overflow-hidden cursor-pointer'>
-                  {truncateModel(model?.name)} <ChevronDown className='w-3 h-3 relative top-0.5 shrink-0'/>
-                </button>
-              </Dropdown>
+              {showModelSelection && (
+                <Dropdown
+                  open={modelDropOpen}
+                  onOpenChange={setModelDropOpen}
+                  search={modelSearch}
+                  setSearch={setModelSearch}
+                  className="max-w-none min-w-70 max-h-[345px] flex flex-col"
+                  content={modelDropdownContent}
+                  align="end"
+                >
+                  <button className='bg-accent/5 text-xs p-2 rounded-xl flex items-center gap-1 justify-center w-32 overflow-hidden cursor-pointer'>
+                    {truncateModel(model?.name)} <ChevronDown className='w-3 h-3 relative top-0.5 shrink-0' />
+                  </button>
+                </Dropdown>
+              )}
+              {showInterval && (
+                <Dropdown
+                  open={intervalDropOpen}
+                  onOpenChange={setIntervalDropOpen}
+                  className="max-w-none min-w-44"
+                  content={INTERVAL_OPTIONS.map(opt => ({
+                    content: <div className='flex items-center gap-1'>
+                      <span>{opt.value}</span>
+                      <span className="text-xs text-gray-500 dark:text-gray-400">- {opt.label}</span>
+                    </div>,
+                    shortcut: null,
+                    children: null,
+                    separator: false,
+                    trigger: () => {
+                      onIntervalChange?.(opt.value)
+                      setIntervalDropOpen(false)
+                    },
+                  }))}
+                  align="end"
+                >
+                  <button className='bg-accent text-accent-foreground text-xs p-2 rounded-xl flex items-center gap-1 justify-center w-fit overflow-hidden cursor-pointer'>
+                    {interval ?? "once"}
+                    <Tooltip>
+                      <TooltipTrigger>
+                        <Info className='text-gray-500' size={12} />
+                      </TooltipTrigger>
+                      <TooltipContent className='bg-accent-foreground text-accent'>
+                        <p>{INTERVAL_OPTIONS.find(o => o.value === (interval ?? "once"))?.label}. { (interval !== null && interval !== "once" && interval !== "infinite") && "The task is re-scheduled only after completion."}</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </button>
+                </Dropdown>
+              )}
+
             </div>
           </TooltipProvider>
         )}
@@ -905,7 +964,7 @@ export default function Composer({
           </button>
         ) : (
           <button onClick={handleSubmit} className={sendCls}>
-            <ArrowUp className="w-5 h-5" />
+            {<ArrowUp className="w-5 h-5" />}
           </button>
         )}
       </div>

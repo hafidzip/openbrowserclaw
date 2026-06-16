@@ -1,6 +1,6 @@
 import { ArrowLeft, ArrowRight, RefreshCw, Home, Search, Globe } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { AsyncLock, ref, useGlobal, usePython, usePythonEvent, type AppInfo } from "openchad-react"
+import { AsyncLock, ref, useGlobal, usePython, usePythonEvent, useSnapshot, type AppInfo } from "openchad-react"
 import { getCurrentWindow, cursorPosition } from '@tauri-apps/api/window'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi'
@@ -13,17 +13,18 @@ import { deleteActiveTabWithGroupSelection, MenuBar, TabInfo, TabState } from 'o
 import { emitTo } from '@tauri-apps/api/event';
 import { uuidv4 } from 'openchad-react/utils';
 import { useDatabaseImpl } from 'openchad-react/components/useDatabase';
+import type { ControllableBrowser } from 'openchad-react/components/ControllableBrowsers';
 
 const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
 
 export function CommandPalette({
-  initialUrl,
+  appId,
   pyInvoke,
   workspace,
   onNavigate,
   onDismiss,
 }: {
-  initialUrl: string;
+  appId: string;
   pyInvoke: any;
   workspace: string | null;
   onNavigate: (url: string) => void;
@@ -36,7 +37,7 @@ export function CommandPalette({
     const urlRegex = /^([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}/;
     return urlRegex.test(string);
   };
-  const [input, setInput] = useState(initialUrl)
+  const [url, setUrl] = useDatabaseImpl(`${appId}-url`, { initialValue: { url: "about:blank" } })
   const inputRef = useRef<HTMLInputElement>(null)
   const [suggestions, setSuggestions] = useState<any[]>([])
 
@@ -55,12 +56,12 @@ export function CommandPalette({
     const fetchSuggestions = async () => {
       const db = workspace ?? "global";
       try {
-        const searchClause = input ? "WHERE metadata LIKE ?" : "";
+        const searchClause = url.url ? "WHERE metadata LIKE ?" : "";
         const res = await pyInvoke("sqlite", {
           db,
           command: "query",
           sql: `SELECT id, metadata FROM site_registry ${searchClause} ORDER BY rowid DESC LIMIT 5`,
-          params: input ? [`%${input}%`] : []
+          params: url.url ? [`%${url.url}%`] : []
         }) as any;
         const rows = res?.data ?? (Array.isArray(res) ? res : []);
         if (!Array.isArray(rows)) return;
@@ -82,7 +83,7 @@ export function CommandPalette({
     return () => {
       active = false;
     };
-  }, [input, pyInvoke, workspace]);
+  }, [url.url, pyInvoke, workspace]);
 
   const handleSearchOrNavigate = (val: string) => {
     let target = val;
@@ -127,11 +128,11 @@ export function CommandPalette({
             className="w-full bg-transparent border-none outline-none text-[15px] p-0 focus:ring-0 placeholder:font-normal"
             style={{ color: 'var(--fgColor-default)' }}
             placeholder="Search or Enter URL..."
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
+            value={url.url}
+            onChange={(e) => setUrl({ url: e.target.value })}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && input.trim()) {
-                handleSearchOrNavigate(input.trim());
+              if (e.key === 'Enter' && url.url.trim()) {
+                handleSearchOrNavigate(url.url.trim());
               }
             }}
           />
@@ -139,12 +140,12 @@ export function CommandPalette({
 
         {/* Suggestion List */}
         <div className="flex flex-col gap-0.5">
-          {input.trim() && input !== initialUrl && (
+          {url.url.trim() && url.url !== "about:blank" && (
             <div
               className="w-full flex items-center justify-between px-3.5 py-2 rounded-xl cursor-pointer transition-colors duration-150"
               onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'hsl(var(--hover))'}
               onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-              onClick={() => handleSearchOrNavigate(input.trim())}
+              onClick={() => handleSearchOrNavigate(url.url.trim())}
             >
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-5 h-5 flex items-center justify-center flex-shrink-0">
@@ -152,14 +153,14 @@ export function CommandPalette({
                 </div>
                 <div className="flex items-baseline gap-2 min-w-0 text-[14px]">
                   <span style={{ color: 'var(--fgColor-default)' }} className="font-medium flex-shrink-0">
-                    {isValidHttpUrl(input) ? `Open ${input}` : `Search ${input}`}
+                    {isValidHttpUrl(url.url) ? `Open ${url.url}` : `Search ${url.url}`}
                   </span>
                 </div>
               </div>
             </div>
           )}
 
-          {suggestions.filter((item) => item.id !== initialUrl).map((item) => {
+          {suggestions.filter((item) => item.id !== url.url).map((item) => {
             const hasIcon = typeof item.icon === "string" && (
               item.icon.startsWith("/") ||
               item.icon.startsWith("http") ||
@@ -217,25 +218,28 @@ const cleanUrl = (u?: string | null) => {
   return u.replace(/\/$/, "");
 };
 
-export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActiveTabId, useTheme, tabId, appId, useTab }: AppInfo) {
+export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, useActiveTabId, useTheme, tabId, appId, useTab }: AppInfo) {
+  const { childrenProps, layout: tabLayout } = useTab() ?? {};
+  const initialUrl = childrenProps?.[appId]?.data?.url || "";
+  const [browsers, setBrowsers, { ready: browsersReady }] = useDatabaseImpl<Record<string, ControllableBrowser>>('ControllableBrowser', { initialValue: {} });
 
-  const tabState = useTab();
-  const initialUrl = tabState?.childrenProps?.[appId]?.data?.url || "about:blank";
 
-  const [url, setUrl] = useState(initialUrl)
+  const [url, setUrl, { ready }] = useDatabaseImpl(`${appId}-url`, { initialValue: { url: initialUrl } })
   const [navState, setNavState] = useState({
-    history: initialUrl === "about:blank" ? [] : [initialUrl],
-    currentIndex: initialUrl === "about:blank" ? -1 : 0
+    history: url.url === "" ? [] : [url.url],
+    currentIndex: url.url === "" ? -1 : 0
   });
   const { history, currentIndex } = navState;
   const { layout } = useTheme()
   const { workspace } = useWorkspace()
+  const { appId: activeAppId } = useSnapshot(MenuBar)
 
   const [focus, setFocus] = useState(false)
   const [refresh, setRefresh] = useState(0)
 
   const [loaded, setLoaded] = useState(false)
   const [showPalette, setShowPalette] = useState(false)
+  const [initialized, setInitialized] = useState(false)
 
   const pendingNav = useRef<'back' | 'forward' | null>(null)
 
@@ -325,18 +329,38 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
     setHandleBack,
     setHandleForward,
     setHandleRefresh,
-    setUrl: setBarUrl,
     setHandleAddressBarClick
   } = BrowserBar({
+    appId,
     canGoBack: currentIndex > 0,
     canGoForward: currentIndex < history.length - 1
   })
 
+  const layoutRef = useRef(tabLayout)
+  layoutRef.current = tabLayout
+
+  const elementRef = useRef(element)
+  elementRef.current = element
+
+  const workspaceRef = useRef(workspace)
+  workspaceRef.current = workspace
+
+  const browserReadyRef = useRef(browsersReady)
+  browserReadyRef.current = browsersReady
+
+  const [lastUrl, setLastUrl] = useState("")
+
   useEffect(() => {
-    if (url === "about:blank") {
+    if (!ready) return
+    if (/^https?:\/\//.test(url.url)) {
+      // DB has a real URL saved — mark as initialized, no palette needed
+      setInitialized(true)
+    } else {
+      // DB is still at the default "about:blank" — show the palette
       setShowPalette(true)
     }
-  }, [url])
+  }, [ready])
+
 
   useEffect(() => {
     setHandleNavigate(handleNavigate)
@@ -346,9 +370,11 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
     setHandleAddressBarClick(() => {
       setShowPalette((prev) => {
         if (!prev) {
+          setLastUrl(url.url)
           setFocus(false)
           setRefresh(prev => (prev + 1) % 2)
         } else {
+          setLastUrl(url.url)
           setFocus(true)
           setRefresh(prev => (prev + 1) % 2)
         }
@@ -359,9 +385,19 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
 
   useEffect(() => {
     if (activeTabId == tabId) {
-      MenuBar.current = MenuBar.current = ref(<>{element}</>) as React.JSX.Element
+      MenuBar.appId = appId
+      MenuBar.tabId = tabId
+      MenuBar.current = ref(<>{element}</>) as React.JSX.Element
     }
-  }, [activeTabId, element])
+  }, [activeTabId])
+
+  useEffect(() => {
+    if (activeTabId == tabId && activeAppId == appId) {
+      MenuBar.appId = appId
+      MenuBar.tabId = tabId
+      MenuBar.current = ref(<>{element}</>) as React.JSX.Element
+    }
+  }, [activeTabId, activeAppId, element])
 
   useEffect(() => {
     if (!mounted) setMount(activeTabId == tabId)
@@ -398,7 +434,7 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
     })()
   }, [focus, refresh])
 
-
+  const [isCreateTask, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: true });
   const [showSearchDialog] = useGlobal('showSearchDialog', { initialValue: false });
   const [showMcpDialog] = useGlobal('showMcpDialog', { initialValue: false });
   const [showCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false });
@@ -412,13 +448,14 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
   const [showControllableBrowsersDialog] = useGlobal('showControllableBrowsersDialog', { initialValue: false });
   const [showSkillsDialog] = useGlobal('showSkillsDialog', { initialValue: false });
   const [showAgentsDialog] = useGlobal('showAgentsDialog', { initialValue: false });
+  const [isMobileSearching, setIsMobileSearching] = useGlobal('isMobileSearching', { initialValue: false });
 
   useEffect(() => {
-    if (focus && (showAgentsDialog || showSkillsDialog || showControllableBrowsersDialog || mobileSettingsDropdown || settingsDropdown || showSearchDialog || showMcpDialog || showCredentialsDialog || showLocalModelDialog || showCustomEndpointDialog || showSettingsDialog || showTaskDialog || setupModel)) {
+    if (focus && (isCreateTask || isMobileSearching || showAgentsDialog || showSkillsDialog || showControllableBrowsersDialog || mobileSettingsDropdown || settingsDropdown || showSearchDialog || showMcpDialog || showCredentialsDialog || showLocalModelDialog || showCustomEndpointDialog || showSettingsDialog || showTaskDialog || setupModel)) {
       setFocus(false)
       setRefresh(prev => (prev + 1) % 2)
     }
-  }, [focus, showAgentsDialog, showSkillsDialog, showControllableBrowsersDialog, mobileSettingsDropdown, settingsDropdown, showSearchDialog, showMcpDialog, showCredentialsDialog, showLocalModelDialog, showCustomEndpointDialog, showSettingsDialog, showTaskDialog, setupModel])
+  }, [focus, isCreateTask, isMobileSearching, showAgentsDialog, showSkillsDialog, showControllableBrowsersDialog, mobileSettingsDropdown, settingsDropdown, showSearchDialog, showMcpDialog, showCredentialsDialog, showLocalModelDialog, showCustomEndpointDialog, showSettingsDialog, showTaskDialog, setupModel])
 
   const syncSize = async () => {
     const container = containerRef.current
@@ -449,7 +486,14 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
   }, [layout, activeTabId, refresh])
 
   useEffect(() => {
-    if (!mounted || !containerRef.current) return
+    if (!showPalette) {
+      setFocus(true)
+      setRefresh(prev => (prev + 1) % 2)
+    }
+  }, [showPalette])
+
+  useEffect(() => {
+    if (!ready || !containerRef.current) return
 
     (async () => {
       const existing = await getByLabel(label)
@@ -469,7 +513,7 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
           setLoaded(false)
           await AsyncLock.acquire();
           const wvw = new Webview(await getCurrentWindow(), label, {
-            url,
+            url: /^https?:\/\//.test(url.url) ? url.url : "about:blank",
             width: Math.round(rect.width),
             height: Math.round(rect.height),
             x: screenX,
@@ -489,8 +533,17 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
           wvw.listen('delete_tab', async (event) => {
             window.dispatchEvent(new CustomEvent('delete_tab', { detail: event.payload }));
           })
+          
           wvw.listen('switch_tab', async (event) => {
             window.dispatchEvent(new CustomEvent('switch_tab', { detail: event.payload }));
+          })
+
+          wvw.listen('create_task', async (event) => {
+            window.dispatchEvent(new CustomEvent('create_task', { detail: event.payload }));
+          })
+
+          wvw.listen('focus', async (event) => {
+            window.dispatchEvent(new CustomEvent('focus', { detail: event.payload }));
           })
 
           await wvw.once('tauri://created', async () => {
@@ -507,16 +560,38 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
     const cleanups: (() => void)[] = []
 
     const onFocus = () => { setFocus(false); setRefresh(prev => (prev + 1) % 2) }
+    const onAppFocus = (event: any) => {
+      if (event.detail?.target === label) {
+        MenuBar.appId = appId
+        MenuBar.tabId = tabId
+        MenuBar.current = ref(<>{elementRef.current}</>) as React.JSX.Element
+      }
+    }
     const onHidePopup = () => {
       setFocus(false);
     }
     const onUpdateTitle = async (event: any) => {
       await AsyncLock.run(async () => {
         const data = event.detail as any
+        console.log("[Browsers data]:", browsers);
         if (data.target == label) {
           setTitle(data.title)
-          const db = workspace ?? "global"
+          const db = workspaceRef.current ?? "global"
           const sql = `INSERT OR REPLACE INTO site_registry (id, metadata) VALUES (?, ?)`
+
+          if(browserReadyRef.current && appId.startsWith("agent")) {
+            console.log(browsers);
+            setBrowsers((prev) => {
+              const newBrowsers = { ...prev }
+              newBrowsers[appId] = {
+                name: data.title ?? data.url ?? 'Untitled',
+                url: data.url ?? 'about:blank',
+                icon: data.icon ?? 'default',
+                timestamp: Date.now(),
+              }
+              return newBrowsers
+            })
+          }
 
           await pyInvoke("sqlite", {
             db,
@@ -527,6 +602,11 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
                     )`,
             params: []
           })
+          
+          if(data.icon && layoutRef.current === "single"){
+            setIcon(data.icon)
+          }
+
           await pyInvoke("sqlite", {
             db,
             command: "execute",
@@ -548,9 +628,7 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
       await AsyncLock.run(async () => {
         const data = event.detail as any
         if (data.target == label) {
-          console.log(data)
-          setBarUrl(data.url)
-          setUrl(data.url)
+          setUrl({ url: data.url })
 
           const currentPending = pendingNav.current
           pendingNav.current = null
@@ -558,7 +636,7 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
           setNavState((prev) => {
             let newIndex = prev.currentIndex
             let newHistory = [...prev.history]
-            
+
             const normalizedIncoming = cleanUrl(data.url)
 
             if (currentPending === 'back') {
@@ -606,12 +684,18 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
       // TODO
     }
 
+    const onCreateTask = () =>{
+      setIsCreateTask(true);
+    }
+
     const observer = new ResizeObserver(Sync)
     observer.observe(containerRef.current)
     window.addEventListener('update_location', onLocationChange)
+    window.addEventListener('focus', onAppFocus)
     window.addEventListener('update_location_title_icon', onUpdateTitle)
     window.addEventListener('delete_tab', onTabDelete)
     window.addEventListener('switch_tab', onTabSwitch)
+    window.addEventListener('create_task', onCreateTask)
     window.addEventListener('resize', Sync)
     window.addEventListener('mainFocusChanged', Sync)
     window.addEventListener('mainOnMove', Sync)
@@ -623,9 +707,11 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
     return () => {
       observer.disconnect()
       window.removeEventListener('update_location', onLocationChange)
+      window.removeEventListener('focus', onAppFocus)
       window.removeEventListener('update_location_title_icon', onUpdateTitle)
       window.removeEventListener('delete_tab', onTabDelete)
       window.removeEventListener('switch_tab', onTabSwitch)
+      window.removeEventListener('create_task', onCreateTask)
       window.removeEventListener('resize', Sync)
       window.removeEventListener('mainFocusChanged', Sync)
       window.removeEventListener('mainOnMove', Sync)
@@ -635,14 +721,18 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
       window.removeEventListener('hide-popup', onHidePopup);
       cleanups.forEach(fn => fn())
     }
-  }, [mounted])
+  }, [ready])
 
 
   return (
-    <div className={clsx(
-      "flex flex-col w-full h-full relative overflow-hidden",
-      !loaded && "bg-card"
-    )}>
+    <div
+      style={{
+        padding: '0.25px'
+      }}
+      className={clsx(
+        "flex flex-col w-full h-full relative overflow-hidden",
+        !loaded && "bg-card"
+      )}>
 
       {/*
         Nav bar — lives entirely above the child webview's y-range.
@@ -671,14 +761,12 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
         ref={containerRef}
         id={label}
         onPointerDown={async () => {
-          if (!focus) {
-            setFocus(true)
-          }
+          setFocus(true)
+          setRefresh(prev => (prev + 1) % 2)
         }}
         onMouseMove={async () => {
-          if (!focus) {
-            setFocus(true)
-          }
+          setFocus(true)
+          setRefresh(prev => (prev + 1) % 2)
         }}
         className={clsx(
           "flex-1 w-full relative z-0 bg-transparent",
@@ -694,19 +782,20 @@ export default function BrowserApp({ useWorkspace, setTitle, pyInvoke, useActive
           </div>
         )}
       </div>
-      {(showPalette || url === "about:blank") && (
+      {(showPalette) && (
         <CommandPalette
-          initialUrl={url === "about:blank" ? "" : url}
+          appId={appId}
           pyInvoke={pyInvoke}
           workspace={workspace}
           onNavigate={(targetUrl) => {
-            setUrl(targetUrl)
-            setBarUrl(targetUrl)
+            setInitialized(true);
+            setUrl({ url: targetUrl })
             setShowPalette(false);
             handleNavigate(targetUrl);
           }}
           onDismiss={() => {
-            setShowPalette(false);
+            if (initialized || /^https?:\/\//.test(url.url)) setShowPalette(false);
+            setUrl({ url: lastUrl })
           }}
         />
       )}

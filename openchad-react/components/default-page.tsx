@@ -23,6 +23,7 @@ export interface MessageState {
 export default function DefaultPage(AppInfo: AppInfo) {
     const { layout } = AppInfo.useTheme();
     const { workspace } = AppInfo.useWorkspace();
+    const workspaceRef = useRef(workspace)
     const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
     const msgBottomRef = useRef<HTMLDivElement>(null);
     const [scrollContainerRef] = useElementSize<HTMLDivElement>();
@@ -50,7 +51,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
     const title = AppInfo.useTitle();
     const currentTab = AppInfo.useTab()
 
-    
+
     useEffect(() => {
         if (title) return;
         const _t = messageState.title;
@@ -105,6 +106,46 @@ export default function DefaultPage(AppInfo: AppInfo) {
             behavior: behavior || "smooth"
         });
     };
+    useEffect(() => {
+        const tabUpdate = (event: Event) => {
+            const { tabId: targetTabId, title:newTitle, icon:newIcon } = (event as CustomEvent).detail;
+            (async () => {
+                if (workspaceRef.current && newTitle && targetTabId && newIcon && targetTabId === tabId) {
+                    const oldData: any = await pyInvoke('sqlite', {
+                        db: workspaceRef.current ?? "global",
+                        command: "query",
+                        sql: `SELECT * FROM tasks WHERE id = ?`,
+                        params: [tabId],
+                    })
+                    console.log(oldData.data[0]);
+                    if (oldData && oldData.data[0]) {
+                        try {
+                            const data = JSON.parse(oldData.data[0].metadata);
+                            await pyInvoke('sqlite', {
+                                db: workspaceRef.current ?? "global",
+                                command: "execute",
+                                sql: `INSERT OR REPLACE INTO tasks (id, metadata) VALUES (?, ?)`,
+                                params: [tabId, JSON.stringify({
+                                    icon: newIcon,
+                                    query: data.query,
+                                    interval: data.interval,
+                                    agent: data.agent,
+                                    timestamp: Date.now(),
+                                })],
+                            })
+                        } catch (e) {
+                            console.error(e)
+                        }
+
+                    }
+                }
+            })()
+        };
+        window.addEventListener('tab-update', tabUpdate);
+        return () => {
+            window.removeEventListener('tab-update', tabUpdate);
+        }
+    }, [])
     useEffect(() => {
         if (messageState.isStreaming || messageState.initialized) {
             setTimeout(() => {

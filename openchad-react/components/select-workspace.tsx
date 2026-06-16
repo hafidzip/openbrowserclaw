@@ -60,7 +60,6 @@ export function SelectWorkspace({ workspaces, setWorkspace }: { workspaces: stri
                 // Adjust alignment and scrolling based on height
                 isSmallHeight ? "justify-start py-6 overflow-y-auto" : "justify-center overflow-hidden"
             )}
-            onContextMenu={(e) => { e.preventDefault(); e.stopPropagation() }}
         >
             {/* Common Window elements */}
             <div data-tauri-drag-region className='absolute top-0 w-full h-[4vh] left-0 bg-transparent' style={{ zIndex: 10 }} />

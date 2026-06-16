@@ -2,11 +2,11 @@
 import clsx from "clsx"
 import { Aspan } from "./animated"
 import { motion, AnimatePresence } from "motion/react"
-import { useRef, useState, useEffect, Fragment, useCallback } from "react"
+import { useRef, useState, useEffect, Fragment, useCallback, memo } from "react"
 import { ChevronDown, GitBranch, Plus, Settings, X, Pin, ChevronRight, ArrowLeftRight, Key, HardDrive, Globe, Drama, EarthIcon, Scroll, AlarmCheck } from "lucide-react"
 import { Dialog as DialogUI, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog"
 import { Dropdown } from "./dropdown"
-import { TabState, addTab, TabInfo, reorderTabsInGroup, deleteTabWithGroupSelection, setTabGroup, type ITab, Theme, } from '../utils/state'
+import { TabState, addTab, TabInfo, reorderTabsInGroup, deleteTabWithGroupSelection, setTabGroup, type ITab, Theme, LucideIcons, } from '../utils/state'
 import { useSnapshot } from 'valtio'
 import {
   DndContext,
@@ -43,7 +43,6 @@ import Tasks from "./Tasks"
 import { useGlobal } from "./useGlobal"
 import Agents from "./Agents"
 import ControllableBrowsers from "./ControllableBrowsers"
-import Skiils from "./Skills"
 import { AsyncLock } from ".."
 import { getCurrentWebview } from "@tauri-apps/api/webview"
 import { getCurrentWindow } from "@tauri-apps/api/window"
@@ -53,7 +52,7 @@ interface SortableTabItemProps {
   defaultTitle: string;
   isPinned: boolean;
   id: string;
-  icon: React.ReactNode;
+  icon: string;
   title: string | null;
   index: number;
   isCollapsible: boolean;
@@ -87,7 +86,18 @@ export async function selectModel() {
   }
 }
 
-function SortableTabItem({ defaultTitle, isPinned, id, icon, title, isCollapsedSidebar, hoveredTabId, isActive, onMouseEnter, onMouseLeave, onContextMenu, onDelete, onClick }: SortableTabItemProps) {
+function SortableTabItem({ defaultTitle,
+  isPinned,
+  id,
+  icon,
+  title,
+  isCollapsedSidebar,
+  hoveredTabId,
+  isActive,
+  onMouseEnter,
+  onMouseLeave,
+  onContextMenu,
+  onDelete, onClick }: SortableTabItemProps) {
   const divRef = useRef<HTMLDivElement | null>(null);
   const {
     attributes,
@@ -119,8 +129,8 @@ function SortableTabItem({ defaultTitle, isPinned, id, icon, title, isCollapsedS
       onClick={onClick}
       className={clsx(
         "w-full h-[36px] flex items-center gap-1 rounded-lg text-xs transition-colors relative group",
-        
-        (isActive) ? (id.startsWith("agent") ? "bg-purple-300 dark:bg-purple-800" : "bg-neutral-300 dark:bg-[hsl(var(--hover))]") : isHovered ? (id.startsWith("agent") ? "bg-purple-800/40 dark:bg-purple-900/75" : "bg-neutral-200 dark:bg-[hsl(var(--hover))]/50") : (id.startsWith("agent") && "bg-purple-900/25 dark:bg-purple-900/50"), 
+
+        (isActive) ? (id.startsWith("agent") ? "bg-purple-300 dark:bg-purple-800" : "bg-neutral-300 dark:bg-[hsl(var(--hover))]") : isHovered ? (id.startsWith("agent") ? "bg-purple-800/40 dark:bg-purple-900/75" : "bg-neutral-200 dark:bg-[hsl(var(--hover))]/50") : (id.startsWith("agent") && "bg-purple-900/25 dark:bg-purple-900/50"),
       )}
       data-tab-id={id}
     >
@@ -130,7 +140,7 @@ function SortableTabItem({ defaultTitle, isPinned, id, icon, title, isCollapsedS
         {...listeners}
         className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer active:cursor-grabbing"
       >
-        {icon}
+        <TabIcon iconVal={icon} className="relative min-w-[20px] transition-all duration-250 left-[7px]"/>
         <Aspan isCollapsed={isCollapsedSidebar} className="truncate flex-1 min-w-0 block">{title || defaultTitle}</Aspan>
       </div>
       {/* Delete Button - Expanded State */}
@@ -178,6 +188,20 @@ function SortableTabItem({ defaultTitle, isPinned, id, icon, title, isCollapsedS
     </div>
   );
 }
+
+const TabIcon = memo(({ iconVal, className }: { iconVal: string | undefined, className?: string }) => {
+  if (
+    typeof iconVal === "string" &&
+    (iconVal.startsWith("/") ||
+      iconVal.startsWith("http") ||
+      iconVal.startsWith("data:") ||
+      /\.(png|jpg|jpeg|ico|svg|webp)$/i.test(iconVal))
+  ) {
+    return <img src={iconVal} className={clsx(className, "w-4 h-4 object-contain rounded-sm")} alt="" />;
+  }
+  const Icon = (LucideIcons as any)[iconVal as string] || LucideIcons.Compass;
+  return <Icon className={clsx(className, "h-4 w-4")} />;
+});
 // Tab Group Component - Handles a group of tabs with its own DnD context
 interface TabGroupProps {
   defaultTitle: string;
@@ -277,7 +301,7 @@ function TabGroup({
               duration: Object.keys(tabs).includes(lastActiveTabId) ? 0 : 0.5,
             }}
             className="w-full h-[36px] rounded-lg flex items-center gap-3 text-sm hover:opacity-[1.0] transition-colors bg-[hsl(var(--hover))]">
-            {tabs[lastActiveTabId].icon({ className: "relative h-4 w-4 min-w-[20px] transition-all duration-250 left-[7px]" })}
+            <TabIcon iconVal={tabs[lastActiveTabId].iconOverride || "Compass"} className=" relative min-w-[20px] transition-all duration-250 left-[7px]" />
             <Aspan isCollapsed={isCollapsedSidebar}> {tabs[lastActiveTabId].title} </Aspan>
           </motion.button>
         }
@@ -304,13 +328,13 @@ function TabGroup({
                 items={tabIds}
                 strategy={verticalListSortingStrategy}
               >
-                {Object.entries(tabs).map(([uuid, { icon, title }], index) => (
+                {Object.entries(tabs).map(([uuid, { iconOverride, title }], index) => (
                   <SortableTabItem
                     defaultTitle={defaultTitle}
                     isPinned={pinned}
                     key={uuid}
                     id={uuid}
-                    icon={icon({ className: "relative h-4 w-4 min-w-[20px] transition-all duration-250 left-[7px]" })}
+                    icon={iconOverride || "Compass"}
                     title={title}
                     index={index}
                     isCollapsible={isCollapsible}
@@ -403,8 +427,6 @@ export default function Sidebar({
   setShowTaskDialog,
   showControllableBrowsersDialog,
   setShowControllableBrowsersDialog,
-  showSkillsDialog,
-  setShowSkillsDialog,
   showAgentsDialog,
   setShowAgentsDialog,
   layout,
@@ -432,8 +454,6 @@ export default function Sidebar({
   setShowTaskDialog: (value: boolean) => void;
   showControllableBrowsersDialog: boolean;
   setShowControllableBrowsersDialog: (value: boolean) => void;
-  showSkillsDialog: boolean;
-  setShowSkillsDialog: (value: boolean) => void;
   showAgentsDialog: boolean;
   setShowAgentsDialog: (value: boolean) => void;
   layout: string;
@@ -885,7 +905,7 @@ export default function Sidebar({
             "w-full h-[36px] flex items-center gap-3 rounded-lg  text-sm hover:bg-[hsl(var(--hover))] transition-colors",
           )}>
           <Plus className="relative h-4 w-4 min-w-[20px] transition-all duration-250 left-[7px]" />
-          <Aspan isCollapsed={isCollapsedSidebar}>New Tab</Aspan>
+          <Aspan isCollapsed={isCollapsedSidebar} className="text-xs">New Tab</Aspan>
         </motion.button>
       </div>
       <div className="flex-1">
@@ -930,15 +950,6 @@ export default function Sidebar({
               separator: false,
               trigger: () => {
                 setShowTaskDialog(true);
-              }
-            },
-            {
-              content: <div> Skiils </div>,
-              shortcut: <Scroll size={16} />,
-              children: null,
-              separator: false,
-              trigger: () => {
-                setShowSkillsDialog(true);
               }
             },
             ...(typeof window !== 'undefined' && !!(window as any).__TAURI__) ? [{
@@ -1073,12 +1084,19 @@ export default function Sidebar({
           >
             <div className="w-fit min-w-64 max-w-72 p-2 rounded-xl border bg-card text-card-foreground shadow-lg bg-opacity-95 ">
               <div className="flex gap-2 items-center">
-                {allTabs[hoveredTabId].icon && <Fragment key="icon-section">
+                {<Fragment key="icon-section">
                   {
                     allTabs[hoveredTabId].iconOverride ? <Fragment key="icon-override">
                       <div
                         onClick={() => {
                           TabState[hoveredTabId].iconOverride = null;
+                          window.dispatchEvent(new CustomEvent("tab-update", {
+                            detail: {
+                              tabId: hoveredTabId,
+                              title: TabState[hoveredTabId].title,
+                              icon: 'default',
+                            }
+                          }))
                         }}
                         className={clsx(
                           "p-2 relative rounded-lg overflow-hidden cursor-pointer transition-colors border-r border-r-[hsl(var(--chat-border))] hover:bg-[hsl(var(--hover))]",
@@ -1086,18 +1104,25 @@ export default function Sidebar({
                         <div className="absolute flex items-center justify-center top-0 right-0 w-full h-full bg-[hsl(var(--hover))] opacity-0 hover:opacity-100">
                           <X className="h-4 w-4" />
                         </div>
-                        {TabState[hoveredTabId].IconOverrideComponent({ className: "h-4 w-4" })}
+                        <TabIcon iconVal={allTabs[hoveredTabId].iconOverride||"Compass"}/>
                       </div>
                     </Fragment> :
                       <IconPopover onSelect={(icon) => {
                         TabState[hoveredTabId].iconOverride = icon;
+                        window.dispatchEvent(new CustomEvent("tab-update", {
+                          detail: {
+                            tabId: hoveredTabId,
+                            title: TabState[hoveredTabId].title,
+                            icon
+                          }
+                        }))
                         setShowPopup(false);
                         setHoveredTabId(null);
                       }}>
                         <div className={clsx(
                           "p-2 rounded-lg cursor-pointer transition-colors border-r border-r-[hsl(var(--chat-border))] hover:bg-[hsl(var(--hover))]",
                         )}>
-                          {allTabs[hoveredTabId].icon({ className: "h-4 w-4" })}
+                          <TabIcon iconVal={allTabs[hoveredTabId].iconOverride||"Compass"}/>
                         </div>
                       </IconPopover>
                   }
@@ -1113,6 +1138,13 @@ export default function Sidebar({
                           const tab = TabState[hoveredTabId];
                           if (tab) {
                             TabState[hoveredTabId].title = tempTitle;
+                            window.dispatchEvent(new CustomEvent("tab-update", {
+                              detail: {
+                                tabId: hoveredTabId,
+                                title: tempTitle,
+                                icon: TabState[hoveredTabId].iconOverride
+                              }
+                            }))
                           }
                           setEditingTitleTabId(null);
                         } else if (e.key === "Escape") {
@@ -1129,19 +1161,19 @@ export default function Sidebar({
                         }
                         setEditingTitleTabId(null);
                       }}
-                      className="bg-transparent border-b border-primary text-foreground focus:outline-none font-semibold text-lg w-full flex-1 min-w-0"
+                      className="bg-transparent border-b border-primary text-foreground focus:outline-none font-semibold text-xs w-full flex-1 min-w-0"
                       autoFocus
                     />
                   ) : (
-                    <h1
-                      className="cursor-pointer hover:underline font-semibold text-sm flex-1 min-w-0 truncate"
+                    <span
+                      className="cursor-pointer hover:underline text-xs flex-1 min-w-0 truncate"
                       onClick={() => {
                         setEditingTitleTabId(hoveredTabId);
                         setTempTitle(allTabs[hoveredTabId].title || "");
                       }}
                     >
                       {allTabs[hoveredTabId].title || "Untitled"}
-                    </h1>
+                    </span>
                   )}
                 </Fragment>
                 {/* Pin/Unpin Toggle Button */}
@@ -1189,7 +1221,7 @@ export default function Sidebar({
               <div className="relative w-full border border-[hsl(var(--chat-border))] flex items-center gap-2 bg-[hsl(var(--float))] rounded-full px-4 shadow-sm focus-within:ring-1 focus-within:ring-accent/30 transition-all">
                 <Search className="w-4 h-4 text-muted-foreground" />
                 <input
-                  placeholder="Search agents..."
+                  placeholder="Search browsers..."
                   className="bg-transparent border-none p-2 w-full h-10 focus-visible:ring-0 text-sm"
                   value={searchControllableBrowsersQuery}
                   onChange={(e) => setSearchControllableBrowsersQuery(e.target.value)}
@@ -1199,25 +1231,6 @@ export default function Sidebar({
             </DialogTitle>
           </DialogHeader>
           <ControllableBrowsers workspace={workspace} isOpen={showControllableBrowsersDialog} setOpen={setShowControllableBrowsersDialog} query={searchTaskQuery} />
-        </DialogContent>
-      </DialogUI>
-      <DialogUI open={showSkillsDialog} onOpenChange={setShowSkillsDialog}>
-        <DialogContent className="max-w-4xl h-[80vh] flex flex-col border-accent/20 bg-card p-0 overflow-hidden shadow-2xl">
-          <DialogHeader className="px-6">
-            <DialogTitle className="text-lg font-medium pt-10 text-foreground/90">
-              <div className="relative w-full border border-[hsl(var(--chat-border))] flex items-center gap-2 bg-[hsl(var(--float))] rounded-full px-4 shadow-sm focus-within:ring-1 focus-within:ring-accent/30 transition-all">
-                <Search className="w-4 h-4 text-muted-foreground" />
-                <input
-                  placeholder="Search agents..."
-                  className="bg-transparent border-none p-2 w-full h-10 focus-visible:ring-0 text-sm"
-                  value={searchSkillsQuery}
-                  onChange={(e) => setSearchSkillsQuery(e.target.value)}
-                  autoFocus
-                />
-              </div>
-            </DialogTitle>
-          </DialogHeader>
-          <Skiils workspace={workspace} isOpen={showSkillsDialog} setOpen={setShowSkillsDialog} query={searchTaskQuery} />
         </DialogContent>
       </DialogUI>
       <DialogUI open={showAgentsDialog} onOpenChange={setShowAgentsDialog}>
@@ -1255,7 +1268,7 @@ export default function Sidebar({
               </div>
             </DialogTitle>
           </DialogHeader>
-          <Tasks workspace={workspace} isOpen={showTaskDialog} setOpen={setShowTaskDialog} query={searchTaskQuery} />
+          <Tasks openInTab={true} workspace={workspace} isOpen={showTaskDialog} setOpen={setShowTaskDialog} query={searchTaskQuery} />
         </DialogContent>
       </DialogUI>
       <DialogUI open={showSearchDialog} onOpenChange={setShowSearchDialog}>

@@ -36,6 +36,7 @@ export interface AppInfo {
     useActiveTabId: () => string;
     useTitle: () => string | null;
     setTitle: (title: string) => void;
+    setIcon: (icon: string) => void;
     settings: Record<string, SettingItem>;
     useNotchVisible: () => boolean;
     useTheme: () => {

@@ -27,7 +27,7 @@ const TabIcon = memo(({ iconVal }: { iconVal: string | undefined }) => {
     ) {
         return <img src={iconVal} className="w-5 h-5 object-contain rounded-sm" alt="" />;
     }
-    const Icon = (LucideIcons as any)[iconVal as string] || LucideIcons.Globe;
+    const Icon = (LucideIcons as any)[iconVal as string] || LucideIcons.Compass;
     return <Icon className="w-4 h-4" />;
 });
 
@@ -74,6 +74,8 @@ export interface ControllableBrowser {
     timestamp: number;
 }
 
+const inputCls = "w-full px-2 py-1 text-xs rounded border outline-none bg-accent/5 border-accent/20 text-foreground placeholder:text-muted-foreground focus:border-accent/40";
+
 export default function ControllableBrowsers({
     workspace, isOpen, setOpen, query
 }: {
@@ -82,66 +84,69 @@ export default function ControllableBrowsers({
     setOpen: (open: boolean) => void;
     query: string;
 }) {
-    // Initialized as a Record object instead of an Array
     const [tabs, setTabs] = useDatabaseImpl<Record<string, ControllableBrowser>>('ControllableBrowser', { initialValue: {} });
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [isAdding, setIsAdding] = useState(false);
     const [newBrowserName, setNewBrowserName] = useState("");
+    const [newBrowserUrl, setNewBrowserUrl] = useState("");
     const { SetActive } = useSnapshot(TabInfo);
 
-    // Derive an array from the object to easily map and filter in the UI view
     const filteredTabs = useMemo(() => {
         const tabsArray = Object.entries(tabs || {}).map(([uuid, data]) => ({
             uuid,
             ...data
-        })).sort((a, b) => b.timestamp - a.timestamp); // Keep most recent on top
+        })).sort((a, b) => b.timestamp - a.timestamp);
 
         return query
             ? tabsArray.filter(t => JSON.stringify(t).toLowerCase().includes(query.toLowerCase()))
             : tabsArray;
     }, [tabs, query]);
 
+    const resetAddForm = useCallback(() => {
+        setIsAdding(false);
+        setNewBrowserName("");
+        setNewBrowserUrl("");
+    }, []);
+
     const handleAddBrowser = useCallback(() => {
         const name = newBrowserName.trim();
         if (!name) return;
-        
+
+        const url = newBrowserUrl.trim() || "about:blank";
         const newUuid = `agent-${uuidv4()}`;
-        
+
         setTabs(prev => ({
             [newUuid]: {
                 name,
-                url: "about:blank",
+                url,
                 icon: "Drama",
                 timestamp: Date.now()
             },
             ...(prev || {})
         }));
-        
-        setIsAdding(false);
-        setNewBrowserName("");
-    }, [newBrowserName, setTabs]);
+
+        resetAddForm();
+    }, [newBrowserName, newBrowserUrl, setTabs, resetAddForm]);
 
     const handleDelete = useCallback(async (uuid?: string) => {
         const ids = uuid ? [uuid] : Array.from(selectedIds);
         if (ids.length === 0) return;
-        const idSet = new Set(ids);
-        
+
         ids.forEach(async (label: string) => {
             await AsyncLock.run(async () => {
                 const all = await getAllWebviews();
                 const w = all.find((wv) => wv.label === `webview-${label}`);
-                if (w) {
-                    await w.close();
-                }
+                if (w) await w.close();
             });
             (async () => { await deleteTabWithGroupSelection(label); })();
         });
+
         setTabs(prev => {
             const next = { ...prev };
-            ids.forEach(i => delete next[i]); // Delete cleanly from object
+            ids.forEach(i => delete next[i]);
             return next;
         });
-        
+
         setSelectedIds(prev => {
             const next = new Set(prev);
             ids.forEach(i => next.delete(i));
@@ -153,13 +158,13 @@ export default function ControllableBrowsers({
         const tab = (tabs || {})[uuid];
         if (!tab) return;
         addTab({
-            uuid: uuid,
+            uuid,
             title: tab.name,
-            iconOverride: tab.icon || "default",
+            iconOverride: tab.icon || "Earth",
             layout: "single",
             childrenProps: {
                 [uuid]: {
-                    icon: tab.icon || "default",
+                    icon: tab.icon || "Earth",
                     title: tab.name,
                     appname: "main-app",
                     data: { url: tab.url || uuid }
@@ -195,10 +200,16 @@ export default function ControllableBrowsers({
 
     const allSelected = filteredTabs.length > 0 && selectedIds.size === filteredTabs.length;
 
+    const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
+        if (e.key === 'Enter') handleAddBrowser();
+        else if (e.key === 'Escape') resetAddForm();
+    }, [handleAddBrowser, resetAddForm]);
+
     return (
         <>
+            {/* Toolbar row */}
             <div className="flex justify-center items-center w-[97.5%] mx-auto px-2">
-                <div className="w-6">
+                <div className="w-6 shrink-0">
                     <Checkbox checked={allSelected} onCheckedChange={toggleSelectAll} />
                 </div>
                 <div className="flex items-center text-xs opacity-50 gap-1">
@@ -206,35 +217,41 @@ export default function ControllableBrowsers({
                     <span>These browsers can be controlled by an agent and stay active in the background.</span>
                 </div>
                 <div className="flex-1" />
-                {isAdding ? (
-                    <div className="flex items-center gap-2">
+                {!isAdding && (
+                    <Button variant="secondary" className="flex items-center justify-center shrink-0" size="sm" onClick={() => setIsAdding(true)}>
+                        Add Browser <Plus className="w-6 h-6" />
+                    </Button>
+                )}
+            </div>
+
+            {/* Full-width add form */}
+            {isAdding && (
+                <div className="w-[97.5%] mx-auto px-2 py-2 flex flex-col gap-2 border-t border-accent/10">
+                    <div className="flex flex-col gap-2">
                         <input
                             type="text"
                             placeholder="Browser name..."
                             value={newBrowserName}
                             onChange={e => setNewBrowserName(e.target.value)}
-                            className="px-2 py-1 text-xs rounded border outline-none bg-accent/5 border-accent/20 text-foreground"
-                            onKeyDown={e => {
-                                if (e.key === 'Enter') handleAddBrowser();
-                                else if (e.key === 'Escape') {
-                                    setIsAdding(false);
-                                    setNewBrowserName("");
-                                }
-                            }}
+                            onKeyDown={handleKeyDown}
+                            className={inputCls}
                             autoFocus
                         />
-                        <Button variant="secondary" size="sm" onClick={handleAddBrowser}>Add</Button>
-                        <Button variant="ghost" size="sm" onClick={() => {
-                            setIsAdding(false);
-                            setNewBrowserName("");
-                        }}>Cancel</Button>
+                        <input
+                            type="text"
+                            placeholder="URL"
+                            value={newBrowserUrl}
+                            onChange={e => setNewBrowserUrl(e.target.value)}
+                            onKeyDown={handleKeyDown}
+                            className={inputCls}
+                        />
                     </div>
-                ) : (
-                    <Button variant="secondary" className="flex items-center justify-center" size="sm" onClick={() => setIsAdding(true)}>
-                        Add Browser <Plus className="w-6 h-6" />
-                    </Button>
-                )}
-            </div>
+                    <div className="flex justify-end gap-2">
+                        <Button variant="ghost" size="sm" onClick={resetAddForm}>Cancel</Button>
+                        <Button variant="secondary" size="sm" onClick={handleAddBrowser}>Add</Button>
+                    </div>
+                </div>
+            )}
 
             <ScrollArea className="flex-1 -mx-6 w-[97.5%] mx-auto border-t border-b border-[hsl(var(--chat-border))]">
                 <Table>

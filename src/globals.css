@@ -1416,14 +1416,6 @@ body {
   margin-bottom: var(--base-size-16);
 }
  
-.markdown-body > p:not(:first-of-type) {
-  margin-top: 1.5rem;
-}
-
-.markdown-body > * > p:not(:first-child) {
-  margin-top: 1.5rem;
-}
- 
 /* ── blockquote · mt-6 border-l-2 pl-6 italic ── */
 .markdown-body blockquote {
   margin-top: 1.5rem;                  /* mt-6 */

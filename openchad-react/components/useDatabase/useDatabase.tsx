@@ -204,7 +204,7 @@ export function useDatabaseImplBase<T = Record<string, unknown>>(
         }
     }
     async function refreshTable(databaseName: string, tb: string) {
-        const rows = await request({ db: databaseName, table: tb, command: 'query', sql: `SELECT * FROM ${tb}` });
+        const rows = await request({ db: databaseName, table: tb, command: 'query', sql: `SELECT * FROM "${tb}"` });
         if (Array.isArray(rows)) {
             const dataMap: Record<string, unknown> = {};
             let detectedPrimitive = false;

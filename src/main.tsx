@@ -10,7 +10,7 @@ const Apps: Project = {
   projectIcon: OpenChadIcon,
   defaultTab: {
     layout: "single",
-    icon: "default",
+    icon: "Compass",
     tabs: [
       {
         appname: "main-app",
