@@ -138,7 +138,7 @@ function buildChipHTML_msg(url: string, name: string, fileType?: string): string
     }
     const textHTML = `<span class="text-xs font-medium text-black/70 dark:text-white/70 truncate select-none hidden md:block max-w-[120px]">${safeName}</span>`
     return (
-        `<span contenteditable="false" data-img="true" data-url="${url}" data-name="${safeName}" ${fileType ? `data-filetype="${fileType}"` : ''} class="inline-flex align-baseline relative top-0.5 group/chip mx-[2px] items-center gap-1 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-[5px] p-[2px] pr-1.5">` +
+        `<span contenteditable="false" data-img="true" data-url="${url}" data-name="${safeName}" data-source="message-container" ${fileType ? `data-filetype="${fileType}"` : ''} class="inline-flex align-baseline relative top-0.5 group/chip mx-[2px] items-center gap-1 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-[5px] p-[2px] pr-1.5 cursor-pointer">` +
         previewHTML + textHTML +
         `<button type="button" class="absolute right-1 top-1/2 transform -translate-y-1/2 h-[14px] w-[14px] rounded-full bg-black/80 dark:bg-white/90 text-white dark:text-black flex items-center justify-center opacity-0 group-hover/chip:opacity-100 transition-opacity z-10 shadow-sm" data-rm-chip="true">` +
         `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>` +
@@ -183,7 +183,7 @@ function QueryContent({ query }: { query: string }) {
                     preview = <IconComp color={strokeColor} width={14} height={14} />
                 }
                 return (
-                    <span key={i} className="inline-flex align-baseline relative top-0.5 mx-[2px] items-center gap-1 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-[5px] p-[2px] pr-1.5">
+                    <span key={i} data-img="true" data-url={url} data-name={name} data-source="message-container" className="inline-flex align-baseline relative top-0.5 mx-[2px] items-center gap-1 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-[5px] p-[2px] pr-1.5 cursor-pointer">
                         {preview}
                         <span className="text-xs font-medium text-black/70 dark:text-white/70 truncate select-none max-w-[120px] hidden md:block">{name}</span>
                     </span>
@@ -220,7 +220,7 @@ function getIsStreaming(response: ModelOutput | string | undefined | null): bool
     return false;
 }
 
-export default function MessageContainer({ request, tabId, activeId, branch, index, useDatabase, isStreaming, workspace }: {
+export default function MessageContainer({ request, tabId, activeId, branch, index, useDatabase, isStreaming, workspace, scrollToBottom }: {
     request: (payload: any, tb: string, branchId: string, index: number | string, response_branch: number) => Promise<any>,
     tabId: string, activeId: string | null, branch: string, index: number,
     useDatabase: <T>(
@@ -229,9 +229,10 @@ export default function MessageContainer({ request, tabId, activeId, branch, ind
     ) => UseDatabaseReturn<T>,
     isStreaming: boolean,
     workspace: string,
+    scrollToBottom: () => void
 }) {
     const tb = "msg_" + branch + "_" + index;
-    const [message, setMessage] = useDatabase<{
+    const [message, setMessage, {ready}] = useDatabase<{
         branch: number, content: Record<string, {
             query: string,
             responses: (ModelOutput | string)[],
@@ -254,6 +255,12 @@ export default function MessageContainer({ request, tabId, activeId, branch, ind
     const containerRef = useRef<HTMLDivElement>(null);
     const escaping = useRef(false);
     const savedRange = useRef<Range | null>(null)
+
+    useEffect(()=>{
+        if(ready){
+            scrollToBottom();
+        }
+    },[ready])
 
     const syncState = useCallback(() => {
         const div = queryRef.current
@@ -869,7 +876,7 @@ export default function MessageContainer({ request, tabId, activeId, branch, ind
                         <div className="group relative">
                             <Message
                                 response={getResponseContent(message.content[b].responses[message.content[b].response_branch])}
-                                id={tabId + "_response_" + b + "_" + message.content[b].response_branch + "_" + index}
+                                id={tabId + "_response_" + b + "_" + message.content[b].response_branch + "_" + message.branch}
                                 activeId={activeId}
                             />
                             {!isStreaming && (
@@ -955,11 +962,11 @@ export default function MessageContainer({ request, tabId, activeId, branch, ind
                             </div>
                         )
                     }
-                    <MessageContainer request={request} tabId={tabId} activeId={activeId} useDatabase={useDatabase} index={index + 1} branch={b} isStreaming={isStreaming} workspace={workspace} />
+                    <MessageContainer scrollToBottom={scrollToBottom} request={request} tabId={tabId} activeId={activeId} useDatabase={useDatabase} index={index + 1} branch={b} isStreaming={isStreaming} workspace={workspace} />
                 </>
                     :
                     <>
-                        <div id={tabId + "_empty_message_container"} data-branch-id={b} data-branch-index={message.branch} data-last-valid-index={index - 1} data-tb={tb} />
+                        <div id={tabId + "_empty_message_container"} data-branch-id={b} data-branch-index={message.branch}  data-last-valid-index={index - 1} data-tb={tb} />
                         {
                             isStreaming
                             && activeId === tabId + "_response_" + b + "_" + (message.content?.[b]?.response_branch ?? 0) + "_" + message.branch

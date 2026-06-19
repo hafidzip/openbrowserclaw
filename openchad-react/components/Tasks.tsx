@@ -4,12 +4,12 @@ import { Checkbox } from "./ui/checkbox";
 import { ScrollArea } from "./ui/scroll-area";
 import { Table, TableBody, TableCell, TableRow } from "./ui/table";
 import { usePython } from "./usePython";
-import { formatTaskTime, LucideIcons, addTab, TabInfo } from "../utils/state";
+import { formatTaskTime, LucideIcons, addTab, TabInfo, TabState, deleteTabWithGroupSelection } from "../utils/state";
 import { Spinner } from "./ui/spinner";
 import clsx from "clsx";
 import { useGlobal } from "./useGlobal";
 import { useDatabaseImpl } from "./useDatabase";
-import { generateIdFromString, useSnapshot } from "../index";
+import { generateIdFromString, useAvailableAgents, useSnapshot } from "../index";
 import { Button } from "./ui";
 import type { Model } from "../utils/utils";
 import { parseModelsFromConfig, INTERVAL_OPTIONS, ScheduleInterval } from "./composer";
@@ -48,7 +48,7 @@ function buildChipHTML_tasks(url: string, name: string, fileType?: string): stri
     }
     const textHTML = `<span class="text-xs font-medium text-black/70 dark:text-white/70 truncate select-none max-w-[120px]">${safeName}</span>`;
     return (
-        `<span contenteditable="false" data-img="true" data-url="${url}" data-name="${safeName}" ${fileType ? `data-filetype="${fileType}"` : ''} class="inline-flex align-baseline relative top-0.5 group/chip mx-[2px] items-center gap-1 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-[5px] p-[2px] pr-1.5">` +
+        `<span contenteditable="false" data-img="true" data-url="${url}" data-name="${safeName}" data-source="task" ${fileType ? `data-filetype="${fileType}"` : ''} class="inline-flex align-baseline relative top-0.5 group/chip mx-[2px] items-center gap-1 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-[5px] p-[2px] pr-1.5 cursor-pointer">` +
         previewHTML + textHTML +
         `<button type="button" class="absolute right-1 top-1/2 transform -translate-y-1/2 h-[14px] w-[14px] rounded-full bg-black/80 dark:bg-white/90 text-white dark:text-black flex items-center justify-center opacity-0 group-hover/chip:opacity-100 transition-opacity z-10 shadow-sm" data-rm-chip="true">` +
         `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>` +
@@ -105,7 +105,19 @@ function QueryContent({ query }: { query: string }) {
     return (
         <>
             {blocks.map((block, i) => {
-                if (block.type === 'text') return <span key={i} className="whitespace-pre-wrap">{block.value}</span>;
+                if (block.type === 'text') {
+                    const cleanedText = (block.value || "").replace(/\s+/g, ' ');
+                    if (!cleanedText.trim()) return null;
+                    return (
+                        <span 
+                            key={i} 
+                            className="text-xs text-foreground/80 truncate max-w-[300px] md:max-w-[500px] select-none" 
+                            title={block.value}
+                        >
+                            {cleanedText.trim()}
+                        </span>
+                    );
+                }
                 const name = block.name ?? '';
                 const url = block.url ?? '';
                 const fileType = block.fileType ?? '';
@@ -124,7 +136,7 @@ function QueryContent({ query }: { query: string }) {
                     preview = <IconComp color={strokeColor} width={14} height={14} />;
                 }
                 return (
-                    <span key={i} className="inline-flex align-baseline relative top-0.5 mx-[2px] items-center gap-1 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-[5px] p-[2px] pr-1.5 max-w-[180px]">
+                    <span key={i} data-img="true" data-url={url} data-name={name} data-source="task" className="inline-flex items-center mx-[2px] gap-1 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-[5px] p-[2px] pr-1.5 max-w-[180px] shrink-0 cursor-pointer">
                         {preview}
                         <span className="text-[11px] font-medium text-black/70 dark:text-white/70 truncate select-none max-w-[120px]">{name}</span>
                     </span>
@@ -772,9 +784,9 @@ const TabRow = memo((
             ) : (
                 <>
                     {/* Normal Query Cell */}
-                    <TableCell className="w-full font-medium group/query cursor-pointer h-12 min-w-[200px]" onClick={handleOpen}>
+                    <TableCell className="w-full font-medium group/query cursor-pointer h-14 py-1" onClick={handleOpen}>
                         <div className="flex items-center gap-1.5 justify-between w-full">
-                            <div className="truncate max-w-[400px] flex items-center gap-1.5" title={tab.query}>
+                            <div className="flex-1 min-w-0 flex items-center gap-1.5 overflow-hidden whitespace-nowrap py-1 max-w-[150px] sm:max-w-[250px] md:max-w-[350px] lg:max-w-[450px] xl:max-w-[350px]" title={tab.query}>
                                 {tab.query ? <QueryContent query={tab.query} /> : "-"}
                             </div>
                             <button
@@ -804,7 +816,7 @@ const TabRow = memo((
                     </TableCell>
 
                     {/* Interval Cell */}
-                    <TableCell onClick={e => e.stopPropagation()} className="w-full h-12">
+                    <TableCell onClick={e => e.stopPropagation()} className="w-[130px] block py-4 h-12">
                         <Dropdown
                             content={INTERVAL_OPTIONS.map(opt => ({
                                 content: (
@@ -817,7 +829,7 @@ const TabRow = memo((
                             align="start"
                             className="max-w-none min-w-44"
                         >
-                            <button className="cursor-pointer">
+                            <button className="cursor-pointer mx-auto">
                                 <IntervalBadge value={tab.interval} />
                             </button>
                         </Dropdown>
@@ -851,28 +863,8 @@ export default function Tasks({
     const { SetActive } = useSnapshot(TabInfo);
     const [, setChatId] = useGlobal<string | null>('chatId', { initialValue: null })
     const { pyInvoke } = usePython();
-    const [availableModels, setAvailableModels] = useState<Model[]>([]);
+    const {agents, isLoading} = useAvailableAgents()
 
-    useEffect(() => {
-        let cancelled = false;
-        (async () => {
-            try {
-                const res: any = await pyInvoke('file', {
-                    command: 'read',
-                    filename: 'config.json',
-                    base_dir: 'python',
-                });
-                if (cancelled) return;
-                const config = res?.data?.content as string | undefined;
-                if (config) {
-                    setAvailableModels(parseModelsFromConfig(config));
-                }
-            } catch (e) {
-                if (!cancelled) console.error('Failed to load models in Tasks:', e);
-            }
-        })();
-        return () => { cancelled = true; };
-    }, [pyInvoke]);
 
     const handleUpdateTab = useCallback(async (id: string, updatedFields: Partial<any>) => {
         try {
@@ -1005,6 +997,7 @@ export default function Tasks({
             const placeholders = ids.map(() => "?").join(",");
             for (const i of ids) {
                 try {
+                    await deleteTabWithGroupSelection(i);
                     const initTb = generateIdFromString(i + "/" + "message_state");
                     const res = await pyInvoke("sqlite", {
                         db: db,
@@ -1064,15 +1057,15 @@ export default function Tasks({
             if (openInTab) {
                 addTab({
                     uuid: id,
-                    title: tab.name,
+                    title: tab.title,
                     iconOverride: tab.icon || "AlarmClockCheck",
                     layout: "single",
                     childrenProps: {
                         [id]: {
                             icon: tab.icon || "AlarmClockCheck",
-                            title: tab.name,
+                            title: null,
                             appname: "default",
-                            data: {}
+                            data: { dontStop: true }
                         }
                     }
                 });
@@ -1142,7 +1135,7 @@ export default function Tasks({
                                     onToggle={toggleSelect}
                                     onOpen={handleOpenId}
                                     onDelete={handleDeleteRow}
-                                    availableModels={availableModels}
+                                    availableModels={agents}
                                     onUpdateTab={handleUpdateTab}
                                     workspace={workspace}
                                 />

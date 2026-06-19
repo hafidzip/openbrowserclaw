@@ -39,7 +39,7 @@ from pytauri_plugins import (
     upload,
     websocket,
 )
-
+import subprocess
 from pytauri_wheel.lib import builder_factory, context_factory
 import anyio
 from anyio import create_task_group, sleep
@@ -58,6 +58,7 @@ import copy
 from typing import Dict, Any, Optional, Callable, Awaitable, List, cast, AsyncGenerator
 import uvicorn
 import aiofiles
+import importlib.util
 
 # New Modules
 from .connection_manager import manager
@@ -133,6 +134,9 @@ def get_plugin_dirs():
         "APPS_DIR": os.path.abspath(APPS_DIR),
         "MODEL_PROVIDERS_DIR": os.path.abspath(MODEL_PROVIDERS_DIR),
         "SETTINGS_DIR": os.path.abspath(SETTINGS_DIR),
+        "is_darwin": sys.platform == "darwin",
+        "is_windows": os.name == "nt",
+        "is_linux": sys.platform == "linux",
     }
 
 # Initialize Shared Config Lock
@@ -145,7 +149,7 @@ mcp_manager = MCPManager(
     emitter=event_emitter,
 )
 # Initialize Model Manager
-model_manager = ModelManager(config_path=_CONFIG_PATH, backends_dir=BACKENDS_DIR, config_lock=config_lock)
+model_manager = ModelManager(emitter=event_emitter, config_path=_CONFIG_PATH, backends_dir=BACKENDS_DIR, config_lock=config_lock)
 # Initialize Tool Manager
 tool_manager = ToolManager(TOOLS_DIR)
 # Initialize Pipeline Manager
@@ -155,6 +159,7 @@ model_provider_manager = ModelProviderManager(
     settings_manager=settings_manager, 
     providers_dir=MODEL_PROVIDERS_DIR, 
     config_lock=config_lock,
+    emitter=event_emitter,
     on_change=lambda provider_id=None: asyncio.create_task(scan_models(provider_id))
 )
 
@@ -200,6 +205,17 @@ VITE_PORT = os.getenv("VITE_PORT", "3000")
 APP_NAME = os.getenv("APP_NAME", "openchad")
 
 mcp_instance = FastMCP(APP_NAME)
+is_windows = os.name == "nt"
+uv_binary = "uv.exe" if is_windows else "uv"
+_uv_project_dir = os.getenv("OPENCHAD_UV_PROJECT_DIR", "")
+_uv_candidate = os.path.join(_uv_project_dir, uv_binary) if _uv_project_dir else ""
+uv_path = _uv_candidate if _uv_candidate and os.path.isfile(_uv_candidate) else (shutil.which("uv") or "uv")
+is_installing = False
+
+def is_installed(package_name: str) -> bool:
+    """Returns True if the package is installed, otherwise False."""
+    return importlib.util.find_spec(package_name) is not None
+
 
 async def _background_startup():
     await mcp_manager.start()
@@ -393,6 +409,7 @@ async def pytauri_send_json(data: Dict[str, Any]) -> bool:
     return True
 
 async def _setup_pipeline(
+    agent: Optional[str],
     requested_model: Optional[str],
     files: List[str],
     query: Optional[str],
@@ -414,6 +431,7 @@ async def _setup_pipeline(
 ):
     """Helper to setup pipeline and prepare chat arguments."""
     pipeline = await pipeline_manager.create_instance(
+        agent=agent,
         model_id=requested_model,
         files=files,
         query=query,
@@ -462,6 +480,7 @@ async def handle_pytauri_chat(msg_id: str, body: Dict[str, Any], app_handle: App
     Handle chat completion for PyTauri with event-based streaming.
     This runs as a background task and emits events to the frontend.
     """
+    agent = body.get("agent", None)
     messages = body.get("messages", [])
     stream = body.get("stream", False)
     # Event name for this specific stream
@@ -496,8 +515,10 @@ async def handle_pytauri_chat(msg_id: str, body: Dict[str, Any], app_handle: App
         "workspace",
         "app_name",
         "pipeline",
+        "agent",
     ]}
     pipeline, chat_kwargs = await _setup_pipeline(
+        agent=agent,
         requested_model=requested_model,
         files=files,
         query=query,
@@ -678,15 +699,63 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
     # Register the AppHandle once so event_emitter knows it's running inside Tauri.
     # This is safe to call on every command  it's a cheap global assignment.
     command = body.get("command")
-    request = body.get("request") or {}   
+    request = body.get("request") or {}  
+    global is_installing
     try:
         match command:
             case 'emit':
-                name = body.get("name")
-                payload = body.get("payload")
-                if name and payload:
+                name = request.get("name")
+                payload = request.get("payload")
+                if name:
                     await event_emitter.emit(name, payload)
                 return {'result': 'ok'}
+            case 'check_backend':
+                try:                    
+                    return { 'is_installing': is_installing, 'is_installed': is_installed('llama_cpp') 
+                    and 
+                    (is_installed('mlx-lm') if sys.platform == "darwin" else True) 
+                    and
+                    (is_installed('mlx-vlm') if sys.platform == "darwin" else True) }
+                except Exception as e:  
+                    return {'error': str(e)}
+            case 'install_local_backend':
+                try:                    
+                    packages = []
+                    if not is_installed('llama_cpp'):
+                        packages.append('llama-cpp-python')
+                    if not is_installed('mlx-lm') and sys.platform == "darwin":
+                        packages.append('mlx-lm')
+                    if not is_installed('mlx-vlm') and sys.platform == "darwin":
+                        packages.append('mlx-vlm')
+
+                    if packages:
+                        async def _do_install():
+                            global is_installing
+                            try:
+                                proc = await asyncio.create_subprocess_exec(
+                                    uv_path, "add", *packages,
+                                )
+                                is_installing = True
+                                returncode = await proc.wait()
+                                if returncode == 0:
+                                    is_installing = False
+                                    await event_emitter.emit('backend-installed', {'success': True})
+                                else:
+                                    is_installing = False
+                                    await event_emitter.emit('backend-installed', {'error': True, 'returncode': returncode})
+                            except Exception as ex:
+                                logger.error(f"install_local_backend failed: {ex}", exc_info=True)
+                                await event_emitter.emit('backend-installed', {'error': str(ex)})
+                            finally:
+                                is_installing = False
+                        asyncio.create_task(_do_install())
+                    else:
+                        # Already installed
+                        await event_emitter.emit('backend-installed', {'success': True})
+
+                    return {'result': 'ok'}
+                except Exception as e:  
+                    return {'error': str(e)}
             case 'eval': 
                 script = request.get("script")
                 label = request.get("label")
@@ -943,6 +1012,55 @@ async def file_endpoint(
         logger.error(f"Error processing file {file_path}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/api/check_backend")
+async def check_backend_api():
+    """Check if the backend is installed."""
+    try:
+        installed = is_installed('llama_cpp') and (is_installed('mlx-lm') if sys.platform == "darwin" else True) and (is_installed('mlx-vlm') if sys.platform == "darwin" else True)
+        return {'is_installed': installed, 'is_installing': is_installing}
+    except Exception as e:
+        logger.error(f"Error checking backend: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/install_local_backend")
+async def install_local_backend_api():
+    """Install the local backend."""
+    try:
+        packages = []
+        if not is_installed('llama_cpp'):
+            packages.append('llama-cpp-python')
+        if not is_installed('mlx-lm') and sys.platform == "darwin":
+            packages.append('mlx-lm')
+        if not is_installed('mlx-vlm') and sys.platform == "darwin":
+            packages.append('mlx-vlm')
+
+        if packages:
+            async def _do_install():
+                global is_installing
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        uv_path, "add", *packages,
+                    )
+                    is_installing = True
+                    returncode = await proc.wait()
+                    if returncode == 0:
+                        is_installing = False
+                        await event_emitter.emit('backend-installed', {'success': True})
+                    else:
+                        is_installing = False
+                        await event_emitter.emit('backend-installed', {'error': True, 'returncode': returncode})
+                except Exception as ex:
+                    logger.error(f"install_local_backend_api failed: {ex}", exc_info=True)
+                    await event_emitter.emit('backend-installed', {'error': str(ex)})
+            asyncio.create_task(_do_install())
+        else:
+            await event_emitter.emit('backend-installed', {'success': True})
+
+        return {'result': 'ok'}
+    except Exception as e:
+        logger.error(f"Error installing local backend: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/get_last_startup_status")
 async def get_last_startup_status_api():
     """Get the last recorded startup status and logs."""
@@ -1181,6 +1299,7 @@ async def chat_endpoint_api(request: Request):
     """
     try:
         data = await request.json()
+        agent = data.get("agent", None)
         messages = data.get("messages", [])
         stream = data.get("stream", False)
         msg_id = data.get("id") # Optional message ID for control
@@ -1240,10 +1359,12 @@ async def chat_endpoint_api(request: Request):
             "workspace",
             "app_name",
             "pipeline",
+            "agent"
         ]}
         pipeline_name = data.get("pipeline", None)
         is_continue = [True]
         pipeline, chat_kwargs = await _setup_pipeline(
+            agent=agent,
             requested_model=requested_model,
             files=files,
             query=query,
@@ -1410,9 +1531,57 @@ async def handle_ws_command(conn_id: str, data: dict, send_func: Callable[[dict]
             case 'emit':
                 name = body.get("name")
                 payload = body.get("payload")
-                if name and payload:                   
+                if name:                   
                     await event_emitter.emit(name, payload)
                 return {'result': 'ok'}
+            case 'check_backend':
+                try:                    
+                    return { 'is_installing': is_installing, 'installed': is_installed('llama_cpp') 
+                    and 
+                    (is_installed('mlx-lm') if sys.platform == "darwin" else True) 
+                    and
+                    (is_installed('mlx-vlm') if sys.platform == "darwin" else True)
+                    }
+                except Exception as e:  
+                    return {'error': str(e)}
+            case 'install_local_backend':
+                try:                    
+                    packages = []
+                    if not is_installed('llama_cpp'):
+                        packages.append('llama-cpp-python')
+                    if not is_installed('mlx-lm') and sys.platform == "darwin":
+                        packages.append('mlx-lm')
+                    if not is_installed('mlx-vlm') and sys.platform == "darwin":
+                        packages.append('mlx-vlm')
+
+                    if packages:
+                        async def _do_install():
+                            global is_installing
+                            try:
+                                proc = await asyncio.create_subprocess_exec(
+                                    uv_path, "add", *packages,
+                                )
+                                is_installing = True
+                                returncode = await proc.wait()
+                                if returncode == 0:
+                                    is_installing = False
+                                    await event_emitter.emit('backend-installed', {'success': True})
+                                else:
+                                    is_installing = False
+                                    await event_emitter.emit('backend-installed', {'error': True, 'returncode': returncode})
+                            except Exception as ex:
+                                logger.error(f"install_local_backend failed: {ex}", exc_info=True)
+                                await event_emitter.emit('backend-installed', {'error': str(ex)})
+                            finally:
+                                is_installing = False
+                        asyncio.create_task(_do_install())
+                    else:
+                        # Already installed
+                        await event_emitter.emit('backend-installed', {'success': True})
+
+                    return {'result': 'ok'}
+                except Exception as e:  
+                    return {'error': str(e)}
             case 'eval': 
                 script = body.get("script")
                 label = body.get("label")
@@ -1562,6 +1731,7 @@ async def handle_ws_command(conn_id: str, data: dict, send_func: Callable[[dict]
     
 async def handle_ws_chat(msg_id: str, body: dict, send_func: Callable[[dict], Awaitable[bool]]):
     """WebSocket chat handler with tool support."""
+    agent = body.get("agent", None)
     messages = body.get("messages", [])
     stream = body.get("stream", True)
     # Check for model parameter and load if needed
@@ -1592,11 +1762,13 @@ async def handle_ws_chat(msg_id: str, body: dict, send_func: Callable[[dict], Aw
         "workspace",
         "app_name",
         "pipeline",
+        "agent"
     ]}
     pipeline_name = body.get("pipeline", None)
     is_continue = [True]
     cancel_event = _register_cancel_event(msg_id)
     pipeline, chat_kwargs = await _setup_pipeline(
+        agent=agent,
         requested_model=requested_model,
         files=files,
         query=query,
@@ -1952,55 +2124,146 @@ async def _get_task_group():
 def main() -> int:
     """Run the concurrent FastAPI + Tauri application."""
     global task_group
-    # Ensure project root is correct for Tauri
-    SRC_TAURI_DIR = Path(_PROJECT_ROOT)
     import concurrent.futures
-    os.environ["BASE_URL"] = "localhost:" + (VITE_PORT if DEV_MODE else str(port))
-    with start_blocking_portal("asyncio") as portal:
-        try:
-            with portal.wrap_async_context_manager(_get_task_group()) as task_group:
-                # Start FastAPI in the background
-                portal.call(task_group.start_soon, run_fastapi)
-                # Configure Tauri
-                tauri_config = {
-                    "build": {
-                        "frontendDist": "http://localhost:" + (VITE_PORT if DEV_MODE else str(port)),
-                    }
-                }
-                # Build and run the app
-                tauri_app = builder_factory().build(
-                    context=context_factory(SRC_TAURI_DIR, tauri_config=tauri_config),
-                    invoke_handler=commands.generate_handler(portal),
-                    plugins=(
-                        single_instance.init(single_instance_callback),
-                        dialog.init(),
-                        notification.init(),
-                        clipboard_manager.init(),
-                        fs.init(),
-                        opener.init(),
-                        autostart.init(),
-                        deep_link.init(),
-                        http.init(),
-                        os_plugin.init(),
-                        persisted_scope.init(),
-                        positioner.init(),
-                        process.init(),
-                        shell.init(),
-                        upload.init(),
-                        websocket.init(),
-                        global_shortcut.Builder.build(),
-                    ),
-                )
-                set_app_handle(tauri_app.handle())
-                exit_code = tauri_app.run_return()
-                # Gracefully shut down background tasks
-                if server:
-                    server.should_exit ^= True
-                return exit_code
-        except concurrent.futures.CancelledError:
-            return -1
-        except Exception as e:
-            # Re-raise other exceptions to ensure we know if something else went wrong
-            raise e
+    import traceback
+
+    # ── Step 0: Environment diagnostics ──────────────────────────────────────
+    logger.info("=" * 60)
+    logger.info("main() starting – PyTauri + FastAPI launcher")
+    logger.info("=" * 60)
+    logger.info("[ENV] _PYTAURI_DIST   = %s", os.environ.get("_PYTAURI_DIST", "<not set>"))
+    logger.info("[ENV] DEV_MODE        = %s", os.environ.get("DEV_MODE", "<not set>"))
+    logger.info("[ENV] VITE_PORT       = %s", os.environ.get("VITE_PORT", "<not set>"))
+    logger.info("[ENV] APP_NAME        = %s", os.environ.get("APP_NAME", "<not set>"))
+    logger.info("[ENV] OPENCHAD_PROJECT_DIR = %s", os.environ.get("OPENCHAD_PROJECT_DIR", "<not set>"))
+    logger.info("[ENV] OPENCHAD_CONFIG_PATH = %s", os.environ.get("OPENCHAD_CONFIG_PATH", "<not set>"))
+
+    SRC_TAURI_DIR = Path(_PROJECT_ROOT)
+    tauri_toml = SRC_TAURI_DIR / "Tauri.toml"
+    logger.info("[PATH] SRC_TAURI_DIR  = %s  (exists=%s)", SRC_TAURI_DIR, SRC_TAURI_DIR.exists())
+    logger.info("[PATH] Tauri.toml     = %s  (exists=%s)", tauri_toml, tauri_toml.exists())
+
+    # ── Step 1: Set BASE_URL ──────────────────────────────────────────────────
+    base_url = "localhost:" + (VITE_PORT if DEV_MODE else str(port))
+    os.environ["BASE_URL"] = base_url
+    logger.info("[STEP 1] BASE_URL set to: %s", base_url)
+
+    frontend_dist = "http://localhost:" + (VITE_PORT if DEV_MODE else str(port))
+    tauri_config = {"build": {"frontendDist": frontend_dist}}
+    logger.info("[STEP 1] frontendDist  = %s", frontend_dist)
+
+    # ── Step 2: Resolve builder/context factories ─────────────────────────────
+    logger.info("[STEP 2] Resolving builder_factory and context_factory ...")
+    try:
+        _builder  = builder_factory()
+        logger.info("[STEP 2] builder_factory() OK  → %r", _builder)
+    except Exception as exc:
+        logger.error("[STEP 2] builder_factory() FAILED: %s", exc, exc_info=True)
+        return 1
+
+    try:
+        _context = context_factory(SRC_TAURI_DIR, tauri_config=tauri_config)
+        logger.info("[STEP 2] context_factory()  OK  → %r", _context)
+    except Exception as exc:
+        logger.error("[STEP 2] context_factory() FAILED: %s", exc, exc_info=True)
+        return 1
+
+    # ── Step 3: Start blocking portal + task group ────────────────────────────
+    logger.info("[STEP 3] Starting anyio blocking portal ...")
+    try:
+        with start_blocking_portal("asyncio") as portal:
+            logger.info("[STEP 3] Portal created OK: %r", portal)
+            try:
+                with portal.wrap_async_context_manager(_get_task_group()) as task_group:
+                    logger.info("[STEP 3] Task group created OK")
+
+                    # ── Step 4: Start FastAPI ─────────────────────────────────
+                    logger.info("[STEP 4] Scheduling run_fastapi in background ...")
+                    try:
+                        portal.start_task_soon(run_fastapi)
+                        logger.info("[STEP 4] run_fastapi scheduled OK (non-blocking)")
+                    except Exception as exc:
+                        logger.error("[STEP 4] Failed to schedule run_fastapi: %s", exc, exc_info=True)
+                        return 1
+
+
+                    # ── Step 5: Build Tauri app ───────────────────────────────
+                    logger.info("[STEP 5] Calling builder.build() ...")
+                    logger.info("[STEP 5]   context   = %r", _context)
+                    logger.info("[STEP 5]   portal    = %r", portal)
+                    try:
+                        tauri_app = _builder.build(
+                            context=_context,
+                            invoke_handler=commands.generate_handler(portal),
+                            plugins=(
+                                single_instance.init(single_instance_callback),
+                                dialog.init(),
+                                notification.init(),
+                                clipboard_manager.init(),
+                                fs.init(),
+                                opener.init(),
+                                autostart.init(),
+                                deep_link.init(),
+                                http.init(),
+                                os_plugin.init(),
+                                persisted_scope.init(),
+                                positioner.init(),
+                                process.init(),
+                                shell.init(),
+                                upload.init(),
+                                websocket.init(),
+                                global_shortcut.Builder.build(),
+                            ),
+                        )
+                        logger.info("[STEP 5] build() returned: %r", tauri_app)
+                    except Exception as exc:
+                        logger.error("[STEP 5] builder.build() FAILED:\n%s", traceback.format_exc())
+                        return 1
+
+                    if tauri_app is None:
+                        logger.error("[STEP 5] builder.build() returned None – cannot continue")
+                        return 1
+
+                    # ── Step 6: Set app handle ────────────────────────────────
+                    logger.info("[STEP 6] Setting app handle ...")
+                    try:
+                        handle = tauri_app.handle()
+                        set_app_handle(handle)
+                        logger.info("[STEP 6] App handle set OK: %r", handle)
+                    except Exception as exc:
+                        logger.error("[STEP 6] set_app_handle() FAILED: %s", exc, exc_info=True)
+                        return 1
+
+                    # ── Step 7: run_return() — blocks until window is closed ──
+                    logger.info("[STEP 7] Calling tauri_app.run_return() — window should open now ...")
+                    try:
+                        exit_code = tauri_app.run_return()
+                        logger.info("[STEP 7] run_return() finished with exit_code=%s", exit_code)
+                    except Exception as exc:
+                        logger.error("[STEP 7] run_return() FAILED: %s", exc, exc_info=True)
+                        exit_code = 1
+
+                    # ── Step 8: Shutdown ──────────────────────────────────────
+                    logger.info("[STEP 8] Shutting down FastAPI server ...")
+                    if server:
+                        server.should_exit = True #pyrefly: ignore
+                        logger.info("[STEP 8] server.should_exit = True")
+                    else:
+                        logger.warning("[STEP 8] server is None – FastAPI may not have started")
+
+                    logger.info("[STEP 8] main() returning exit_code=%s", exit_code)
+                    return exit_code
+
+            except concurrent.futures.CancelledError:
+                logger.info("[main] Portal task cancelled (normal shutdown)")
+                return -1
+            except Exception as exc:
+                logger.error("[main] Unhandled exception inside portal:\n%s", traceback.format_exc())
+                raise
+
+    except Exception as exc:
+        logger.error("[main] Fatal error in start_blocking_portal:\n%s", traceback.format_exc())
+        return 1
+
 if __name__ == "__main__":
     main()

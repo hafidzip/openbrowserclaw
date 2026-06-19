@@ -205,6 +205,7 @@ async def folder_handler(data: dict) -> dict:
         logger.info(f"Folder path: {os.path.abspath(folder_path)}")
         if command == "list":
             contents = list_folder_contents(folder_path, recursive)
+            logger.info(f"Path: {os.path.abspath(folder_path)} - FOLDER LIST: {contents}")
             exists = os.path.exists(folder_path) and os.path.isdir(folder_path)
             return {
                 "data": {

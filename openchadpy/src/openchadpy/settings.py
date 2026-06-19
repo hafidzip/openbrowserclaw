@@ -120,8 +120,11 @@ class Settings:
                 db_dir = os.path.dirname(db_path)
                 if not os.path.exists(db_dir):
                     os.makedirs(db_dir, exist_ok=True)
-                self._connection = await aiosqlite.connect(db_path)
+                self._connection = await aiosqlite.connect(db_path, timeout=30.0)
                 self._connection.row_factory = aiosqlite.Row
+                # Enable WAL mode and set busy timeout to handle concurrent writes safely
+                await self._connection.execute("PRAGMA journal_mode=WAL")
+                await self._connection.execute("PRAGMA busy_timeout=30000")
             return self._connection
 
     async def _ensure_ready(self):

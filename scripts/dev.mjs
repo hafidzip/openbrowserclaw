@@ -132,7 +132,7 @@ async function main() {
     if (isCleaningUp) return;
     console.log(`\nVite is ready on port ${vitePort}`);
     console.log('\nStarting Python server...');
-    pythonProcess = startProcess("uv", ['run', '--project', 'python', 'python/main.py'], {
+    pythonProcess = startProcess("uv", ['run', '--directory', 'python', 'main.py'], {
         cwd: process.cwd(),
         stdio: ['ignore', 'inherit', 'inherit'],
         env: {

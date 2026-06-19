@@ -119,7 +119,7 @@ export default function ControllableBrowsers({
             [newUuid]: {
                 name,
                 url,
-                icon: "Drama",
+                icon: "Earth",
                 timestamp: Date.now()
             },
             ...(prev || {})

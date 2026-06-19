@@ -1,0 +1,13 @@
+{
+    "name": "mlx",
+    "version": "1.0.0",
+    "description": "",
+    "capabilities": [
+        "LLM"
+    ],
+    "author": "Hafidz Ihza Pratama",
+    "requirements": [
+        "mlx-lm",
+        "mlx-vlm"
+    ]
+}

@@ -9,7 +9,14 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "baseUrl": "..",
+    "paths": {
+      "monaco": ["monaco/index.ts"],
+      "openchad-react": ["openchad-react/index.ts"],
+      "openchad-react/ui": ["openchad-react/ui/index.ts"],
+      "openchad-react/utils": ["openchad-react/utils/index.ts"]
+    }
   },
   "include": ["**/*.ts", "**/*.tsx"],
   "exclude": ["node_modules", "dist"]

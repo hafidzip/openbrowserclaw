@@ -13,10 +13,11 @@ import ContainerSingleApp from "./ContainerSingleApp";
 import ContainerOverlayApp from "./ContainerOverlayApp";
 import { proxy, ref, useSnapshot } from "valtio";
 import { MenuBar, Theme, Workspace } from "./utils/state";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { uuidv4 } from "./utils";
 import { AsyncMutex } from "./components/Mutex/mutex";
 import { Dropdown, type DropdownMenuItemProps } from "./components/dropdown";
+import { AgentNode, AgentNodeEditor } from "./AgentNodeEditor";
 
 function generateIdFromString(input: string): string {
     /**
@@ -91,6 +92,7 @@ const useMenuBar = () => {
 }
 
 
+
 const AsyncLock = new AsyncMutex();
 
 function useAvailableModels() {
@@ -98,59 +100,155 @@ function useAvailableModels() {
     const [models, setModels] = useState<Model[]>([])
     const [isLoading, setLoading] = useState(true)
 
-    useEffect(() => {
-        let cancelled = false
-            ; (async () => {
-                try {
-                    const res: any = await pyInvoke('file', {
-                        command: 'read',
-                        filename: 'config.json',
-                        base_dir: 'python',
-                    })
-                    if (cancelled) return
-                    const raw = res?.data?.content as string | undefined
-                    if (!raw) return
+    const fetchModels = useCallback(async (cancelledRef?: { current: boolean }) => {
+        try {
+            const res: any = await pyInvoke('file', {
+                command: 'read',
+                filename: 'config.json',
+                base_dir: 'python',
+            })
+            if (cancelledRef?.current) return
+            const raw = res?.data?.content as string | undefined
+            if (!raw) return
 
-                    const parsed = JSON.parse(raw)
-                    if (!parsed.available_models) return
+            const parsed = JSON.parse(raw)
+            if (!parsed.available_models) return
 
-                    const list: Model[] = (
-                        Object.entries(parsed.available_models) as [string, Record<string, unknown>][]
-                    )
-                        .map(([id, m]) => ({
-                            id,
-                            name: (m.name as string) ?? 'Unknown',
-                            backend: (m.backend as string) ?? null,
-                            modelType: (m.model_type as string[]) ?? null,
-                            modelPath: (m.model_path as string) ?? null,
-                            mmproj: (m.mmproj as string) ?? null,
-                            fileName: (m.filename as string) ?? null,
-                            apiBase: (m.api_base as string) ?? null,
-                            isLocal: (m.is_local as boolean) ?? false,
-                            isLoaded: false,
-                            lastError: null,
-                        } satisfies Model))
-                        .filter(m =>
-                            (m.modelType?.includes('llm') || m.modelType?.includes('vlm')) === true &&
-                            m.backend != null
-                        )
+            const list: Model[] = (
+                Object.entries(parsed.available_models) as [string, Record<string, unknown>][]
+            )
+                .map(([id, m]) => ({
+                    id,
+                    name: (m.name as string) ?? 'Unknown',
+                    backend: (m.backend as string) ?? null,
+                    modelType: (m.model_type as string[]) ?? null,
+                    modelPath: (m.model_path as string) ?? null,
+                    mmproj: (m.mmproj as string) ?? null,
+                    fileName: (m.filename as string) ?? null,
+                    apiBase: (m.api_base as string) ?? null,
+                    isLocal: (m.is_local as boolean) ?? false,
+                    isLoaded:
+                        parsed.models &&
+                        Object.prototype.hasOwnProperty.call(parsed.models, id) &&
+                        !(parsed.models as Record<string, { last_error?: unknown }>)[id].last_error,
+                    lastError:
+                        (parsed.models as Record<string, { last_error?: unknown }>)?.[id]?.last_error
+                            ? String((parsed.models as Record<string, { last_error?: unknown }>)[id].last_error)
+                            : null,
+                } satisfies Model))
+                .filter(m =>
+                    (m.modelType?.includes('llm') || m.modelType?.includes('vlm')) === true &&
+                    m.backend != null
+                )
 
-                    if (!cancelled) setModels(list)
-                } catch (e) {
-                    if (!cancelled) console.error('Failed to load models:', e)
-                } finally {
-                    if (!cancelled) setLoading(false)
-                }
-            })()
-        return () => { cancelled = true }
+            if (!cancelledRef || !cancelledRef.current) setModels(list)
+        } catch (e) {
+            if (!cancelledRef || !cancelledRef.current) console.error('Failed to load models:', e)
+        } finally {
+            if (!cancelledRef || !cancelledRef.current) setLoading(false)
+        }
     }, [pyInvoke])
+
+    usePythonEvent('model-update', () => {
+        fetchModels()
+    })
+
+    useEffect(() => {
+        const cancelled = { current: false }
+        fetchModels(cancelled)
+        return () => { cancelled.current = true }
+    }, [fetchModels])
 
     return { models, isLoading }
 }
 
 
+interface IAgent {
+    id?: string | null,
+    name?: string | null,
+    icon?: string | null,
+    timestamp?: number| null,
+}
+
+function useAvailableAgents() {
+    const { pyInvoke } = usePython()
+    const { workspace } = useSnapshot(Workspace)
+    const [agents, setAgents] = useState<IAgent[]>([])
+    const [isLoading, setLoading] = useState(true)
+
+    // Keep workspace in a ref so fetchAgents doesn't need it as a dep
+    // (same pattern as fetchModels which only depends on pyInvoke)
+    const workspaceRef = useRef(workspace)
+    workspaceRef.current = workspace
+
+    const fetchAgents = useCallback(async (cancelledRef?: { current: boolean }) => {
+        try {
+            const db = workspaceRef.current ?? "global"
+            const res: any = await pyInvoke('sqlite', {
+                db,
+                command: 'query',
+                sql: 'SELECT id, metadata FROM agents',
+                params: []
+            })
+            if (cancelledRef?.current) return
+
+            const rows: any[] = res?.data ?? (Array.isArray(res) ? res : [])
+            if (!Array.isArray(rows)) return
+
+            const list: IAgent[] = rows.map((row: any) => {
+                try {
+                    const m = JSON.parse(row.metadata)
+                    return {
+                        id: row.id,
+                        name: (m.name as string) ?? 'Unknown',
+                        icon: (m.icon as string) ?? null,
+                        timestamp: (m.timestamp as number) ?? 0
+                    }
+                } catch {
+                    return {
+                        id: row.id,
+                        name: 'Unknown',
+                        icon: null,
+                        timestamp: 0
+                    }
+                }
+            })
+
+            if (!cancelledRef || !cancelledRef.current) setAgents(list)
+        } catch (e) {
+            if (!cancelledRef || !cancelledRef.current) console.error('Failed to load agents:', e)
+        } finally {
+            if (!cancelledRef || !cancelledRef.current) setLoading(false)
+        }
+    }, [pyInvoke])  // stable — workspace read via ref, not as dep
+
+    usePythonEvent('agents-update', () => {
+        fetchAgents()
+    })
+
+    // Initial fetch on mount
+    useEffect(() => {
+        const cancelled = { current: false }
+        fetchAgents(cancelled)
+        return () => { cancelled.current = true }
+    }, [fetchAgents])
+
+    // Re-fetch when workspace changes (without recreating fetchAgents)
+    useEffect(() => {
+        if (!workspace) return
+        const cancelled = { current: false }
+        fetchAgents(cancelled)
+        return () => { cancelled.current = true }
+    }, [workspace])
+
+    return { agents, isLoading, fetchAgents }
+}
+
+
 export {
+    AgentNodeEditor,
     useAvailableModels,
+    useAvailableAgents,
     AsyncLock,
     proxy,
     ref,
@@ -174,7 +272,9 @@ export {
     useTheme,
     useEvent,
     uuidv4,
+    type AgentNode,
     type AppInfo,
     type Project,
-    type MessageState
+    type MessageState,
+    type IAgent
 } 

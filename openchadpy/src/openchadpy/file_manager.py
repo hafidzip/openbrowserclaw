@@ -46,6 +46,9 @@ async def watch_file_task(file_path: str, file_key: str):
 
 async def subscribe_file(conn_id: str, filename: str, base_dir: str = "."):
     """Subscribe a websocket to file changes using watchfiles"""
+    project_dir = os.environ.get("OPENCHAD_PROJECT_DIR")
+    if project_dir:
+        base_dir = os.path.join(project_dir, base_dir)
     file_path = get_file_path(filename, base_dir)
     file_key = file_path  # Use absolute path as key
     # Add to subscriptions
@@ -65,6 +68,9 @@ async def subscribe_file(conn_id: str, filename: str, base_dir: str = "."):
 
 async def unsubscribe_file(conn_id: str, filename: str, base_dir: str = "."):
     """Unsubscribe a websocket from file changes"""
+    project_dir = os.environ.get("OPENCHAD_PROJECT_DIR")
+    if project_dir:
+        base_dir = os.path.join(project_dir, base_dir)
     file_path = get_file_path(filename, base_dir)
     file_key = file_path
     if conn_id in file_subscriptions:
@@ -157,6 +163,9 @@ async def watch_folder_task(folder_path: str):
 
 async def subscribe_folder(conn_id: str, path: str, base_dir: str = "."):
     """Subscribe a websocket to folder changes using watchfiles"""
+    project_dir = os.environ.get("OPENCHAD_PROJECT_DIR")
+    if project_dir:
+        base_dir = os.path.join(project_dir, base_dir)    
     folder_path = get_folder_path(path, base_dir)
     # Add to subscriptions
     if conn_id not in folder_subscriptions:
@@ -183,6 +192,9 @@ async def subscribe_folder(conn_id: str, path: str, base_dir: str = "."):
 
 async def unsubscribe_folder(conn_id: str, path: str, base_dir: str = "."):
     """Unsubscribe a websocket from folder changes"""
+    project_dir = os.environ.get("OPENCHAD_PROJECT_DIR")
+    if project_dir:
+        base_dir = os.path.join(project_dir, base_dir)    
     folder_path = get_folder_path(path, base_dir)
     if conn_id in folder_subscriptions:
         folder_subscriptions[conn_id].discard(folder_path)

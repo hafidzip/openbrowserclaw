@@ -8,7 +8,7 @@ import { ArrowLeftRight, Copy, GitBranch, Globe, HardDrive, Key, Minus, Plus, Se
 import useElementSize from './components/hooks/useElementSize'
 import { Button } from './components/ui/button'
 import uuidv4 from './utils/uuid'
-import { openUrl } from '@tauri-apps/plugin-opener'
+import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener'
 import { KeyState, TabInfo, TabState, Viewport, Workspace, Theme, addTab, closeTab, detachTab, type ITab, deleteTab, deleteTabWithGroupSelection, deleteActiveTabWithGroupSelection } from './utils/state'
 import { proxy, useSnapshot } from 'valtio'
 import MultiView, { type LayoutType } from './components/multiview'
@@ -28,6 +28,10 @@ import { useGlobal } from './components/useGlobal'
 import { useSettings } from './components/useSettings'
 import { Dropdown } from './components/dropdown'
 import { invoke } from '@tauri-apps/api/core';
+import { Dialog as DialogUI, DialogContent, DialogHeader, DialogTitle } from "./components/ui/dialog"
+import { Editor, OnMount } from "monaco";
+import type * as Monaco from 'monaco-editor';
+import { Toaster } from "./components/ui/sonner"
 
 const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
 // Enable iframe mirror debugging in development
@@ -95,7 +99,7 @@ const composerVariants: Variants = {
     ? { opacity: [1, 1, 0], scale: 0.85, transition: { duration: 0.3, ease: 'easeOut' } }
     : { opacity: 0, transition: { duration: 0 } }
 };
-import { AsyncLock, generateIdFromString, useMenuBar } from './index'
+import { AsyncLock, generateIdFromString, IAgent, useMenuBar } from './index'
 import { cursorPosition, getCurrentWindow, PhysicalPosition, PhysicalSize } from '@tauri-apps/api/window'
 import Bar from './Bar'
 import { getAllWebviews, getCurrentWebview, Webview } from '@tauri-apps/api/webview'
@@ -104,6 +108,7 @@ import { isRegistered, register, unregister } from '@tauri-apps/plugin-global-sh
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import Chat from './components/chat'
 import Composer, { ScheduleInterval } from './components/composer'
+import { toast } from 'sonner'
 
 export default function Container({ Apps }: { Apps: Project }) {
   if (Apps.defaultTab.tabs.length === 0) {
@@ -117,9 +122,10 @@ export default function Container({ Apps }: { Apps: Project }) {
   const { pyInvoke, isStreamReady } = usePython();
   const { settings } = useSettings();
   const [startupStatus] = useState<any>(null);
-  const [, , { folders }] = useFolderImpl('Workspaces');
+  const [test, , { folders }] = useFolderImpl('Workspaces');
   const { workspace, setWorkspace } = useSnapshot(Workspace);
-  const [isSwitchWorkspace, setIsSwitchWorkspace] = useState(false);
+  const workspaceRef = useRef(workspace);
+  workspaceRef.current = workspace
   const appRegistry = proxy<Record<string, React.ComponentType<AppInfo>>>({
     ...(Apps.appRegistry || {}),
     ...Apps.defaultTab.tabs.reduce((acc: Record<string, React.ComponentType<AppInfo>>, t: any) => {
@@ -128,11 +134,12 @@ export default function Container({ Apps }: { Apps: Project }) {
     }, {})
   });
   const [mounted, setMounted] = useState(false);
-  const [isCreateTask, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: true });
+  const [isCreateTask, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: false });
   const [animateExit, setAnimateExit] = useState(false);
-  const [model, setModel] = useDatabaseImpl<Model>("model", { initialValue: { name: null, id: null } });
+  const [selectedAgent, setSelectedAgent] = useState<IAgent | null>(null);
   const [taskInterval, setTaskInterval] = useDatabaseImpl<ScheduleInterval>("taskInterval", { initialValue: 'once' });
   const composerRef = useRef<HTMLTextAreaElement>(null);
+  const [isSwitchWorkspace, setIsSwitchWorkspace] = useGlobal('isSwitchWorkspace', { initialValue: false });
   const [showSearchDialog, setShowSearchDialog] = useGlobal('showSearchDialog', { initialValue: false });
   const [showMcpDialog, setShowMcpDialog] = useGlobal('showMcpDialog', { initialValue: false });
   const [showCredentialsDialog, setShowCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false });
@@ -142,8 +149,32 @@ export default function Container({ Apps }: { Apps: Project }) {
   const [showTaskDialog, setShowTaskDialog] = useGlobal('showTaskDialog', { initialValue: false });
   const [showControllableBrowsersDialog, setShowControllableBrowsersDialog] = useGlobal('showControllableBrowsersDialog', { initialValue: false });
   const [showAgentsDialog, setShowAgentsDialog] = useGlobal('showAgentsDialog', { initialValue: false });
+  const [showCodeDialog, setShowCodeDialog] = useGlobal('showCodeDialog', { initialValue: false });
+  const [codeLanguage, setCodeLanguage] = useGlobal('codeLanguage', { initialValue: "text" });
+  const [code, setCode] = useGlobal('code', { initialValue: "" });
+  const [codeId] = useGlobal('codeId', { initialValue: "" });
+  const codeIdRef = useRef(codeId);
+  codeIdRef.current = codeId;
+
+  const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+
+  const handleMount: OnMount = (editor) => {
+    editorRef.current = editor;
+  };
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+
+    const lineCount = editor.getModel()?.getLineCount() ?? 0;
+    editor.revealLine(lineCount, 1); // 1 = ScrollType.Immediate
+  }, [code]);
+
+
   const [, setMobileSettingsDropdown] = useGlobal('mobileSettingsDropdown', { initialValue: false });
   const [setupModel, setSetupModel] = useGlobal('setupModel', { initialValue: false });
+  const [llamaCppOrMlxIsInstalled, setLlamaCppOrMlxIsInstalled] = useGlobal('llamaCppOrMlxIsInstalled', { initialValue: false });
+  const [isInstalling, setIsInstalling] = useGlobal('isInstalling', { initialValue: false });
   const [isMobileSearching, setIsMobileSearching] = useGlobal('isMobileSearching', { initialValue: false });
 
   const handleMobileSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -157,6 +188,20 @@ export default function Container({ Apps }: { Apps: Project }) {
   const [intializeBrowser, setInitializeBrowser] = useState(false);
   const isFirstSave = useRef(true);
   const [MenuBar, setMenuBar] = useMenuBar();
+
+  useEffect(() => {
+    (async () => {
+      const r = await pyInvoke('check_backend')
+      console.warn(r);
+      setLlamaCppOrMlxIsInstalled(r.is_installed)
+      setIsInstalling(r.is_installing)
+    })()
+  }, [])
+
+
+  usePythonEvent('agents-update', () => {
+    console.warn('[Container] agents updated')
+  })
 
   useEffect(() => {
     if (!ready) return;
@@ -340,7 +385,6 @@ export default function Container({ Apps }: { Apps: Project }) {
 
 
   usePythonEvent('eval', async (data) => {
-    console.log(data)
     if (data.label !== 'main') {
       await AsyncLock.run(async () => {
         await invoke('eval_in_webview', {
@@ -348,6 +392,13 @@ export default function Container({ Apps }: { Apps: Project }) {
           script: data.script,
         });
       })
+    }
+  });
+
+  usePythonEvent('backend-installed', async (data) => {
+    if (data.success) {
+      setLlamaCppOrMlxIsInstalled(true);
+      setIsInstalling(false);
     }
   });
 
@@ -467,13 +518,15 @@ export default function Container({ Apps }: { Apps: Project }) {
       (window as any).TOOLS_DIR = data.TOOLS_DIR;
       (window as any).MODEL_PROVIDERS_DIR = data.MODEL_PROVIDERS_DIR;
       (window as any).SETTINGS_DIR = data.SETTINGS_DIR;
-      // Attach to the window or a specific element
+      (window as any).IS_MACOS = data.is_darwin;
+      (window as any).IS_WINDOWS = data.is_windows;
+      (window as any).IS_LINUX = data.is_linux;
     })();
   }, []);
   const workspaces = folders
-    .filter(f => !f.slice(0, -1).includes('/'))  // exclude nested folders    
+    .filter(f => !f.slice(0, -1).includes('/'))
     .map(f => f.replace(/\/$/, ''))
-    .filter(f => f !== 'Private' && f !== 'global');              // remove trailing slash
+    .filter(f => f !== 'Private' && f !== 'global');
   useEffect(() => {
     if (workspaces.length === 1) {
       setWorkspace(workspaces[0]);
@@ -484,6 +537,8 @@ export default function Container({ Apps }: { Apps: Project }) {
   const snaptabs = useSnapshot(TabState);
   const [tabs, setTabs] = useState<Record<string, React.ReactNode>>({});
   const { children, layout, active, SetActive } = useSnapshot(TabInfo);
+  const activeRef = useRef(active)
+  activeRef.current = active
   const actives = (() => {
     const keys = Object.keys(tabs);
     const defaults = ["default0", "default1", "default2", "default3"];
@@ -619,6 +674,9 @@ export default function Container({ Apps }: { Apps: Project }) {
       useModel: () => {
         return useDatabaseImpl<Model>("model", { initialValue: { name: null, id: null } });
       },
+      useAgent: () => {
+        return useDatabaseImpl<IAgent>("agent", { initialValue: { name: null, id: null } });
+      },
       getAvailableModels: async () => {
         try {
           const res = await pyInvoke<{ data?: Record<string, unknown>; error?: string }>('file', {
@@ -739,6 +797,49 @@ export default function Container({ Apps }: { Apps: Project }) {
 
   useEffect(() => {
     setMounted(true);
+
+    const handleGlobalClick = async (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      const chip = target.closest('[data-img="true"]');
+      if (chip && !target.closest('[data-rm-chip="true"]')) {
+        const url = chip.getAttribute('data-url') || '';
+        const source = chip.getAttribute('data-source') || '';
+        if (url && source) {
+          const path = url.startsWith('/file/') ? decodeURIComponent(url.slice(6)) : url;
+          try {
+            const r = await pyInvoke('file', {
+              command: 'exists',
+              filename: path,
+            })
+            if (r.data && r.data.exists) {
+              revealItemInDir(path)
+              toast("File revealed", {
+                position: 'bottom-right',
+                description: <div className='flex flex-col'>
+                  Path: {path}<br />
+                </div>,
+              })
+            } else {
+              throw new Error("File does not exist")
+            }
+
+          } catch (e) {
+            console.error(e)
+            toast("Failed to reveal file", {
+              position: 'bottom-right',
+              description: <div className='flex flex-col'>
+                Path: {path}<br />
+                Error: {String(e)}
+              </div>,
+            })
+          }
+        }
+      }
+    };
+    document.addEventListener('click', handleGlobalClick);
+    return () => {
+      document.removeEventListener('click', handleGlobalClick);
+    };
   }, []);
 
   useEffect(() => {
@@ -759,7 +860,43 @@ export default function Container({ Apps }: { Apps: Project }) {
       try {
         lastDeleteTimeRef.current = now;
         (async () => {
-          await deleteActiveTabWithGroupSelection();
+          if (activeRef.current) {
+            const db = workspaceRef.current ?? "global";
+            const initTb = generateIdFromString(activeRef.current + "/" + "message_state");
+            await AsyncLock.acquire();
+            const res = await pyInvoke("sqlite", {
+              db: db,
+              table: initTb,
+              command: "query",
+              sql: `SELECT id, _v FROM ${initTb} WHERE id IN ('isStreaming', 'activeId', 'dontStop')`
+            });
+            const rows = res?.data ?? (Array.isArray(res) ? res : []);
+            if (Array.isArray(rows)) {
+              let isStreaming = false;
+              let dontStop = false;
+              let activeId = "";
+              rows.forEach((row: any) => {
+                let val = row._v;
+                if (typeof val === 'string') {
+                  try {
+                    val = JSON.parse(val);
+                  } catch { }
+                }
+                if (row.id === 'isStreaming') {
+                  isStreaming = !!val;
+                } else if (row.id === 'activeId') {
+                  activeId = String(val || "");
+                } else if (row.id === 'dontStop') {
+                  dontStop = !!val;
+                }
+              });
+              if (isStreaming && activeId && !dontStop) {
+                await pyInvoke("v1/chat/stop", { id: activeId });
+              }
+            }
+            AsyncLock.release();
+            await deleteTabWithGroupSelection(activeRef.current);
+          }
         })()
       } catch (Err) {
         console.error("Error deleting tab:", Err);
@@ -845,13 +982,25 @@ export default function Container({ Apps }: { Apps: Project }) {
       // if (!isEditable) e.preventDefault();
     };
 
+    const onCodeUpdate = (e: Event) => {
+      const data = (e as CustomEvent).detail;
+      const editor = editorRef.current;
+      if (data.codeId === codeIdRef.current && data.code && editor) {
+        setCode(data.code);
+        const lineCount = editor.getModel()?.getLineCount() ?? 0;
+        editor.revealLine(lineCount, 1); // 1 = ScrollType.Immediate
+      }
+    }
+
     // true = capture phase → fires before ANY child handler
     window.addEventListener('contextmenu', blockContextMenu);
+    document.addEventListener('code-block-update', onCodeUpdate);
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
     return () => {
       window.removeEventListener('contextmenu', blockContextMenu);
+      document.removeEventListener('code-block-update', onCodeUpdate);
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
@@ -906,6 +1055,31 @@ export default function Container({ Apps }: { Apps: Project }) {
         }}
         className='opacity-0 absolute select-none pointer-events-none overflow-hidden'
       />
+
+      <Toaster
+        theme={snaptheme.theme==='dark'?'dark':'light'}
+        position="bottom-right"
+        style={{ '--toast-z-index': '2147483647' } as React.CSSProperties}
+      />
+      <DialogUI open={showCodeDialog} onOpenChange={setShowCodeDialog}>
+        <DialogContent className="max-w-[90vw] w-[90vw] h-[90vh] flex flex-col pb-4">
+          <DialogHeader>
+            <DialogTitle></DialogTitle>
+          </DialogHeader>
+          <div className=" p-4 w-full h-full overflow-auto rounded-lg">
+            <Editor onMount={handleMount} className="w-full h-full font-mono" theme="vs-dark" language={codeLanguage} options={{
+              maxTokenizationLineLength: 500,
+              scrollBeyondLastLine: false,
+              occurrencesHighlight: 'off',
+              renderValidationDecorations: 'off',
+              codeLens: false,
+              inlayHints: { enabled: 'off' },
+              hover: { enabled: false },
+            }} value={code} />
+          </div>
+        </DialogContent>
+      </DialogUI>
+
       <AnimatePresence custom={animateExit}>
         {isCreateTask && (
           <motion.div
@@ -934,8 +1108,9 @@ export default function Container({ Apps }: { Apps: Project }) {
                 showInterval={true}
                 showHeader={false}
                 workspace={workspace}
-                model={model}
-                setModel={setModel}
+                agent={selectedAgent}
+                setAgent={setSelectedAgent}
+                selectionMode={'agent'}
                 interval={taskInterval}
                 onIntervalChange={setTaskInterval}
                 onSubmit={async (value: string) => {
@@ -954,7 +1129,7 @@ export default function Container({ Apps }: { Apps: Project }) {
                                                 )`,
                     params: []
                   });
-                  
+
                   await pyInvoke("sqlite", {
                     db,
                     command: "execute",
@@ -965,7 +1140,7 @@ export default function Container({ Apps }: { Apps: Project }) {
                         icon: 'AlarmClockCheck',
                         query: value,
                         interval: taskInterval,
-                        agent: model.id,
+                        agent: selectedAgent?.id,
                         timestamp: Date.now(),
                       })
                     ]
@@ -982,36 +1157,64 @@ export default function Container({ Apps }: { Apps: Project }) {
                   const activeId = taskId + "_response_" + branchId + "_0_" + branchIndex;
 
                   const initTb = generateIdFromString(taskId + "/" + "message_state");
-                  const initialValue = {
+
+                  let initialValue = {
                     title: { _v: value },
                     activeId: { _v: activeId },
                     errorMsg: { _v: "" },
                     initialized: { _v: true },
                     isStreaming: { _v: true },
                     context: { _v: "" },
+                    dontStop: { _v: true },
                   }
 
                   await pyInvoke("sqlite", {
                     db, table: initTb, command: 'sync_table', data: initialValue
                   });
-
-                  const streamRes = await pyInvoke("v1/chat/completions", {
-                    id: activeId,
-                    query: value,
-                    stream: true,
-                    model: model.id,
-                    tab_id: taskId,
-                    branch_id: branchId,
-                    index: branchIndex,
-                    response_branch: 0,
-                    tb: tbRaw,
-                    workspace: db,
-                    app_name: "",
-                    pipeline: settings["Others/app_settings/string.pipeline"]?.value || "openchad/chat"
-                  });
-                  if (streamRes && typeof streamRes === 'object' && Symbol.asyncIterator in streamRes) {
-                    for await (const _ of streamRes as any) { /* consume stream */ }
+                  let errorlog: string | null = null;
+                  if (selectedAgent?.id && value.trim().length > 0) {
+                    try {
+                      const streamRes = await pyInvoke("v1/chat/completions", {
+                        id: activeId,
+                        query: value,
+                        stream: true,
+                        agent: selectedAgent?.id,
+                        tab_id: taskId,
+                        branch_id: branchId,
+                        index: branchIndex,
+                        response_branch: 0,
+                        tb: tbRaw,
+                        workspace: db,
+                        app_name: "",
+                        pipeline: settings["Others/app_settings/string.pipeline"]?.value || "openchad/chat"
+                      });
+                      if (streamRes && typeof streamRes === 'object' && Symbol.asyncIterator in streamRes) {
+                        for await (const _ of streamRes as any) { /* consume stream */ }
+                      }
+                    } catch (error) {
+                      errorlog = JSON.stringify(error);
+                    } finally {
+                      await pyInvoke("sqlite", {
+                        db, table: initTb, command: 'sync_table', data: {
+                          ...initialValue,
+                          ...(errorlog && { errorMsg: errorlog }),
+                          isStreaming: { _v: false },
+                          activeId: { _v: "" }
+                        }
+                      });
+                    }
+                  } else {
+                    await pyInvoke("sqlite", {
+                      db, table: initTb, command: 'sync_table', data: {
+                        ...initialValue,
+                        errorMsg: { _v: "No Agent Selected" },
+                        isStreaming: { _v: false },
+                        activeId: { _v: "" }
+                      }
+                    });
                   }
+
+
                 }}
                 width={1920}
                 height={1080}
@@ -1080,25 +1283,6 @@ export default function Container({ Apps }: { Apps: Project }) {
             projectName={Apps.projectName}
             ProjectIcon={Apps.projectIcon}
             workspace={workspace}
-            setIsSwitchWorkspace={setIsSwitchWorkspace}
-            showSearchDialog={showSearchDialog}
-            setShowSearchDialog={setShowSearchDialog}
-            showMcpDialog={showMcpDialog}
-            setShowMcpDialog={setShowMcpDialog}
-            showCredentialsDialog={showCredentialsDialog}
-            setShowCredentialsDialog={setShowCredentialsDialog}
-            showLocalModelDialog={showLocalModelDialog}
-            setShowLocalModelDialog={setShowLocalModelDialog}
-            showCustomEndpointDialog={showCustomEndpointDialog}
-            setShowCustomEndpointDialog={setShowCustomEndpointDialog}
-            showSettingsDialog={showSettingsDialog}
-            setShowSettingsDialog={setShowSettingsDialog}
-            showTaskDialog={showTaskDialog}
-            setShowTaskDialog={setShowTaskDialog}
-            showControllableBrowsersDialog={showControllableBrowsersDialog}
-            setShowControllableBrowsersDialog={setShowControllableBrowsersDialog}
-            showAgentsDialog={showAgentsDialog}
-            setShowAgentsDialog={setShowAgentsDialog}
             layout={snaptheme.layout}
             theme={snaptheme.theme}
             settings={settings}
@@ -1366,29 +1550,56 @@ export default function Container({ Apps }: { Apps: Project }) {
             {/* Options */}
             <div className='flex flex-col gap-3 p-6'>
               {/* Local Model */}
-              <button
-                onClick={() => setShowLocalModelDialog(true)}
-                className='group w-full text-left p-4 border border-[hsl(var(--chat-border))] rounded-lg hover:border-primary/50 hover:bg-primary/5 transition-all duration-200'>
+              <div
+                onClick={() => {
+                  if (llamaCppOrMlxIsInstalled) setShowLocalModelDialog(true)
+                }}
+                className={clsx(
+                  'group w-full text-left p-4 rounded-lg  transition-all duration-200',
+                  llamaCppOrMlxIsInstalled ? 'border border-[hsl(var(--chat-border))] hover:border-primary/50 hover:bg-primary/5' : 'bg-black/25'
+                )}>
                 <div className='flex items-start gap-4'>
-                  <div className='mt-0.5 p-2 rounded-md bg-muted group-hover:bg-primary/10 transition-colors'>
+                  <div className={clsx(
+                    'mt-0.5 p-2 rounded-md',
+                    llamaCppOrMlxIsInstalled && 'bg-muted group-hover:bg-primary/10 transition-colors'
+                  )}>
                     {/* CPU / local icon */}
-                    <svg className='w-5 h-5 text-muted-foreground group-hover:text-primary transition-colors' fill='none' viewBox='0 0 24 24' stroke='currentColor' strokeWidth={1.5}>
+                    <svg className={
+                      clsx
+                        (
+                          'w-5 h-5 transition-colors',
+                          llamaCppOrMlxIsInstalled && 'text-muted-foreground group-hover:text-primary'
+                        )
+                    } fill='none' viewBox='0 0 24 24' stroke='currentColor' strokeWidth={1.5}>
                       <path strokeLinecap='round' strokeLinejoin='round' d='M8.25 3v1.5M4.5 8.25H3m18 0h-1.5M4.5 12H3m18 0h-1.5m-15 3.75H3m18 0h-1.5M8.25 19.5V21M12 3v1.5m0 15V21m3.75-18v1.5m0 15V21m-9-1.5h10.5a2.25 2.25 0 0 0 2.25-2.25V6.75a2.25 2.25 0 0 0-2.25-2.25H6.75A2.25 2.25 0 0 0 4.5 6.75v10.5a2.25 2.25 0 0 0 2.25 2.25Zm.75-12h9v9h-9v-9Z' />
                     </svg>
                   </div>
                   <div className='flex-1'>
                     <div className='flex items-center justify-between'>
                       <span className='text-sm font-medium'>Import Local Model</span>
-                      <span className='text-xs text-muted-foreground bg-muted px-2 py-0.5 rounded-full'>Offline</span>
+                      <span className={clsx(
+                        'text-xs px-2 py-0.5 rounded-full',
+                        llamaCppOrMlxIsInstalled ? 'text-muted-foreground bg-muted' : 'opacity-0 select-none'
+                      )}>Offline</span>
                     </div>
-                    <p className='text-xs text-muted-foreground mt-1 leading-relaxed'>
-                      Run models entirely on your device, no internet required. Supports <span className='text-foreground/70 font-medium'>.gguf</span> (llama.cpp) and <span className='text-foreground/70 font-medium'>.mlx</span> (Apple Silicon) formats.
-                    </p>
+                    <div className='flex items-center gap-4'>
+                      <p className='text-xs text-muted-foreground mt-1 leading-relaxed'>
+                        Run models entirely on your device, no internet required. Supports <span className='text-foreground/70 font-medium'>.gguf</span> (llama.cpp) {(window as any).IS_MACOS && <>and <span className='text-foreground/70 font-medium'>.mlx</span> (Apple Silicon) formats.</>}
+                      </p>
+                      {!llamaCppOrMlxIsInstalled && <Button className='flex items-center gap-1' onClick={async (e) => {
+                        e.stopPropagation()
+                        setIsInstalling(true);
+                        await pyInvoke('install_local_backend');
+                      }} size={'sm'}>
+                        <span>{isInstalling ? 'Installing' : 'Install'}</span>  {isInstalling && <Spinner />}
+                      </Button>}
+                    </div>
                   </div>
+
                 </div>
-              </button>
+              </div>
               {/* API Credentials */}
-              <button
+              <div
                 onClick={() => setShowCredentialsDialog(true)}
                 className='group w-full text-left p-4 border border-[hsl(var(--chat-border))] rounded-lg hover:border-primary/50 hover:bg-primary/5 transition-all duration-200'>
                 <div className='flex items-start gap-4'>
@@ -1416,8 +1627,8 @@ export default function Container({ Apps }: { Apps: Project }) {
                     </div>
                   </div>
                 </div>
-              </button>
-              <button
+              </div>
+              <div
                 onClick={() => setShowCustomEndpointDialog(true)}
                 className='group w-full text-left p-4 border border-[hsl(var(--chat-border))] rounded-lg hover:border-primary/50 hover:bg-primary/5 transition-all duration-200'>
                 <div className='flex items-start gap-4'>
@@ -1445,7 +1656,7 @@ export default function Container({ Apps }: { Apps: Project }) {
                     </div>
                   </div>
                 </div>
-              </button>
+              </div>
             </div>
             {/* Footer */}
             <div className='px-6 pb-5 flex items-center justify-between'>
@@ -1460,6 +1671,7 @@ export default function Container({ Apps }: { Apps: Project }) {
             </div>
           </div>
         </div>
+
       </>
       }
     </div>

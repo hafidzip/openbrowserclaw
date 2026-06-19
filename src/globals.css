@@ -1369,6 +1369,7 @@ body {
  
 /* ── h1 · scroll-m-20 text-4xl font-extrabold tracking-tight text-balance ── */
 .markdown-body h1 {
+  max-width: 350px;
   font-size: 2.4em;                  /* text-4xl */
   font-weight: 800;                    /* font-extrabold */
   text-wrap: balance;                  /* text-balance */
@@ -1517,6 +1518,11 @@ body {
     width: 5px;
     height: calc(100% - 19px);
     background-color: hsl(var(--card));
+}
+
+.cn-toast{
+  background-color: hsl(var(--card)) !important;
+  border: 1px solid hsl(var(--chat-border)) !important;
 }
 
 @keyframes flowDash {

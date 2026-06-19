@@ -175,7 +175,7 @@ export default function LocalModel({
 }: {
     isOpen: boolean;
     /** Opens the native file picker and returns the selected paths. */
-    selectModel: () => Promise<string[] | undefined>;
+    selectModel: () => Promise<string[] | null>;
     /** Called after selectModel resolves  persists the new paths to settings. */
     addLocalModel: (paths: string[]) => Promise<void>;
     /** Called when the user removes a model  persists the change to settings. */

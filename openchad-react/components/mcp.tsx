@@ -15,11 +15,13 @@ import { usePython } from "./usePython";
 import { Switch } from "./ui/switch";
 
 type McpTransport = "webrtc" | "sse" | "http" | "websocket" | "stdio";
+
 interface IceServer {
     urls: string;
     username?: string;
     credential?: string;
 }
+
 interface McpServerConfig {
     id: string;
     name: string;
@@ -40,7 +42,6 @@ interface McpServerConfig {
     timeout?: number;
     enabled: boolean;
 }
- 
 
 const TRANSPORT_META: Record<McpTransport, { label: string; icon: React.ReactNode; color: string }> = {
     stdio: { label: "stdio", icon: <Terminal className="w-3 h-3" />, color: "text-violet-700 dark:text-violet-400" },
@@ -49,7 +50,7 @@ const TRANSPORT_META: Record<McpTransport, { label: string; icon: React.ReactNod
     websocket: { label: "WebSocket", icon: <Unplug className="w-3 h-3" />, color: "text-amber-700 dark:text-amber-400" },
     webrtc: { label: "WebRTC", icon: <Radio className="w-3 h-3" />, color: "text-rose-700 dark:text-rose-400" },
 };
- 
+
 interface McpTemplate {
     label: string;
     description: string;
@@ -113,7 +114,6 @@ const MCP_TEMPLATES: McpTemplate[] = [
         preset: { type: "stdio", command: "", args: [] },
     },
 ];
-
 
 function generateId() {
     return Math.random().toString(36).slice(2, 10);
@@ -410,7 +410,6 @@ function ArgsEditor({ value, onChange }: { value: string[]; onChange: (v: string
         </div>
     );
 }
- 
 
 function Field({
     label, value, onChange, placeholder, mono = true,
@@ -477,69 +476,80 @@ function EditPanel({
     const upd = (patch: Partial<McpServerConfig>) => setDraft(d => ({ ...d, ...patch }));
     const isRemote = draft.type !== "stdio";
     const isWebRtc = draft.type === "webrtc";
+
     return (
-        <div className="flex flex-col gap-3 px-4 py-3 bg-accent/5 border-t border-[hsl(var(--chat-border))]">
-            {/* Name + Transport row */}
-            <div className="grid grid-cols-2 gap-2">
-                <Field label="name" value={draft.name} onChange={v => upd({ name: v })} placeholder="my-server" />
-                {/* Transport selector */}
-                <div className="flex flex-col gap-1">
-                    <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wide">transport</span>
-                    <div className="grid grid-cols-5 gap-1">
-                        {(Object.keys(TRANSPORT_META) as McpTransport[]).map(t => {
-                            const m = TRANSPORT_META[t];
-                            return (
-                                <button
-                                    key={t}
-                                    type="button"
-                                    onClick={() => upd({ type: t })}
-                                    className={clsx(
-                                        "flex items-center justify-center gap-1 py-1 rounded-md text-[10px] border transition-colors",
-                                        draft.type === t
-                                            ? `border-accent/50 bg-accent/20 ${m.color}`
-                                            : "border-[hsl(var(--chat-border))] text-muted-foreground hover:bg-accent/10"
-                                    )}
-                                >
-                                    {m.icon} {m.label}
-                                </button>
-                            );
-                        })}
+        <div className="flex flex-col bg-accent/5 border-t border-[hsl(var(--chat-border))] max-h-[300px]">
+            {/* Scrollable Container for form fields */}
+            <ScrollArea className="flex-1 w-full overflow-y-auto">
+                <div className="flex flex-col gap-3 px-4 py-3">
+                    {/* Name + Transport row */}
+                    <div className="grid grid-cols-2 gap-2">
+                        <Field label="name" value={draft.name} onChange={v => upd({ name: v })} placeholder="my-server" />
+                        {/* Transport selector */}
+                        <div className="flex flex-col gap-1">
+                            <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wide">transport</span>
+                            <div className="grid grid-cols-5 gap-1">
+                                {(Object.keys(TRANSPORT_META) as McpTransport[]).map(t => {
+                                    const m = TRANSPORT_META[t];
+                                    return (
+                                        <button
+                                            key={t}
+                                            type="button"
+                                            onClick={() => upd({ type: t })}
+                                            className={clsx(
+                                                "flex items-center justify-center gap-1 py-1 rounded-md text-[10px] border transition-colors",
+                                                draft.type === t
+                                                    ? `border-accent/50 bg-accent/20 ${m.color}`
+                                                    : "border-[hsl(var(--chat-border))] text-muted-foreground hover:bg-accent/10"
+                                            )}
+                                        >
+                                            {m.icon} {m.label}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    </div>
+
+                    {/* stdio fields */}
+                    {!isRemote && (
+                        <>
+                            <Field label="command" value={draft.command ?? ""} onChange={v => upd({ command: v })} placeholder="npx / uvx / python / node" />
+                            <ArgsEditor value={draft.args ?? []} onChange={v => upd({ args: v })} />
+                            <Field label="cwd (optional)" value={draft.cwd ?? ""} onChange={v => upd({ cwd: v || undefined })} placeholder="/path/to/working/dir" />
+                            <KVEditor label="env" value={draft.env ?? {}} onChange={v => upd({ env: v })} />
+                        </>
+                    )}
+
+                    {/* remote fields (sse / http / websocket) */}
+                    {isRemote && !isWebRtc && (
+                        <>
+                            <Field label="url" value={draft.url ?? ""} onChange={v => upd({ url: v })} placeholder={draft.type === "websocket" ? "ws://mcp.example.com/mcp/ws" : draft.type === "sse" ? "https://mcp.example.com/mcp/sse" : "https://mcp.example.com/mcp"} />
+                            <KVEditor label="headers" value={draft.headers ?? {}} onChange={v => upd({ headers: v })} />
+                        </>
+                    )}
+
+                    {/* webrtc fields */}
+                    {isWebRtc && <WebRtcFields draft={draft} upd={upd} />}
+
+                    {/* Timeout + disabled */}
+                    <div className="grid grid-cols-2 gap-2">
+                        <div className="flex flex-col gap-1">
+                            <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wide">timeout (ms)</span>
+                            <input
+                                type="number"
+                                value={draft.timeout ?? ""}
+                                onChange={e => upd({ timeout: e.target.value ? Number(e.target.value) : undefined })}
+                                placeholder="30000"
+                                className="w-full px-2 py-1.5 rounded-md text-[11px] font-mono bg-background border border-[hsl(var(--chat-border))] focus:outline-none focus:ring-1 focus:ring-accent/50"
+                            />
+                        </div>
                     </div>
                 </div>
-            </div>
-            {/* stdio fields */}
-            {!isRemote && (
-                <>
-                    <Field label="command" value={draft.command ?? ""} onChange={v => upd({ command: v })} placeholder="npx / uvx / python / node" />
-                    <ArgsEditor value={draft.args ?? []} onChange={v => upd({ args: v })} />
-                    <Field label="cwd (optional)" value={draft.cwd ?? ""} onChange={v => upd({ cwd: v || undefined })} placeholder="/path/to/working/dir" />
-                    <KVEditor label="env" value={draft.env ?? {}} onChange={v => upd({ env: v })} />
-                </>
-            )}
-            {/* remote fields (sse / http / websocket) */}
-            {isRemote && !isWebRtc && (
-                <>
-                    <Field label="url" value={draft.url ?? ""} onChange={v => upd({ url: v })} placeholder={draft.type === "websocket" ? "ws://mcp.example.com/mcp/ws" : draft.type === "sse" ? "https://mcp.example.com/mcp/sse" : "https://mcp.example.com/mcp"} />
-                    <KVEditor label="headers" value={draft.headers ?? {}} onChange={v => upd({ headers: v })} />
-                </>
-            )}
-            {/* webrtc fields */}
-            {isWebRtc && <WebRtcFields draft={draft} upd={upd} />}
-            {/* Timeout + disabled */}
-            <div className="grid grid-cols-2 gap-2">
-                <div className="flex flex-col gap-1">
-                    <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wide">timeout (ms)</span>
-                    <input
-                        type="number"
-                        value={draft.timeout ?? ""}
-                        onChange={e => upd({ timeout: e.target.value ? Number(e.target.value) : undefined })}
-                        placeholder="30000"
-                        className="w-full px-2 py-1.5 rounded-md text-[11px] font-mono bg-background border border-[hsl(var(--chat-border))] focus:outline-none focus:ring-1 focus:ring-accent/50"
-                    />
-                </div>
-            </div>
-            {/* Actions */}
-            <div className="flex justify-end gap-2 pt-1 border-t border-[hsl(var(--chat-border))]">
+            </ScrollArea>
+
+            {/* Actions anchored at the bottom */}
+            <div className="flex justify-end gap-2 px-4 py-3 border-t border-[hsl(var(--chat-border))] bg-accent/5 shrink-0">
                 <button
                     type="button"
                     onClick={onCancel}
@@ -558,7 +568,6 @@ function EditPanel({
         </div>
     );
 }
- 
 
 const ServerRow = memo(({
     enabled, server, isSelected, isExpanded, onToggle, onExpand, onDelete, onToggleEnabled, mcpStatus
@@ -573,7 +582,7 @@ const ServerRow = memo(({
     onToggleEnabled: (id: string, enabled: boolean) => void;
     mcpStatus?: string | undefined;
 }) => {
-    const { pyInvoke } = usePython()
+    const { pyInvoke } = usePython();
     return (
         <TableRow
             className={clsx(
@@ -634,7 +643,7 @@ const ServerRow = memo(({
                             onToggleEnabled(server.id, checked);
                         }}
                         onClick={(e) => {
-                            e.stopPropagation()
+                            e.stopPropagation();
                         }} />
                 </div>
             </TableCell>
@@ -645,8 +654,8 @@ const ServerRow = memo(({
                         (async () => {
                             await pyInvoke("mcp/reload", {
                                 "server_name": server.name
-                            })
-                        })()
+                            });
+                        })();
                     }}
                 >
                     <RotateCcw className="w-4 h-4" />
@@ -689,10 +698,12 @@ function AddServerForm({
     const listRef = useRef<HTMLDivElement>(null);
     const wrapRef = useRef<HTMLDivElement>(null);
     const [draft, setDraft] = useState<McpServerConfig>({ id: generateId(), name: "", type: "stdio", enabled: true });
+
     const filtered = MCP_TEMPLATES.filter(t =>
         t.label.toLowerCase().includes(search.toLowerCase()) ||
         t.description.toLowerCase().includes(search.toLowerCase())
     );
+
     const handlePick = (t: McpTemplate) => {
         setSelected(t);
         setOpen(false);
@@ -704,168 +715,155 @@ function AddServerForm({
             ...t.preset,
         } as McpServerConfig));
     };
-    const handleOpen = () => {
-        setOpen(o => {
-            if (!o) { setSearch(""); setFocusedIdx(-1); setTimeout(() => searchRef.current?.focus(), 10); }
-            return !o;
-        });
+
+    const handleSave = () => {
+        if (!draft.name.trim()) return;
+        onAdd(draft);
     };
-    useEffect(() => {
-        const handler = (e: MouseEvent) => {
-            if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) { setOpen(false); }
-        };
-        document.addEventListener("mousedown", handler);
-        return () => document.removeEventListener("mousedown", handler);
-    }, []);
-    useEffect(() => {
-        if (focusedIdx < 0 || !listRef.current) return;
-        listRef.current.querySelectorAll<HTMLButtonElement>("[data-item]")[focusedIdx]?.scrollIntoView({ block: "nearest" });
-    }, [focusedIdx]);
+
     const upd = (patch: Partial<McpServerConfig>) => setDraft(d => ({ ...d, ...patch }));
     const isRemote = draft.type !== "stdio";
     const isWebRtc = draft.type === "webrtc";
-    const isValid = draft.name.trim() && (
-        isWebRtc
-            ? !!draft.signalingUrl?.trim()
-            : isRemote
-                ? !!draft.url?.trim()
-                : !!draft.command?.trim()
-    );
+
+    useEffect(() => {
+        function handleClickOutside(event: MouseEvent) {
+            if (wrapRef.current && !wrapRef.current.contains(event.target as Node)) {
+                setOpen(false);
+            }
+        }
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => document.removeEventListener("mousedown", handleClickOutside);
+    }, []);
+
     return (
-        <div className="flex flex-col gap-3 p-4 border border-[hsl(var(--chat-border))] rounded-xl bg-accent/5 mx-auto w-[97.5%]">
-            <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Add MCP Server</p>
-            {/* Template picker */}
-            <div ref={wrapRef} className="relative">
-                <button
-                    type="button"
-                    onClick={handleOpen}
-                    className={clsx(
-                        "w-full flex items-center justify-between px-3 py-2 rounded-lg text-sm",
-                        "border border-[hsl(var(--chat-border))] bg-background hover:bg-accent/10 transition-colors",
-                        open && "rounded-b-none border-b-0"
-                    )}
-                >
-                    <span className={selected ? "text-foreground" : "text-muted-foreground"}>
-                        {selected ? selected.label : "Start from template…"}
-                    </span>
-                    <ChevronDown className={clsx("w-4 h-4 text-muted-foreground transition-transform", open && "rotate-180")} />
-                </button>
-                {open && (
-                    <div className="absolute z-50 w-full rounded-b-lg border border-t-0 border-[hsl(var(--chat-border))] bg-background shadow-lg">
-                        <div className="flex items-center gap-2 px-3 py-2 border-b border-[hsl(var(--chat-border))]">
-                            <Search className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-                            <input
-                                ref={searchRef}
-                                type="text"
-                                value={search}
-                                onChange={e => { setSearch(e.target.value); setFocusedIdx(-1); }}
-                                onKeyDown={e => {
-                                    if (e.key === "ArrowDown") { e.preventDefault(); setFocusedIdx(i => Math.min(i + 1, filtered.length - 1)); }
-                                    else if (e.key === "ArrowUp") { e.preventDefault(); setFocusedIdx(i => Math.max(i - 1, 0)); }
-                                    else if (e.key === "Enter" && focusedIdx >= 0) { e.preventDefault(); handlePick(filtered[focusedIdx]); }
-                                    else if (e.key === "Escape") setOpen(false);
-                                }}
-                                placeholder="Search templates…"
-                                className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/50"
-                            />
-                            {search && (
-                                <button type="button" onClick={() => { setSearch(""); searchRef.current?.focus(); }} className="text-muted-foreground hover:text-foreground">
-                                    <X className="w-3 h-3" />
-                                </button>
-                            )}
-                        </div>
-                        <div ref={listRef} className="max-h-52 overflow-y-auto">
-                            {filtered.length === 0 ? (
-                                <div className="px-3 py-4 text-xs text-muted-foreground text-center">No templates found</div>
-                            ) : filtered.map((t, i) => {
-                                const meta = TRANSPORT_META[t.preset.type as McpTransport ?? "stdio"];
-                                return (
-                                    <button
-                                        key={t.label}
-                                        data-item
-                                        type="button"
-                                        onClick={() => handlePick(t)}
-                                        onMouseEnter={() => setFocusedIdx(i)}
-                                        className={clsx(
-                                            "w-full text-left px-3 py-2 text-sm transition-colors flex items-center justify-between gap-2",
-                                            (selected?.label === t.label || i === focusedIdx) && "bg-accent/20",
-                                            selected?.label === t.label && "font-medium"
-                                        )}
-                                    >
-                                        <span className="flex flex-col gap-0.5">
-                                            <span>{t.label}</span>
-                                            <span className="text-[10px] text-muted-foreground/60">{t.description}</span>
-                                        </span>
-                                        <span className={clsx("inline-flex items-center gap-1 text-[10px] font-mono shrink-0", meta.color)}>
-                                            {meta.icon} {meta.label}
-                                        </span>
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    </div>
+        <div ref={wrapRef} className="flex flex-col gap-3 p-4 bg-accent/5 border border-[hsl(var(--chat-border))] rounded-lg">
+            <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Add New MCP Server</span>
+                {selected && (
+                    <button 
+                        type="button" 
+                        onClick={() => setSelected(null)}
+                        className="text-[10px] text-accent font-medium hover:underline flex items-center gap-1"
+                    >
+                        Change Template
+                    </button>
                 )}
             </div>
-            {/* Name + Transport */}
-            <div className="grid grid-cols-2 gap-2">
-                <Field label="name" value={draft.name} onChange={v => upd({ name: v })} placeholder="my-mcp-server" />
-                <div className="flex flex-col gap-1">
-                    <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wide">transport</span>
-                    <div className="grid grid-cols-5 gap-1">
-                        {(Object.keys(TRANSPORT_META) as McpTransport[]).map(t => {
-                            const m = TRANSPORT_META[t];
-                            return (
-                                <button key={t} type="button" onClick={() => upd({ type: t })}
-                                    className={clsx(
-                                        "flex items-center justify-center gap-1 py-1 rounded-md text-[10px] border transition-colors",
-                                        draft.type === t
-                                            ? `border-accent/50 bg-accent/20 ${m.color}`
-                                            : "border-[hsl(var(--chat-border))] text-muted-foreground hover:bg-accent/10"
-                                    )}>
-                                    {m.icon} {m.label}
+
+            {!selected ? (
+                <div className="relative">
+                    <div className="relative">
+                        <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                        <input
+                            ref={searchRef}
+                            type="text"
+                            placeholder="Search MCP templates..."
+                            value={search}
+                            onChange={(e) => {
+                                setSearch(e.target.value);
+                                setOpen(true);
+                            }}
+                            onFocus={() => setOpen(true)}
+                            className="pl-9 pr-4 py-2 w-full text-xs rounded-md border border-[hsl(var(--chat-border))] bg-background focus:outline-none focus:ring-1 focus:ring-accent/50"
+                        />
+                    </div>
+
+                    {open && filtered.length > 0 && (
+                        <div ref={listRef} className="absolute z-10 w-full mt-1 max-h-60 overflow-y-auto bg-background border border-[hsl(var(--chat-border))] rounded-md shadow-lg py-1">
+                            {filtered.map((t) => (
+                                <button
+                                    key={t.label}
+                                    type="button"
+                                    onClick={() => handlePick(t)}
+                                    className="w-full text-left px-3 py-2 hover:bg-accent/10 flex flex-col gap-0.5 transition-colors"
+                                >
+                                    <span className="text-xs font-semibold">{t.label}</span>
+                                    <span className="text-[10px] text-muted-foreground">{t.description}</span>
                                 </button>
-                            );
-                        })}
+                            ))}
+                        </div>
+                    )}
+                </div>
+            ) : (
+                <div className="flex flex-col gap-3 max-h-[300px] overflow-y-auto pr-1">
+                    <div className="grid grid-cols-2 gap-2">
+                        <Field label="name" value={draft.name} onChange={v => upd({ name: v })} placeholder="my-server" />
+                        <div className="flex flex-col gap-1">
+                            <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wide">transport</span>
+                            <div className="grid grid-cols-5 gap-1">
+                                {(Object.keys(TRANSPORT_META) as McpTransport[]).map(t => {
+                                    const m = TRANSPORT_META[t];
+                                    return (
+                                        <button
+                                            key={t}
+                                            type="button"
+                                            onClick={() => upd({ type: t })}
+                                            className={clsx(
+                                                "flex items-center justify-center gap-1 py-1 rounded-md text-[10px] border transition-colors",
+                                                draft.type === t
+                                                    ? `border-accent/50 bg-accent/20 ${m.color}`
+                                                    : "border-[hsl(var(--chat-border))] text-muted-foreground hover:bg-accent/10"
+                                            )}
+                                            title={m.label}
+                                        >
+                                            {m.icon}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    </div>
+
+                    {!isRemote && (
+                        <>
+                            <Field label="command" value={draft.command ?? ""} onChange={v => upd({ command: v })} placeholder="npx / uvx / python / node" />
+                            <ArgsEditor value={draft.args ?? []} onChange={v => upd({ args: v })} />
+                            <Field label="cwd (optional)" value={draft.cwd ?? ""} onChange={v => upd({ cwd: v || undefined })} placeholder="/path/to/working/dir" />
+                            <KVEditor label="env" value={draft.env ?? {}} onChange={v => upd({ env: v })} />
+                        </>
+                    )}
+
+                    {isRemote && !isWebRtc && (
+                        <>
+                            <Field label="url" value={draft.url ?? ""} onChange={v => upd({ url: v })} placeholder={draft.type === "websocket" ? "ws://..." : "https://..."} />
+                            <KVEditor label="headers" value={draft.headers ?? {}} onChange={v => upd({ headers: v })} />
+                        </>
+                    )}
+
+                    {isWebRtc && <WebRtcFields draft={draft} upd={upd} />}
+
+                    <div className="grid grid-cols-2 gap-2">
+                        <div className="flex flex-col gap-1">
+                            <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wide">timeout (ms)</span>
+                            <input
+                                type="number"
+                                value={draft.timeout ?? ""}
+                                onChange={e => upd({ timeout: e.target.value ? Number(e.target.value) : undefined })}
+                                placeholder="30000"
+                                className="w-full px-2 py-1.5 rounded-md text-[11px] font-mono bg-background border border-[hsl(var(--chat-border))] focus:outline-none focus:ring-1 focus:ring-accent/50"
+                            />
+                        </div>
                     </div>
                 </div>
-            </div>
-            {/* stdio */}
-            {!isRemote && (
-                <>
-                    <Field label="command" value={draft.command ?? ""} onChange={v => upd({ command: v })} placeholder="npx / uvx / python / node" />
-                    <ArgsEditor value={draft.args ?? []} onChange={v => upd({ args: v })} />
-                    <Field label="cwd (optional)" value={draft.cwd ?? ""} onChange={v => upd({ cwd: v || undefined })} placeholder="/working/directory" />
-                    <KVEditor label="env" value={draft.env ?? {}} onChange={v => upd({ env: v })} />
-                </>
             )}
-            {/* remote (sse / http / websocket) */}
-            {isRemote && !isWebRtc && (
-                <>
-                    <Field label="url" value={draft.url ?? ""} onChange={v => upd({ url: v })} placeholder={draft.type === "websocket" ? "ws://mcp.example.com/mcp/ws" : draft.type === "sse" ? "https://mcp.example.com/mcp/sse" : "https://mcp.example.com/mcp"} />
-                    <KVEditor label="headers" value={draft.headers ?? {}} onChange={v => upd({ headers: v })} />
-                </>
-            )}
-            {/* webrtc */}
-            {isWebRtc && <WebRtcFields draft={draft} upd={upd} />}
-            {/* Actions */}
-            <div className="flex justify-end gap-2 pt-1">
-                <button type="button" onClick={onCancel}
-                    className="px-4 py-1.5 text-sm rounded-full border border-[hsl(var(--chat-border))] hover:bg-accent/10 transition-colors disabled:opacity-50">
+
+            <div className="flex justify-end gap-2 pt-1 border-t border-[hsl(var(--chat-border))]">
+                <button
+                    type="button"
+                    onClick={onCancel}
+                    className="px-4 py-1.5 text-xs rounded-full border border-[hsl(var(--chat-border))] hover:bg-accent/10 transition-colors text-muted-foreground"
+                >
                     Cancel
                 </button>
-                <button type="button" onClick={() => {
-                    if (isValid) {
-                        onAdd(draft)
-                    }
-                }} disabled={!isValid}
-                    className={clsx(
-                        "px-4 py-1.5 text-sm rounded-full border transition-colors flex items-center gap-1.5",
-                        isValid
-                            ? "border-accent bg-accent/20 hover:bg-accent/30 text-foreground"
-                            : "border-[hsl(var(--chat-border))] opacity-40 cursor-not-allowed"
-                    )}>
-                    <Plus className="w-3.5 h-3.5" /> Add Server
-                </button>
+                {selected && (
+                    <button
+                        type="button"
+                        onClick={handleSave}
+                        className="px-4 py-1.5 text-xs rounded-full border border-accent/50 bg-accent/20 hover:bg-accent/30 transition-colors flex items-center gap-1.5"
+                    >
+                        <Check className="w-3 h-3" /> Add Server
+                    </button>
+                )}
             </div>
         </div>
     );

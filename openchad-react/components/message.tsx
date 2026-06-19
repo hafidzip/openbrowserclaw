@@ -3,13 +3,15 @@ import { evaluate } from '@mdx-js/mdx'
 import remarkGfm from 'remark-gfm'
 import * as runtime from 'react/jsx-runtime'
 import { MessageParser } from "../utils/message-parser";
-import { ChevronRight, Lightbulb, Plug, Copy, Check } from "lucide-react";
+import { ChevronRight, Lightbulb, Plug, Copy, Check, Code, FileText } from "lucide-react";
 import clsx from "clsx";
-import { useGlobal } from "./useGlobal/useGlobal";
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { useGlobal } from "./useGlobal";
 import { oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { Spinner } from "./ui";
+
+
 // ============================================
-// Component Props Types
+// Component Props Types  
 // ============================================
 interface AlertProps extends HTMLAttributes<HTMLDivElement> {
   type?: 'info' | 'warning' | 'error'
@@ -36,6 +38,7 @@ interface ToolCallProps {
 interface ThinkProps {
   children: ReactNode;
 }
+
 // ============================================
 // Custom JSX Components
 // ============================================
@@ -162,93 +165,144 @@ const ToolCall: FC<ToolCallProps> = memo(({ name, id }) => {
     </div>
   );
 });
+
 interface CodeBlockProps {
   children: ReactNode;
   id?: string;
 }
 
-const CodeBlock: FC<CodeBlockProps> = memo(({ children, id }) => {
-  return (
-    <div id={id}>
-      {children}
-    </div>
-  );
-});
 
-// Intercepts MDX's <pre><code className="language-xxx"> output from fenced code blocks
-const PreBlock: FC<{ children?: ReactNode }> = ({ children }) => {
-  const [copied, setCopied] = useState(false);
+// ============================================
+// Contexts for Message-wide state
+// ============================================
+const MessageIdContext = createContext<string>('');
+const ActiveMessageIdContext = createContext<string | null>(null);
 
-  // Extract language and raw code text from the nested <code> element
+
+const extractCodeDetails = (children: ReactNode) => {
   let language = 'text';
   let codeString = '';
-  if (children && typeof children === 'object' && 'props' in (children as any)) {
-    const codeEl = children as React.ReactElement<{ className?: string; children?: ReactNode }>;
+
+  const findCodeEl = (node: ReactNode): any => {
+    if (!node) return null;
+    if (typeof node === 'object') {
+      if (Array.isArray(node)) {
+        for (const child of node) {
+          const found = findCodeEl(child);
+          if (found) return found;
+        }
+      } else if ('props' in node) {
+        const element = node as React.ReactElement<any>;
+        if (element.type === 'code' || (element.props?.className && element.props.className.startsWith('language-'))) {
+          return element;
+        }
+        if (element.props?.children) {
+          return findCodeEl(element.props.children);
+        }
+      }
+    }
+    return null;
+  };
+
+  const extractText = (node: ReactNode): string => {
+    if (!node) return '';
+    if (typeof node === 'string' || typeof node === 'number') return String(node);
+    if (typeof node === 'object') {
+      if (Array.isArray(node)) {
+        return node.map(extractText).join('');
+      }
+      if ('props' in node) {
+        const element = node as React.ReactElement<any>;
+        return extractText(element.props?.children);
+      }
+    }
+    return '';
+  };
+
+  const codeEl = findCodeEl(children);
+  if (codeEl) {
     const cls: string = codeEl.props?.className ?? '';
     const match = cls.match(/language-(\S+)/);
     if (match) language = match[1];
-    const raw = codeEl.props?.children;
-    codeString = typeof raw === 'string' ? raw : String(raw ?? '');
+    codeString = extractText(codeEl.props?.children);
+  } else {
+    codeString = extractText(children);
   }
 
-  const handleCopy = () => {
+  return { language, codeString };
+};
+
+const arePreBlockPropsEqual = (prevProps: { id?: string, children?: ReactNode }, nextProps: { id?: string, children?: ReactNode }) => {
+  if (prevProps.children === nextProps.children) return true;
+  if (prevProps.id !== nextProps.id) return false;
+  const prev = extractCodeDetails(prevProps.children);
+  const next = extractCodeDetails(nextProps.children);
+  return prev.language === next.language && prev.codeString === next.codeString;
+};
+
+const CodeBlock: FC<{ id?: string, children?: ReactNode }> = memo(({ id, children }) => {
+  const [copied, setCopied] = useState(false);
+  const msgId = useContext(MessageIdContext);
+  const activeId = useContext(ActiveMessageIdContext);
+  const [, setShowCodeDialog] = useGlobal('showCodeDialog', { initialValue: false });
+  const [, setCodeLanguage] = useGlobal('codeLanguage', { initialValue: "text" });
+  const [, setCodeId] = useGlobal('codeId', { initialValue: "" });
+  const [, setCode] = useGlobal('code', { initialValue: "" });
+  const isStreaming = activeId === msgId;
+
+
+
+  const { language, codeString } = useMemo(() => extractCodeDetails(children), [children]);
+
+  const handleCopy = (e: React.MouseEvent) => {
+    e.stopPropagation();
     navigator.clipboard.writeText(codeString).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     });
   };
 
+  if (isStreaming) document.dispatchEvent(new CustomEvent(`code-block-update`, { detail: { codeId: `code-div-${msgId}-${id}`, code: codeString, language } }));
+
   return (
-    <div className="code-block-wrapper relative group/code my-3 rounded-lg overflow-hidden border border-white/10">
-      {/* Header bar */}
-      <div className="code-block-header flex items-center justify-between px-3 py-1.5 text-xs text-white/50 select-none">
-        <span className="font-mono">{language}</span>
-        <button
-          onClick={handleCopy}
-          className="flex items-center gap-1 opacity-0 group-hover/code:opacity-100 transition-opacity hover:text-white/90"
-          title="Copy code"
-        >
-          {copied ? <Check size={12} /> : <Copy size={12} />}
-          <span>{copied ? 'Copied!' : 'Copy'}</span>
-        </button>
-      </div>
-      {/* Syntax highlighted code */}
-      <SyntaxHighlighter
-        language={language}
-        style={oneDark}
-        PreTag="div"
-        customStyle={{
-          margin: 0,
-          borderRadius: 0,
-          background: "none",
-          fontSize: '0.8rem',
-          lineHeight: '1.6',
-          padding: '12px 16px',
+    <>
+      <div
+        key={`code-div-${msgId}-${id}`}
+        onPointerDown={() => {
+          if (id) {
+            setCode(codeString);
+            setCodeId(`code-div-${msgId}-${id}`);
+            setCodeLanguage(language);
+            setShowCodeDialog(true);
+          }
         }}
-        codeTagProps={{ style: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' } }}
-        showLineNumbers={codeString.split('\n').length > 4}
-        wrapLongLines
+        id={`code-div-${msgId}-${id}`}
+        className={clsx(
+          "code-block-wrapper relative my-3 rounded-lg overflow-hidden border",
+          "hover:bg-accent/5 cursor-pointer"
+        )}
       >
-        {codeString.trimEnd()}
-      </SyntaxHighlighter>
-    </div>
+
+        <div key={"code-button-" + id} className="code-block-header flex gap-2 items-center p-3 select-none">
+          {isStreaming ? <Spinner key={"spinner-" + id} /> : <FileText />}
+          <span className="text-sm flex-1 uppercase font-bold">{language}</span>
+          <button
+            onClick={handleCopy}
+            className="flex items-center gap-1 text-sm p-1 px-4"
+            title="Copy code"
+          >
+            {copied ? <Check size={12} /> : <Copy size={12} />}
+            <span>{copied ? 'Copied!' : 'Copy'}</span>
+          </button>
+        </div>
+      </div>
+    </>
   );
-};
-// ============================================
-// Contexts for Message-wide state (split for performance)
-// ============================================
-// Separate contexts to prevent cascading re-renders
-// - Components that only WRITE (Think) subscribe to DispatchContext
-// - Components needing the message ID subscribe to IdContext
-
-const MessageIdContext = createContext<string>('');
-
-const ActiveMessageIdContext = createContext<string | null>(null);
-// Think only needs to WRITE - subscribe only to dispatch context
+}, arePreBlockPropsEqual);
 
 const Think: FC<ThinkProps> = ({ children }) => {
   const id = useContext(MessageIdContext);
-  const [open, setOpen] = useGlobal("think" + id, false)
+  const [open, setOpen] = useGlobal("think" + id, { initialValue: false })
   return (
     <div id={`think-${id}`} className={clsx(
       "thinkel overflow-hidden flex flex-col",
@@ -256,7 +310,7 @@ const Think: FC<ThinkProps> = ({ children }) => {
     )}>
       {/* Clickable header toggles state */}
       <button
-        onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setOpen(prev=>!prev) }}
+        onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); setOpen(prev => !prev) }}
         className="text-xs font-bold opacity-50 flex items-center gap-1"
       >
         <Lightbulb size={12} />
@@ -273,6 +327,7 @@ const Think: FC<ThinkProps> = ({ children }) => {
     </div>
   );
 };
+
 // ============================================
 // Message Component
 // ============================================
@@ -286,12 +341,11 @@ export default function Message({ response, id, activeId }: MessageProps) {
   const [MDXContent, setMDXContent] = useState<any>(null);
   const [LastValidMDXContent, setLastValidMDXContent] = useState<any>(null);
   const [error, setError] = useState<string | null>(null);
+
   // ============================================
   // Components Registry
   // ============================================
   const components = useMemo(() => ({
-    // MDX maps fenced code blocks to <pre><code> — override 'pre' to apply syntax highlighting
-    pre: PreBlock,
     // Support both PascalCase and lowercase
     Alert: AlertBox,
     alert: AlertBox,
@@ -318,6 +372,7 @@ export default function Message({ response, id, activeId }: MessageProps) {
     CardBox,
     cardbox: CardBox,
   }), [id]); // Stable components registry
+
   useEffect(() => {
     let mounted = true;
     const processContent = async () => {
@@ -335,7 +390,7 @@ export default function Message({ response, id, activeId }: MessageProps) {
           setError(null)
         }
       } catch (firstErr: any) {
-        // Second pass: aggressive fallback  escape ALL HTML and braces, keep only markdown
+        // Second pass: aggressive fallback escape ALL HTML and braces, keep only markdown
         try {
           const aggressiveFallback = MessageParser.aggressiveEscape(response);
           const { default: FallbackContent } = await evaluate(aggressiveFallback, {
@@ -360,10 +415,20 @@ export default function Message({ response, id, activeId }: MessageProps) {
       mounted = false
     }
   }, [response, id])
+
   const MemoizedMDX = useMemo(() => {
     if (!MDXContent) return null;
+    if (typeof MDXContent === 'function') {
+      try {
+        return MDXContent({ components });
+      } catch (e) {
+        console.error("Failed to render MDXContent as function:", e);
+        return <MDXContent components={components} />;
+      }
+    }
     return <MDXContent components={components} />;
-  }, [MDXContent, id, components]);
+  }, [MDXContent, components]);
+
   // Update your component to always have the ID on the container
   if (error) {
     // If we're actively streaming and have a last valid render, show that
@@ -371,30 +436,31 @@ export default function Message({ response, id, activeId }: MessageProps) {
       return (
         <ActiveMessageIdContext.Provider value={activeId}>
           <MessageIdContext.Provider value={id}>
-            <div id={id} className="llm-response markdown-body pt-4 px-2">
+            <div id={id} key={'mdx-' + id} className="llm-response markdown-body pt-4 px-2">
               {MemoizedMDX}
             </div>
           </MessageIdContext.Provider>
         </ActiveMessageIdContext.Provider>
       )
     }
-    // Graceful plaintext fallback  render content as-is instead of ugly error
+    // Graceful plaintext fallback render content as-is instead of ugly error
     return (
-      <div id={id} className="llm-response markdown-body pt-12">
+      <div id={id} key={'mdx-' + id} className="llm-response markdown-body pt-12">
         <div style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word' }}>
           {response}
         </div>
       </div>
     )
   }
+
   if (!MDXContent) {
-    return <>
-    </>
+    return null;
   }
+
   return (
     <ActiveMessageIdContext.Provider value={activeId}>
       <MessageIdContext.Provider value={id}>
-        <div id={id} className="llm-response markdown-body pt-4 px-2">
+        <div id={id} key={'mdx-' + id} className="llm-response markdown-body pt-4 px-2">
           {MemoizedMDX}
         </div>
       </MessageIdContext.Provider>

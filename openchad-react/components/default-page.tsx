@@ -3,12 +3,14 @@ import { useRef, useLayoutEffect, useState, useEffect } from "react";
 import useElementSize from "./hooks/useElementSize";
 import clsx from "clsx";
 import type { AppInfo } from "../utils/utils";
-import { usePython } from "./usePython";
+import { usePython, usePythonEvent } from "./usePython";
 import MessageContainer from "./message-container";
 import { sha256 } from "js-sha256";
 import ModelSelection from "./model-selection";
 import { ArrowDown } from "lucide-react";
-import { generateIdFromString } from "../index";
+import { generateIdFromString, useAvailableAgents, type IAgent } from "../index";
+import type { SelectionMode } from "./composer";
+import { MenuBar, TabState } from "openchad-react/utils/state";
 
 export interface MessageState {
     title: string | null;
@@ -16,6 +18,7 @@ export interface MessageState {
     errorMsg: string;
     isStreaming: boolean;
     initialized: boolean;
+    dontStop: boolean;
     context: string;
 }
 
@@ -28,18 +31,25 @@ export default function DefaultPage(AppInfo: AppInfo) {
     const msgBottomRef = useRef<HTMLDivElement>(null);
     const [scrollContainerRef] = useElementSize<HTMLDivElement>();
     const [model, setModel] = AppInfo.useModel();
+    const [selectedAgent, setSelectedAgent] = AppInfo.useAgent();;
+    const [selectionMode] = useState<SelectionMode>('agent');
+    const { agents: availableAgents, isLoading: isAgentsLoading } = useAvailableAgents();
     const tabId = AppInfo.tabId;
+    const appId = AppInfo.appId;
     const activeId = AppInfo.useActiveTabId();
-    const [messageState, setMessageState] = AppInfo.useTabDatabase<MessageState>("message_state", {
+    const [messageState, setMessageState, { ready }] = AppInfo.useTabDatabase<MessageState>("message_state", {
         initialValue: {
             title: null,
             activeId: "",
             errorMsg: "",
             initialized: false,
             isStreaming: false,
+            dontStop: false,
             context: "",
         },
     });
+    const messageStateRef = useRef(messageState);
+    messageStateRef.current = messageState;
     const { pyInvoke } = usePython();
     const [containerRef, { width, height }] = useElementSize<HTMLDivElement>();
     const [mounted, setMounted] = useState(false);
@@ -51,6 +61,17 @@ export default function DefaultPage(AppInfo: AppInfo) {
     const title = AppInfo.useTitle();
     const currentTab = AppInfo.useTab()
 
+    usePythonEvent('agents-update', () => {
+        console.warn('agents updated')
+    })
+
+    useEffect(() => {
+        if (activeId == tabId) {
+            MenuBar.appId = appId
+            MenuBar.tabId = tabId
+            MenuBar.current = null
+        }
+    }, [activeId])
 
     useEffect(() => {
         if (title) return;
@@ -60,23 +81,25 @@ export default function DefaultPage(AppInfo: AppInfo) {
         }
     }, [messageState.title, title, mounted]);
     useEffect(() => {
-        if (mounted) {
-            (async () => {
-                const check = await pyInvoke("v1/check");
-                if (!check.result) {
-                    const tb = generateIdFromString(tabId + "/" + "message_state");
-                    await pyInvoke('sqlite', {
-                        command: 'query',
-                        db: workspace,
-                        table: tb,
-                        sql: `UPDATE ${tb} SET _v = 'false' WHERE id = 'isStreaming'`
-                    });
-                }
-            })();
+        if (!ready) return;
+        if (!messageStateRef.current.dontStop) {
+            if (messageStateRef.current.activeId) {
+                (async () => {
+                    await pyInvoke("v1/chat/stop", { id: messageStateRef.current.activeId });
+                })()
+            }
+            if (messageStateRef.current.isStreaming) {
+                setMessageState(prev => ({
+                    ...prev,
+                    activeId: "",
+                    isStreaming: false,
+                }));
+            }
         }
-    }, [mounted]);
+    }, [ready]);
+
     useEffect(() => {
-        if (activeId == tabId) {
+        if (activeId == tabId && ready) {
             setTimeout(() => {
                 scrollToBottom('instant');
                 setJustOpen(false);
@@ -84,7 +107,9 @@ export default function DefaultPage(AppInfo: AppInfo) {
         } else {
             setJustOpen(true);
         }
-    }, [activeId]);
+    }, [activeId, ready]);
+
+
     useEffect(() => {
         isStreamingRef.current = messageState.isStreaming;
     }, [messageState.isStreaming]);
@@ -108,7 +133,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
     };
     useEffect(() => {
         const tabUpdate = (event: Event) => {
-            const { tabId: targetTabId, title:newTitle, icon:newIcon } = (event as CustomEvent).detail;
+            const { tabId: targetTabId, title: newTitle, icon: newIcon } = (event as CustomEvent).detail;
             (async () => {
                 if (workspaceRef.current && newTitle && targetTabId && newIcon && targetTabId === tabId) {
                     const oldData: any = await pyInvoke('sqlite', {
@@ -160,6 +185,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
     }, [messageState.isStreaming, messageState.initialized]);
     async function request(query: string, targetTable: string, branchId: string, index: number | string, response_branch: number) {
         const activeId = AppInfo.tabId + "_response_" + branchId + "_" + response_branch + "_" + index;
+        let errorlog: string | null = null;
         if (messageState.activeId === activeId) {
             return;
         }
@@ -174,7 +200,9 @@ export default function DefaultPage(AppInfo: AppInfo) {
                 id: activeId,
                 query: query,
                 stream: true,
-                model: model.id,
+                ...(selectionMode === 'agent' && selectedAgent
+                    ? { agent: selectedAgent.id }
+                    : { model: model.id }),
                 tab_id: AppInfo.tabId,
                 branch_id: branchId,
                 index: index,
@@ -191,10 +219,13 @@ export default function DefaultPage(AppInfo: AppInfo) {
                 }
             }
         } catch (error) {
+            errorlog = JSON.stringify(error);
+        } finally {
             setMessageState(prev => ({
                 ...prev,
+                activeId:'',
                 isStreaming: false,
-                errorMsg: (error as Error)?.message || "Unknown error"
+                ...(errorlog && { errorMsg: errorlog })
             }));
         }
     }
@@ -312,6 +343,9 @@ export default function DefaultPage(AppInfo: AppInfo) {
                     model={model}
                     setModel={setModel}
                     layout={layout}
+                    selectionMode={selectionMode}
+                    agent={selectedAgent}
+                    setAgent={setSelectedAgent}
                 />
                 <div style={{
                     height: width < 800 || height < 650 || messageState.initialized ? `${height}px` : `${height * 0.2}px`,
@@ -337,6 +371,9 @@ export default function DefaultPage(AppInfo: AppInfo) {
                                         width < 800 ? 'max-w-full small-content' : 'max-w-[40vw]',
                                     )}>
                                         <MessageContainer
+                                            scrollToBottom={() => {
+                                                scrollToBottom('instant')
+                                            }}
                                             workspace={workspace}
                                             isStreaming={messageState.isStreaming}
                                             request={request}
@@ -392,7 +429,8 @@ export default function DefaultPage(AppInfo: AppInfo) {
                                     isStreaming: false,
                                 }));
                             } else {
-                                if (model.id && value.trim().length > 0) {
+                                scrollToBottom('instant');
+                                if ((selectionMode === 'model' ? model.id : selectedAgent?.id) && value.trim().length > 0) {
                                     setMessageState((prev) => ({
                                         ...prev,
                                         errorMsg: "",
@@ -409,7 +447,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
                                 } else {
                                     setMessageState((prev) => ({
                                         ...prev,
-                                        errorMsg: "No Model Selected",
+                                        errorMsg: selectionMode === 'model' ? "No Model Selected" : "No Agent Selected",
                                         initialized: true,
                                     }));
                                 }
@@ -418,6 +456,12 @@ export default function DefaultPage(AppInfo: AppInfo) {
                         width={width}
                         height={height}
                         isStreaming={messageState.isStreaming}
+                        model={model}
+                        setModel={setModel}
+                        agent={selectedAgent}
+                        setAgent={setSelectedAgent}
+                        selectionMode={selectionMode}
+                        isAgentsLoading={isAgentsLoading}
                         style={{ maxWidth: `${width - 10}px` }}
                         ref={composerTextareaRef}
                         className={clsx(

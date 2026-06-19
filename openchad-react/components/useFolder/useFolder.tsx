@@ -191,12 +191,15 @@ export function useFolderImplBase(
         const handleFolderChangeTauri = (data: { timestamp: number; contents: string[]; exists: boolean }) => {
             const { timestamp, contents, exists: folderExists } = data;
             const currentFolder = folders[folderKey];
-            if (currentFolder && timestamp > currentFolder._lastModified) {
-                currentFolder._lastModified = timestamp;
+            // Use >= with 100ms tolerance: Python timestamps (int ms) can be
+            // slightly behind JS Date.now() due to clock precision differences.
+            if (currentFolder && timestamp >= currentFolder._lastModified - 100) {
+                currentFolder._lastModified = Math.max(timestamp, Date.now());
                 currentFolder.contents = contents;
                 currentFolder.exists = folderExists;
             }
         };
+
         // Attach listener in the correct mode
         const addListener = async (evtName: string) => {
             if (isTauri) {
@@ -211,28 +214,61 @@ export function useFolderImplBase(
         };
         const setupSubscription = async () => {
             try {
+                // ── Step A: register the event listener FIRST ──────────────
+                // Python's watch_folder_task emits folder_changed immediately
+                // on startup. If we subscribe first and register the listener
+                // after, that first event is lost. Registering early ensures
+                // we catch it.
+                //
+                // We need the folder path to build the event name. Get it via
+                // a lightweight "exists" probe before the full subscribe.
+                const probe = await pyInvoke<FolderSubscriptionResult>('folder', {
+                    command: 'exists',
+                    path,
+                    base_dir: isAbsolute ? "." : baseDir
+                }) as any;
+                const probedPath: string | undefined = probe?.data?.path || probe?.path;
+                if (probedPath) {
+                    // Register listener immediately so we don't miss the
+                    // initial folder_changed event that fires on subscribe.
+                    const earlyEventName = `folder_changed:${probedPath}`;
+                    await addListener(earlyEventName);
+                    eventName = earlyEventName;
+                    folder._folderPath = probedPath;
+                    folderPathRef.current = probedPath;
+                }
+
+                // ── Step B: now call folder_subscribe ─────────────────────
                 const result = await pyInvoke<FolderSubscriptionResult>('folder_subscribe', {
                     path,
                     base_dir: isAbsolute ? "." : baseDir
                 }) as FolderSubscriptionResult;
-                console.log("folder sub: ", result);
+                console.warn("sucessfully subscribed");
                 if (result && result.path) {
-                    folder._folderPath = result.path;
-                    folderPathRef.current = result.path;
-                    eventName = `folder_changed:${result.path}`;
-                    if (result.contents) {
+                    // Register listener if we didn't get the path from probe
+                    if (!eventName) {
+                        folder._folderPath = result.path;
+                        folderPathRef.current = result.path;
+                        eventName = `folder_changed:${result.path}`;
+                        await addListener(eventName);
+                    }
+                    // Always apply the subscription's initial contents —
+                    // don't use the timestamp guard here (it's the authoritative
+                    // server state at subscribe time).
+                    if (result.contents !== undefined) {
                         folder.contents = result.contents;
+                        folder._lastModified = Date.now();
                     }
                     if (typeof result.exists === 'boolean') {
                         folder.exists = result.exists;
                     }
                     folder._isLoaded = true;
-                    await addListener(eventName);
                 }
-            } catch {
-                // Silently fail - server might not support subscriptions yet
+            } catch (e) {
+                console.error("folder subscription error:", e);
             }
         };
+
         // Increment subscription count and subscribe on first subscriber
         folder._subscriptionCount++;
         if (folder._subscriptionCount === 1) {

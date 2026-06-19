@@ -4,6 +4,7 @@ import type { UseFileReturn } from "../components/useFile";
 import type { UseFolderReturn } from "../components/useFolder";
 import type { UseGlobalReturn } from "../components/useGlobal/useGlobal";
 import type { SettingItem } from "../components/useSettings";
+import { IAgent } from "openchad-react";
 
 export interface Model {
     id?: string | null;
@@ -52,6 +53,7 @@ export interface AppInfo {
         initialValue?: T | undefined;
     }) => UseDatabaseReturn<T>;
     useModel: () => UseDatabaseReturn<Model>;
+    useAgent: () => UseDatabaseReturn<IAgent>;
     getAvailableModels: () => Promise<Model[]>;
     useGlobal: <T>(name: string, options?: { initialValue?: T }) => UseGlobalReturn<T>;
     useFile: (filename: string, options?: {

@@ -29,6 +29,8 @@ class PipelineBase:
     settings_manager: Optional["Settings"]
     event_emitter: Optional["EventEmitter"]
     mcp_manager: Optional["MCPManager"]
+    agent: Optional[Dict[str, Any]]
+    agentId: Optional[str]
     workspace: Optional[str]
     history: List[Dict[str, str]]    
     model_responses: List[Dict[str, str]]
@@ -154,6 +156,8 @@ class PipelineBase:
         self.model_manager = kwargs.get('model_manager', None)
         self.messages = kwargs.get('messages', [])
         self.args = kwargs.get('args', {})
+        self.agent = kwargs.get('agent', None)
+        self.agentId = kwargs.get('agentId', None)
         self.workspace = kwargs.get('workspace', None)        
         self.model_responses = []
         self.last_response = ""

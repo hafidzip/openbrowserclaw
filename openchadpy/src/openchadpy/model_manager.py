@@ -6,7 +6,7 @@ import time
 import gc
 import threading
 from dataclasses import dataclass, field
-from typing import Optional, Dict, Any, Union, Generator, List, AsyncGenerator, Tuple, Callable
+from typing import Optional, Dict, Any, Union, Generator, List, AsyncGenerator, Tuple, Callable, TYPE_CHECKING
 import logging
 from enum import Enum
 import numpy as np
@@ -18,6 +18,9 @@ from pathlib import Path
 import psutil
 from .vram_checker import check_vram
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .event_emitter import EventEmitter
 
 @dataclass
 class LoadedModel:
@@ -75,7 +78,13 @@ class LoadedModel:
         return d
 class ModelManager:  
 
-    def __init__(self, config_path: Optional[str] = None, backends_dir: Optional[str] = None, config_lock: Optional[asyncio.Lock] = None):
+    def __init__(self, 
+     config_path: Optional[str] = None,
+     backends_dir: Optional[str] = None,
+     config_lock: Optional[asyncio.Lock] = None,
+     emitter: Optional['EventEmitter'] = None
+     ):
+        self.emitter = emitter
         # Model registry: model_id -> LoadedModel
         self._models: Dict[str, LoadedModel] = {}
         # Default model IDs for each type: model_type -> model_id
@@ -573,6 +582,8 @@ class ModelManager:
                     with open(self.config_path, 'w', encoding='utf-8') as f:
                         json.dump(config, f, indent=4)
                 await asyncio.to_thread(_update)
+                if self.emitter:
+                    await self.emitter.emit("model-update")
         except Exception as e:
             logger.error(f"Failed to save config: {e}", exc_info=True)
     async def remove_from_config(self, model_id: str):
@@ -582,6 +593,7 @@ class ModelManager:
         try:
             async with self.config_lock:
             
+                should_emit = [False]
                 def _update():
                     if not os.path.exists(self.config_path):
                         return
@@ -592,7 +604,10 @@ class ModelManager:
                         logger.info(f"Removed model '{model_id}' from configuration")
                         with open(self.config_path, 'w', encoding='utf-8') as f:
                             json.dump(config, f, indent=4)
+                            should_emit[0] = True
                 await asyncio.to_thread(_update)
+                if should_emit[0] and self.emitter:
+                    await self.emitter.emit("model-update")
         except Exception as e:
             logger.error(f"Failed to remove model '{model_id}' from config: {e}", exc_info=True)
 

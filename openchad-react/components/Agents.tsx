@@ -219,6 +219,10 @@ export default function Agents({
                 sql: `DELETE FROM agents WHERE id IN (${placeholders})`,
                 params: ids
             });
+            await pyInvoke('emit', {
+                name: 'agents-update',
+                payload: {}
+            });
             setSelectedIds(prev => {
                 const next = new Set(prev);
                 ids.forEach(uuid => {
@@ -293,6 +297,10 @@ export default function Agents({
                 sql: `INSERT OR REPLACE INTO agents (id, metadata) VALUES (?, ?)`,
                 params: [id, JSON.stringify({ name: name, icon: 'Drama', timestamp: Date.now() })],
             })
+            await pyInvoke('emit', {
+                name: 'agents-update',
+                payload: {}
+            });
             setShowDialog(false)
             addTab({
                 uuid: id,
@@ -304,7 +312,9 @@ export default function Agents({
                         icon: "Drama",
                         title: name,
                         appname: "agent",
-                        data: {}
+                        data: {
+                            name: name
+                        }
                     }
                 }
             });

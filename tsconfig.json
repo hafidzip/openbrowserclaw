@@ -23,6 +23,9 @@
     "strict": true,
     "baseUrl": ".",
     "paths": {
+      "monaco": [
+        "monaco/index.ts"
+      ],
       "openchad-react": [
         "openchad-react/index.ts"
       ],
@@ -36,6 +39,7 @@
   },
   "include": [
     "src",
-    "openchad-react"
+    "openchad-react",
+    "monaco"
   ]
 }

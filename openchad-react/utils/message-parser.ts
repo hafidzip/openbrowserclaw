@@ -126,10 +126,11 @@ export class MessageParser {
     private static protectCodeBlocks(text: string): { protectedText: string; placeholders: string[] } {
         const placeholders: string[] = [];
         let protectedText = text.replace(
-            /(^|\n)(`{3,})([\s\S]*?)\n\2(\n|$)/g,
+            /(^|\n)(`{3,})([\s\S]*?)(?:\n\2(\n|$)|$)/g,
             (match, pre, _fence, _body, post) => {
-                placeholders.push(match.slice(pre.length, match.length - post.length));
-                return `${pre}__CODE_BLOCK_${placeholders.length - 1}__${post}`;
+                const postLen = post ? post.length : 0;
+                placeholders.push(match.slice(pre.length, match.length - postLen));
+                return `${pre}__CODE_BLOCK_${placeholders.length - 1}__${post ?? ''}`;
             }
         );
         protectedText = protectedText.replace(
@@ -201,7 +202,11 @@ export class MessageParser {
 
             // 4. (Optional) Prevent runaway emphasis rendering
             .replace(/\*/g, '&#42;')
-            .replace(/_/g, '&#95;');
+            .replace(/_/g, '&#95;')
+
+            // 5. Escape ESM keywords to prevent Acorn parsing errors
+            .replace(/\bimport\b/g, '&#105;mport')
+            .replace(/\bexport\b/g, '&#101;xport');
     }
     private static escapeThinkComponentBraces(text: string): string {
         return text.replace(
@@ -228,7 +233,11 @@ export class MessageParser {
 
                     // 4. (Optional) Prevent runaway emphasis rendering
                     .replace(/\*/g, '&#42;')
-                    .replace(/_/g, '&#95;');
+                    .replace(/_/g, '&#95;')
+
+                    // 5. Escape ESM keywords to prevent Acorn parsing errors
+                    .replace(/\bimport\b/g, '&#105;mport')
+                    .replace(/\bexport\b/g, '&#101;xport');
                 return `<Think${attrs}>${escaped}</Think>`;
             }
         );
@@ -272,11 +281,11 @@ export class MessageParser {
                 continue;
             }
             if (isClosing) {
-                if (stack.length > 0 && stack[stack.length - 1] === nameLower) {
+                if (stack.length > 0 && stack[stack.length - 1].toLowerCase() === nameLower) {
                     stack.pop();
                 }
             } else {
-                stack.push(nameLower);
+                stack.push(name);
             }
         }
         let result = text;

@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Type, Any, TYPE_CHECKING, Callable
 from .base_provider import BaseModelProvider, ProviderMetadata
 if TYPE_CHECKING:
     from .settings import Settings
+    from .event_emitter import EventEmitter
 logger = logging.getLogger(__name__)
 
 class ModelProviderManager:
@@ -22,7 +23,14 @@ class ModelProviderManager:
     Discovers providers in the ModelProvider directory and handles scanning.
     """
 
-    def __init__(self, settings_manager: Optional["Settings"] = None, providers_dir: Optional[str] = None, config_lock: Optional[asyncio.Lock] = None, on_change: Optional[Callable[[Optional[str]], Any]] = None):
+    def __init__(
+        self, 
+        settings_manager: Optional["Settings"] = None, 
+        providers_dir: Optional[str] = None, 
+        config_lock: Optional[asyncio.Lock] = None, 
+        emitter: Optional["EventEmitter"] = None,
+        on_change: Optional[Callable[[Optional[str]], Any]] = None
+    ):
         """
         Initialize the manager.
         Args:
@@ -33,6 +41,7 @@ class ModelProviderManager:
         if providers_dir is None:
             providers_dir = os.environ.get("OPENCHAD_MODEL_PROVIDERS_DIR")
         self.on_change = on_change
+        self.emitter = emitter
         if providers_dir:
             self._providers_dir = Path(providers_dir).resolve()
         else:
@@ -287,5 +296,7 @@ class ModelProviderManager:
                         json.dump(config, f, indent=4)
                 await asyncio.to_thread(_do_update)
                 logger.info(f"Updated {config_path} with {len(available_models)} available models.")
+                if self.emitter:
+                    await self.emitter.emit("model-update")
         except Exception as e:
             logger.error(f"Failed to update config file {config_path}: {e}")

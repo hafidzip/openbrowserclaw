@@ -1,4 +1,4 @@
-import { ArrowUp, Plus, Mic, Square, FileCode, Video, Volume2, FileText, File as FileIcon, ChevronDown, Unplug, Info } from 'lucide-react'
+import { ArrowUp, Plus, Mic, Square, FileCode, Video, Volume2, FileText, File as FileIcon, ChevronDown, Unplug, Info, Bot, Cpu, Drama } from 'lucide-react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { useState, useRef, useEffect, useCallback, useMemo, memo, type CSSProperties } from 'react'
 import clsx from 'clsx'
@@ -7,10 +7,13 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { usePython } from './usePython'
 import { Dropdown } from './dropdown'
 import type { DropdownMenuItemProps } from './dropdown'
-import { Spinner } from './ui'
+import { Button, Spinner } from './ui'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 import { TooltipProvider } from '@radix-ui/react-tooltip'
 import type { Model } from '../utils/utils'
+import { useAvailableAgents, type IAgent } from '../index'
+import { LucideIcons } from 'openchad-react/utils/state'
+import { useGlobal } from './useGlobal'
 
 
 export interface ContentBlock {
@@ -186,6 +189,19 @@ const ModelItem = memo(function ModelItem({ model, onUnload }: ModelItemProps) {
     </div>
   )
 })
+const TabIcon = memo(({ iconVal }: { iconVal: string | undefined }) => {
+  if (
+    typeof iconVal === "string" &&
+    (iconVal.startsWith("/") ||
+      iconVal.startsWith("http") ||
+      iconVal.startsWith("data:") ||
+      /\.(png|jpg|jpeg|ico|svg|webp)$/i.test(iconVal))
+  ) {
+    return <img src={iconVal} className="w-5 h-5 object-contain rounded-sm" alt="" />;
+  }
+  const Icon = (LucideIcons as any)[iconVal as string] || LucideIcons.Compass;
+  return <Icon className="w-4 h-4" />;
+});
 
 export function plainToBlocks(text: string): ContentBlock[] {
   const blocks: ContentBlock[] = []
@@ -296,7 +312,7 @@ function buildChipHTML(url: string, name: string, fileType?: string): string {
   }
   const textHTML = `<span class="text-xs font-medium text-black/70 dark:text-white/70 truncate select-none max-w-[120px]">${safeName}</span>`
   return (
-    `<span contenteditable="false" data-img="true" data-url="${url}" data-name="${safeName}" ${fileType ? `data-filetype="${fileType}"` : ''} class="inline-flex align-baseline relative top-0.5 group/chip mx-[2px] items-center gap-1 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-[5px] p-[2px] pr-1.5">` +
+    `<span contenteditable="false" data-img="true" data-url="${url}" data-name="${safeName}" data-source="composer" ${fileType ? `data-filetype="${fileType}"` : ''} class="inline-flex align-baseline relative top-0.5 group/chip mx-[2px] items-center gap-1 bg-black/5 dark:bg-white/5 border border-black/10 dark:border-white/10 rounded-[5px] p-[2px] pr-1.5 cursor-pointer">` +
     previewHTML + textHTML +
     `<button type="button" class="absolute right-1 top-1/2 transform -translate-y-1/2 h-[14px] w-[14px] rounded-full bg-black/80 dark:bg-white/90 text-white dark:text-black flex items-center justify-center opacity-0 group-hover/chip:opacity-100 transition-opacity z-10 shadow-sm" data-rm-chip="true">` +
     `<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>` +
@@ -304,6 +320,8 @@ function buildChipHTML(url: string, name: string, fileType?: string): string {
   )
 }
 
+
+export type SelectionMode = 'model' | 'agent'
 
 export default function Composer({
   workspace,
@@ -318,6 +336,10 @@ export default function Composer({
   showHeader,
   model,
   setModel,
+  agent,
+  setAgent,
+  selectionMode = 'model',
+  isAgentsLoading: isAgentsLoadingProp,
   showInterval,
   interval = 'once',
   onIntervalChange,
@@ -335,6 +357,10 @@ export default function Composer({
   showHeader?: boolean
   model?: Model
   setModel?: (model: Model) => void
+  agent?: IAgent | null
+  setAgent?: (agent: IAgent) => void
+  selectionMode?: SelectionMode
+  isAgentsLoading?: boolean
   showInterval?: boolean
   interval?: ScheduleInterval
   onIntervalChange?: (interval: ScheduleInterval) => void
@@ -358,11 +384,18 @@ export default function Composer({
   // ─── Model selection state ──────────────────────────────────────────────────
   const { pyInvoke } = usePython()
   const [modelDropOpen, setModelDropOpen] = useState(false)
+  const [agentDropOpen, setAgentDropOpen] = useState(false)
   const [intervalDropOpen, setIntervalDropOpen] = useState(false)
   const [availableModels, setAvailableModels] = useState<Model[]>([])
   const [modelSearch, setModelSearch] = useState('')
+  const [agentSearch, setAgentSearch] = useState('')
+  const [, setOpen] = useGlobal('showAgentsDialog', {initialValue: false});
   const debouncedModelSearch = useDebounce(modelSearch, MODEL_DEBOUNCE_MS)
+  const debouncedAgentSearch = useDebounce(agentSearch, MODEL_DEBOUNCE_MS)
   const [isScanning, setIsScanning] = useState(false)
+
+  // ─── Agent selection state ────────────────────────────────────────────────
+  const { agents: availableAgents, isLoading: isAgentsLoading } = useAvailableAgents()
 
   useEffect(() => {
     if (!modelDropOpen) return
@@ -398,6 +431,12 @@ export default function Composer({
     return availableModels.filter(m => (m.name ?? '').toLowerCase().includes(q))
   }, [availableModels, debouncedModelSearch])
 
+  const filteredAgents = useMemo(() => {
+    const q = debouncedAgentSearch.trim().toLowerCase()
+    if (!q) return availableAgents
+    return availableAgents.filter(a => (a.name ?? '').toLowerCase().includes(q))
+  }, [availableAgents, debouncedAgentSearch])
+
   const modelDropdownContent: DropdownMenuItemProps[] = useMemo(() => {
     const isFiltering = modelSearch !== debouncedModelSearch
     if (isFiltering || (filteredModels.length === 0 && debouncedModelSearch.trim().length === 0)) {
@@ -421,6 +460,32 @@ export default function Composer({
       trigger: () => setModel?.(m),
     }))
   }, [filteredModels, modelSearch, debouncedModelSearch, isScanning, unloadModel, setModel])
+
+  const agentDropdownContent: DropdownMenuItemProps[] = useMemo(() => {
+    const isFiltering = agentSearch !== debouncedAgentSearch
+    if (isFiltering || isAgentsLoading) {
+      return [{ content: <div className="flex items-center justify-center gap-3"><Spinner /><span>Loading…</span></div> }]
+    }
+    if (filteredAgents.length === 0) {
+      return [{ content: <div className="w-full flex flex-col items-center justify-center gap-3"><span>No agents found.</span>
+      {availableAgents.length == 0 && <Button size={'sm'} onClick={(e) => {setOpen(true);}}>Open Agents Menu</Button>}</div> }];
+    }
+    return filteredAgents.map(a => ({
+      content: (
+        <div className="flex items-center w-full gap-2">
+          {a.icon
+            ? <TabIcon iconVal={a.icon} />
+            : <Bot size={14} className="shrink-0 opacity-60" />}
+          <span>{a.name}</span>
+        </div>
+      ),
+      text: a.name ?? 'Unknown',
+      shortcut: null,
+      children: null,
+      separator: false,
+      trigger: () => setAgent?.(a),
+    }))
+  }, [filteredAgents, agentSearch, debouncedAgentSearch, isAgentsLoading, setAgent])
   const syncState = useCallback(() => {
     const div = editorRef.current
     if (!div) return
@@ -446,6 +511,14 @@ export default function Composer({
   // internals (chips are <span contenteditable=false>, so they won't
   // receive childList mutations anyway, but childList:true + subtree:false
   // makes this explicit).
+  useEffect(() => {
+    if (model && setModel && availableModels.findIndex(m => m.id === model.id) === -1) setModel({ name: null, id: null })
+  }, [availableModels])
+
+  useEffect(() => {
+    if (agent && setAgent && availableAgents.findIndex(a => a.id === agent.id) === -1) setAgent({ name: null, id: null })
+  }, [availableAgents])
+
   useEffect(() => {
     const div = editorRef.current
     if (!div) return
@@ -887,19 +960,43 @@ export default function Composer({
               isExpanded ? 'items-end pb-4' : 'items-center'
             )}>
               {showModelSelection && (
-                <Dropdown
-                  open={modelDropOpen}
-                  onOpenChange={setModelDropOpen}
-                  search={modelSearch}
-                  setSearch={setModelSearch}
-                  className="max-w-none min-w-70 max-h-[345px] flex flex-col"
-                  content={modelDropdownContent}
-                  align="end"
-                >
-                  <button className='bg-accent/5 text-xs p-2 rounded-xl flex items-center gap-1 justify-center w-32 overflow-hidden cursor-pointer'>
-                    {truncateModel(model?.name)} <ChevronDown className='w-3 h-3 relative top-0.5 shrink-0' />
-                  </button>
-                </Dropdown>
+                <>
+                  {/* Model dropdown */}
+                  {selectionMode === 'model' && (
+                    <Dropdown
+                      open={modelDropOpen}
+                      onOpenChange={setModelDropOpen}
+                      search={modelSearch}
+                      setSearch={setModelSearch}
+                      className="max-w-none min-w-70 max-h-[345px] flex flex-col"
+                      content={modelDropdownContent}
+                      align="end"
+                    >
+                      <button className='bg-accent/5 text-xs p-2 rounded-xl flex items-center gap-1 justify-center w-32 overflow-hidden cursor-pointer'>
+                        {truncateModel(model?.name)} <ChevronDown className='w-3 h-3 relative top-0.5 shrink-0' />
+                      </button>
+                    </Dropdown>
+                  )}
+
+                  {/* Agent dropdown */}
+                  {selectionMode === 'agent' && (
+                    <Dropdown
+                      open={agentDropOpen}
+                      onOpenChange={setAgentDropOpen}
+                      search={agentSearch}
+                      setSearch={setAgentSearch}
+                      className="max-w-none min-w-56 max-h-[345px] flex flex-col"
+                      content={agentDropdownContent}
+                      align="end"
+                    >
+                      <button className='bg-accent/5 text-xs p-2 rounded-xl flex items-center gap-1 justify-center w-32 overflow-hidden cursor-pointer'>
+                        {agent?.icon ? <TabIcon iconVal={agent.icon} /> : <Drama size={14} className="shrink-0 opacity-60" />}
+                        <span className='truncate'>{agent?.name ?? 'Select Agent'}</span>
+                        <ChevronDown className='w-3 h-3 relative top-0.5 shrink-0' />
+                      </button>
+                    </Dropdown>
+                  )}
+                </>
               )}
               {showInterval && (
                 <Dropdown
@@ -921,14 +1018,14 @@ export default function Composer({
                   }))}
                   align="end"
                 >
-                  <button className='bg-accent text-accent-foreground text-xs p-2 rounded-xl flex items-center gap-1 justify-center w-fit overflow-hidden cursor-pointer'>
+                  <button className='bg-accent text-accent-foreground text-xs p-2 pl-3 rounded-xl flex items-center gap-1 justify-center w-fit overflow-hidden cursor-pointer'>
                     {interval ?? "once"}
                     <Tooltip>
                       <TooltipTrigger>
                         <Info className='text-gray-500' size={12} />
                       </TooltipTrigger>
                       <TooltipContent className='bg-accent-foreground text-accent'>
-                        <p>{INTERVAL_OPTIONS.find(o => o.value === (interval ?? "once"))?.label}. { (interval !== null && interval !== "once" && interval !== "infinite") && "The task is re-scheduled only after completion."}</p>
+                        <p>{INTERVAL_OPTIONS.find(o => o.value === (interval ?? "once"))?.label}. {(interval !== null && interval !== "once" && interval !== "infinite") && "The task is re-scheduled only after completion."}</p>
                       </TooltipContent>
                     </Tooltip>
                   </button>

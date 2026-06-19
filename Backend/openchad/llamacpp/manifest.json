@@ -4,11 +4,9 @@
     "description": "Backend for llama-cpp-python models.",
     "capabilities": [
         "LLM",
-        "VISION",
-        "EMBEDDING",
-        "RERANKER"
+        "VISION"
     ],
-    "author": "openchad",
+    "author": "Hafidz Ihza Pratama",
     "requirements": [
         "llama-cpp-python",
         "numpy"

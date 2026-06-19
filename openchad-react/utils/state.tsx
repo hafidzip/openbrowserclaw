@@ -1,6 +1,11 @@
 import { proxy } from 'valtio';
 import uuidv4 from "./uuid";
+import { sha256 } from 'js-sha256';
 import { cleanupPersistentIframe } from "../components/iframe-mirror";
+
+function generateIdFromString(input: string): string {
+    return "tb" + "_" + sha256(input).slice(0, 32);
+}
 import * as Icons from "lucide-react"
 import type { AppInfo } from "./utils";
 import clsx from 'clsx';
@@ -712,6 +717,7 @@ export const deleteTabWithGroupSelection = async (uuid: string): Promise<string 
         AsyncLock.release();
         return null
     }
+    
     const group = tabToDelete.group;
     const groupTabs = Object.keys(getTabsByGroup(group));
     const indexInGroup = groupTabs.indexOf(uuid);
@@ -755,6 +761,83 @@ export const deleteTabWithGroupSelection = async (uuid: string): Promise<string 
     AsyncLock.release();
     return nextTabId;
 };
+
+export const clearAllTabs = async (pyInvoke?: any, workspace?: string | null) => {
+    await AsyncLock.acquire();
+    try {
+        const all = await getAllWebviews();
+        const tabUuids = Object.keys(TabState);
+
+        if (pyInvoke) {
+            const db = workspace ?? "global";
+            await Promise.all(tabUuids.map(async (uuid) => {
+                try {
+                    const initTb = generateIdFromString(uuid + "/" + "message_state");
+                    const res = await pyInvoke("sqlite", {
+                        db: db,
+                        table: initTb,
+                        command: "query",
+                        sql: `SELECT id, _v FROM ${initTb} WHERE id IN ('isStreaming', 'activeId', 'dontStop')`
+                    });
+                    const rows = res?.data ?? (Array.isArray(res) ? res : []);
+                    if (Array.isArray(rows)) {
+                        let isStreaming = false;
+                        let dontStop = false;
+                        let activeId = "";
+                        rows.forEach((row: any) => {
+                            let val = row._v;
+                            if (typeof val === 'string') {
+                                try {
+                                    val = JSON.parse(val);
+                                } catch { }
+                            }
+                            if (row.id === 'isStreaming') {
+                                isStreaming = !!val;
+                            } else if (row.id === 'activeId') {
+                                activeId = String(val || "");
+                            } else if (row.id === 'dontStop') {
+                                dontStop = !!val;
+                            }
+                        });
+                        if (isStreaming && activeId && !dontStop) {
+                            await pyInvoke("v1/chat/stop", { id: activeId });
+                        }
+                    }
+                } catch (e) {
+                    console.error(`Failed to stop running chat for tab ${uuid}:`, e);
+                }
+            }));
+        }
+
+        for (const uuid of tabUuids) {
+            const tab = TabState[uuid];
+            if (tab && tab.childrenProps) {
+                await Promise.all(
+                    Object.keys(tab.childrenProps).map(async (t: string) => {
+                        const w = all.find((wv) => wv.label === `webview-${t}`);
+                        if (w) {
+                            if (!t.startsWith('agent')) {
+                                await w.close();
+                            } else {
+                                await w.hide();
+                            }
+                        }
+                    })
+                );
+            }
+            delete TabState[uuid];
+            cleanupPersistentIframe(uuid);
+        }
+        TabInfo.active = "";
+        TabInfo.children = [];
+        TabInfo.layout = "single";
+        TabInfo.size = [100];
+        TabInfo.switchMode = false;
+    } finally {
+        AsyncLock.release();
+    }
+};
+
 /**
  * Move a tab from one group to another
  * @param uuid - Tab ID

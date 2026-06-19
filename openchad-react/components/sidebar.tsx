@@ -6,7 +6,7 @@ import { useRef, useState, useEffect, Fragment, useCallback, memo } from "react"
 import { ChevronDown, GitBranch, Plus, Settings, X, Pin, ChevronRight, ArrowLeftRight, Key, HardDrive, Globe, Drama, EarthIcon, Scroll, AlarmCheck } from "lucide-react"
 import { Dialog as DialogUI, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog"
 import { Dropdown } from "./dropdown"
-import { TabState, addTab, TabInfo, reorderTabsInGroup, deleteTabWithGroupSelection, setTabGroup, type ITab, Theme, LucideIcons, } from '../utils/state'
+import { TabState, addTab, TabInfo, reorderTabsInGroup, deleteTabWithGroupSelection, setTabGroup, type ITab, Theme, LucideIcons, clearAllTabs } from '../utils/state'
 import { useSnapshot } from 'valtio'
 import {
   DndContext,
@@ -43,7 +43,7 @@ import Tasks from "./Tasks"
 import { useGlobal } from "./useGlobal"
 import Agents from "./Agents"
 import ControllableBrowsers from "./ControllableBrowsers"
-import { AsyncLock } from ".."
+import { AsyncLock, generateIdFromString } from "./../index"  
 import { getCurrentWebview } from "@tauri-apps/api/webview"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 
@@ -69,21 +69,15 @@ interface SortableTabItemProps {
 const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
 
 export async function selectModel() {
-  // Open a selection dialog for image files
   const file = await open({
     multiple: true,
     directory: false,
     filters: [{
       name: 'Model',
-      extensions: ['gguf', 'mlx']
+      extensions: (window as any).IS_MACOS ? ['gguf', 'mlx'] : ['gguf']
     }]
   });
-  if (file === null) {
-    // User cancelled the selection
-  } else {
-    // file is a string containing the path (or an array if multiple: true)
-    return file
-  }
+  return file;
 }
 
 function SortableTabItem({ defaultTitle,
@@ -140,7 +134,7 @@ function SortableTabItem({ defaultTitle,
         {...listeners}
         className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer active:cursor-grabbing"
       >
-        <TabIcon iconVal={icon} className="relative min-w-[20px] transition-all duration-250 left-[7px]"/>
+        <TabIcon iconVal={icon} className="relative min-w-[20px] transition-all duration-250 left-[7px]" />
         <Aspan isCollapsed={isCollapsedSidebar} className="truncate flex-1 min-w-0 block">{title || defaultTitle}</Aspan>
       </div>
       {/* Delete Button - Expanded State */}
@@ -409,26 +403,7 @@ function SearchDialogBody({ workspace, isOpen, setOpen }: { workspace: string | 
 export default function Sidebar({
   projectName,
   ProjectIcon,
-  showMcpDialog,
-  setShowMcpDialog,
   workspace,
-  setIsSwitchWorkspace,
-  showSearchDialog,
-  setShowSearchDialog,
-  showCredentialsDialog,
-  setShowCredentialsDialog,
-  showLocalModelDialog,
-  setShowLocalModelDialog,
-  showCustomEndpointDialog,
-  setShowCustomEndpointDialog,
-  showSettingsDialog,
-  setShowSettingsDialog,
-  showTaskDialog,
-  setShowTaskDialog,
-  showControllableBrowsersDialog,
-  setShowControllableBrowsersDialog,
-  showAgentsDialog,
-  setShowAgentsDialog,
   layout,
   theme,
   settings,
@@ -436,26 +411,7 @@ export default function Sidebar({
 }: {
   projectName: string;
   ProjectIcon: React.ComponentType;
-  showMcpDialog: boolean;
-  setShowMcpDialog: (value: boolean) => void;
   workspace: string | null,
-  setIsSwitchWorkspace: (value: boolean) => void,
-  showSearchDialog: boolean;
-  setShowSearchDialog: (value: boolean) => void;
-  showCredentialsDialog: boolean;
-  setShowCredentialsDialog: (value: boolean) => void;
-  showLocalModelDialog: boolean;
-  setShowLocalModelDialog: (value: boolean) => void;
-  showCustomEndpointDialog: boolean;
-  setShowCustomEndpointDialog: (value: boolean) => void;
-  showSettingsDialog: boolean;
-  setShowSettingsDialog: (value: boolean) => void;
-  showTaskDialog: boolean;
-  setShowTaskDialog: (value: boolean) => void;
-  showControllableBrowsersDialog: boolean;
-  setShowControllableBrowsersDialog: (value: boolean) => void;
-  showAgentsDialog: boolean;
-  setShowAgentsDialog: (value: boolean) => void;
   layout: string;
   theme: string;
   settings: Record<string, SettingItem>;
@@ -482,13 +438,25 @@ export default function Sidebar({
   const pinnedTabs = Object.fromEntries(Object.entries(allTabs).filter(([_, tab]) => tab.group === "pinned"));
   const s = useSettings();
   const [isCollapsedSidebar, setIsCollapsedSidebar] = useState(true);
+  const [llamaCppOrMlxIsInstalled, setLlamaCppOrMlxIsInstalled] = useGlobal('llamaCppOrMlxIsInstalled', { initialValue: false });
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [searchTaskQuery, setSearchTaskQuery] = useState("");
   const [searchAgentsQuery, setSearchAgentsQuery] = useState("");
   const [searchControllableBrowsersQuery, setSearchControllableBrowsersQuery] = useState("");
-  const [searchSkillsQuery, setSearchSkillsQuery] = useState("");
+  const [, setIsSwitchWorkspace] = useGlobal('isSwitchWorkspace', { initialValue: false });
+  const [showSearchDialog, setShowSearchDialog] = useGlobal('showSearchDialog', { initialValue: false });
+  const [showMcpDialog, setShowMcpDialog] = useGlobal('showMcpDialog', { initialValue: false });
+  const [showCredentialsDialog, setShowCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false });
+  const [showLocalModelDialog, setShowLocalModelDialog] = useGlobal('showLocalModelDialog', { initialValue: false });
+  const [showCustomEndpointDialog, setShowCustomEndpointDialog] = useGlobal('showCustomEndpointDialog', { initialValue: false });
+  const [showSettingsDialog, setShowSettingsDialog] = useGlobal('showSettingsDialog', { initialValue: false });
+  const [showTaskDialog, setShowTaskDialog] = useGlobal('showTaskDialog', { initialValue: false });
+  const [showControllableBrowsersDialog, setShowControllableBrowsersDialog] = useGlobal('showControllableBrowsersDialog', { initialValue: false });
+  const [showAgentsDialog, setShowAgentsDialog] = useGlobal('showAgentsDialog', { initialValue: false });
+  const [showCodeDialog, setShowCodeDialog] = useGlobal('showCodeDialog', { initialValue: false });
   const [, setSettingsDropdown] = useGlobal('settingsDropdown', { initialValue: false });
   const isFirstRender = useRef(true);
+  const lastWorkspaceRef = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
     if (isFirstRender.current) {
@@ -544,8 +512,11 @@ export default function Sidebar({
   const { pyInvoke } = usePython();
   useEffect(() => {
     if (mounted) {
-      if (Object.keys(allTabs).length === 0) {
+      if (workspace !== lastWorkspaceRef.current) {
+        lastWorkspaceRef.current = workspace;
+        setLoaded(false);
         (async () => {
+          await clearAllTabs(pyInvoke, workspace);
           const t = await savedTabsQuery(`SELECT * FROM tabs`);
           setLoaded(true);
           let needAdd = true;
@@ -566,10 +537,10 @@ export default function Sidebar({
             })
           }
           if (needAdd) addTab();
-        })()
+        })();
       }
     }
-  }, [mounted]);
+  }, [mounted, workspace, savedTabsQuery]);
   useEffect(() => {
     setMounted(true);
   }, [])
@@ -589,8 +560,8 @@ export default function Sidebar({
             },
           ]),
         );
-        if (mounted) {
-          if (loaded) setSavedTabs(tabsToSave);
+        if (mounted && loaded) {
+          setSavedTabs(tabsToSave);
           const entriesToSave = Object.entries(TabState).filter(([_, tab]) => tab.title);
           if (entriesToSave.length > 0) {
             const db = workspace ?? "global";
@@ -682,7 +653,41 @@ export default function Sidebar({
   // Handle tab deletion with group-aware auto-selection
   const handleDeleteTab = (uuid: string) => {
     // Use the group-aware deletion that auto-selects next tab in same group
-    (async () => { await deleteTabWithGroupSelection(uuid); })()
+    (async () => {
+      const db = workspace ?? "global";
+      const initTb = generateIdFromString(uuid + "/" + "message_state");
+      const res = await pyInvoke("sqlite", {
+        db: db,
+        table: initTb,
+        command: "query",
+        sql: `SELECT id, _v FROM ${initTb} WHERE id IN ('isStreaming', 'activeId', 'dontStop')`
+      });
+      const rows = res?.data ?? (Array.isArray(res) ? res : []);
+      if (Array.isArray(rows)) {
+        let isStreaming = false;
+        let dontStop = false;
+        let activeId = "";
+        rows.forEach((row: any) => {
+          let val = row._v;
+          if (typeof val === 'string') {
+            try {
+              val = JSON.parse(val);
+            } catch { }
+          }
+          if (row.id === 'isStreaming') {
+            isStreaming = !!val;
+          } else if (row.id === 'activeId') {
+            activeId = String(val || "");
+          } else if (row.id === 'dontStop') {
+            dontStop = !!val;
+          }
+        });
+        if (isStreaming && activeId && !dontStop) {
+          await pyInvoke("v1/chat/stop", { id: activeId });
+        }
+      }
+      await deleteTabWithGroupSelection(uuid);
+    })()
     // The useEffect above will handle updating hover state
   };
   const handleTabMouseEnter = (id: string, e: React.MouseEvent<HTMLDivElement>) => {
@@ -952,7 +957,7 @@ export default function Sidebar({
                 setShowTaskDialog(true);
               }
             },
-            ...(typeof window !== 'undefined' && !!(window as any).__TAURI__) ? [{
+            ...(typeof window !== 'undefined' && !!(window as any).__TAURI__ && llamaCppOrMlxIsInstalled) ? [{
               content: <div> Local Models </div>,
               shortcut: <HardDrive size={16} />,
               children: null,
@@ -1104,7 +1109,7 @@ export default function Sidebar({
                         <div className="absolute flex items-center justify-center top-0 right-0 w-full h-full bg-[hsl(var(--hover))] opacity-0 hover:opacity-100">
                           <X className="h-4 w-4" />
                         </div>
-                        <TabIcon iconVal={allTabs[hoveredTabId].iconOverride||"Compass"}/>
+                        <TabIcon iconVal={allTabs[hoveredTabId].iconOverride || "Compass"} />
                       </div>
                     </Fragment> :
                       <IconPopover onSelect={(icon) => {
@@ -1122,7 +1127,7 @@ export default function Sidebar({
                         <div className={clsx(
                           "p-2 rounded-lg cursor-pointer transition-colors border-r border-r-[hsl(var(--chat-border))] hover:bg-[hsl(var(--hover))]",
                         )}>
-                          <TabIcon iconVal={allTabs[hoveredTabId].iconOverride||"Compass"}/>
+                          <TabIcon iconVal={allTabs[hoveredTabId].iconOverride || "Compass"} />
                         </div>
                       </IconPopover>
                   }

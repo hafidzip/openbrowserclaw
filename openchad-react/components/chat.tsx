@@ -8,7 +8,8 @@ import MessageContainer from "./message-container";
 import { sha256 } from "js-sha256";
 import ModelSelection from "./model-selection";
 import { ArrowDown } from "lucide-react";
-import { generateIdFromString, useDatabase } from "../index";
+import { generateIdFromString, useAvailableAgents, useDatabase, type IAgent } from "../index";
+import type { SelectionMode } from "./composer";
 import { useDatabaseImpl } from "./useDatabase";
 import { useSettings } from "./useSettings";
 import { useSnapshot } from "valtio";
@@ -31,7 +32,7 @@ export default function Chat({ id, open }: { id: string, open: boolean }) {
     const msgBottomRef = useRef<HTMLDivElement>(null);
     const [scrollContainerRef] = useElementSize<HTMLDivElement>();
     const tb = generateIdFromString(id + "/" + "message_state");
-    const [messageState, setMessageState] = useDatabaseImpl<MessageState>(tb, {
+    const [messageState, setMessageState, { ready }] = useDatabaseImpl<MessageState>(tb, {
         initialValue: {
             title: null,
             activeId: "",
@@ -43,6 +44,9 @@ export default function Chat({ id, open }: { id: string, open: boolean }) {
     });
     const { pyInvoke } = usePython();
     const [model, setModel] = useDatabaseImpl<Model>("model", { initialValue: { name: null, id: null } });
+    const [selectionMode, setSelectionMode] = useState<SelectionMode>('model');
+    const [selectedAgent, setSelectedAgent] = useState<IAgent | null>(null);
+    const { agents: availableAgents, isLoading: isAgentsLoading } = useAvailableAgents();
     const [containerRef, { width, height }] = useElementSize<HTMLDivElement>();
     const [mounted, setMounted] = useState(false);
     const scrollAreaRef = useRef<HTMLDivElement>(null);
@@ -52,20 +56,17 @@ export default function Chat({ id, open }: { id: string, open: boolean }) {
     const [justOpen, setJustOpen] = useState(true);
 
     useEffect(() => {
-        if (mounted) {
-            (async () => {
-                const check = await pyInvoke("v1/check");
-                if (!check.result) {
-                    await pyInvoke('sqlite', {
-                        command: 'query',
-                        db: workspace ?? "global",
-                        table: tb,
-                        sql: `UPDATE ${tb} SET _v = 'false' WHERE id = 'isStreaming'`
-                    });
-                }
-            })();
+        if (ready) {
+            if (messageState.isStreaming) {
+                setMessageState(prev => ({
+                    ...prev,
+                    activeId: "",
+                    isStreaming: false,
+                }));
+            }
         }
-    }, [mounted]);
+    }, [ready]);
+
     useEffect(() => {
         if (open) {
             setTimeout(() => {
@@ -111,6 +112,7 @@ export default function Chat({ id, open }: { id: string, open: boolean }) {
     }, [messageState.isStreaming, messageState.initialized]);
     async function request(query: string, targetTable: string, branchId: string, index: number | string, response_branch: number) {
         const activeId = id + "_response_" + branchId + "_" + response_branch + "_" + index;
+        let errorlog : string | null = null;
         if (messageState.activeId === activeId) {
             return;
         }
@@ -125,7 +127,9 @@ export default function Chat({ id, open }: { id: string, open: boolean }) {
                 id: activeId,
                 query: query,
                 stream: true,
-                model: model.id,
+                ...(selectionMode === 'agent' && selectedAgent
+                    ? { agent: selectedAgent.id }
+                    : { model: model.id }),
                 tab_id: id,
                 branch_id: branchId,
                 index: index,
@@ -142,10 +146,12 @@ export default function Chat({ id, open }: { id: string, open: boolean }) {
                 }
             }
         } catch (error) {
+            errorlog = JSON.stringify(error);
+        } finally {
             setMessageState(prev => ({
                 ...prev,
                 isStreaming: false,
-                errorMsg: (error as Error)?.message || "Unknown error"
+                ...(errorlog && { errorMsg: errorlog })
             }));
         }
     }
@@ -262,6 +268,9 @@ export default function Chat({ id, open }: { id: string, open: boolean }) {
                 model={model}
                 setModel={setModel}
                 layout={"leftToRight"}
+                selectionMode={selectionMode}
+                agent={selectedAgent}
+                setAgent={setSelectedAgent}
             />
             <div style={{
                 height: width < 800 || height < 650 || messageState.initialized ? `${height}px` : `${height * 0.2}px`,
@@ -287,6 +296,9 @@ export default function Chat({ id, open }: { id: string, open: boolean }) {
                                     width < 800 ? 'max-w-full small-content' : 'max-w-[40vw]',
                                 )}>
                                     <MessageContainer
+                                        scrollToBottom={() => {
+                                            scrollToBottom('instant')
+                                        }}
                                         workspace={workspace ?? "global"}
                                         isStreaming={messageState.isStreaming}
                                         request={request}
@@ -344,7 +356,8 @@ export default function Chat({ id, open }: { id: string, open: boolean }) {
                                 activeId: "",
                             }));
                         } else {
-                            if (model.id && value.trim().length > 0) {
+                            scrollToBottom('instant');
+                            if ((selectionMode === 'model' ? model.id : selectedAgent?.id) && value.trim().length > 0) {
                                 setMessageState((prev) => ({
                                     ...prev,
                                     errorMsg: "",
@@ -361,8 +374,9 @@ export default function Chat({ id, open }: { id: string, open: boolean }) {
                             } else {
                                 setMessageState((prev) => ({
                                     ...prev,
-                                    errorMsg: "No Model Selected",
+                                    errorMsg: selectionMode === 'model' ? "No Model Selected" : "No Agent Selected",
                                     initialized: true,
+                                    activeId: '',
                                 }));
                             }
                         }
@@ -370,6 +384,12 @@ export default function Chat({ id, open }: { id: string, open: boolean }) {
                     width={width}
                     height={height}
                     isStreaming={messageState.isStreaming}
+                    model={model}
+                    setModel={setModel}
+                    agent={selectedAgent}
+                    setAgent={setSelectedAgent}
+                    selectionMode={selectionMode}
+                    isAgentsLoading={isAgentsLoading}
                     style={{ maxWidth: `${width - 10}px` }}
                     ref={composerTextareaRef}
                     className={clsx(

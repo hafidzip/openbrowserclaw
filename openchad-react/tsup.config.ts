@@ -31,5 +31,7 @@ export default defineConfig({
     "@tauri-apps/plugin-dialog",
     "@tauri-apps/plugin-fs",
     "@tauri-apps/plugin-opener",
+    // Toast — must share a single instance with the host app
+    // "sonner",
   ],
 });
