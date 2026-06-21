@@ -1,3 +1,4 @@
+from anyio import Path
 from openchadpy.tool_base import ToolRegistry
 from openchadpy.pipeline_base import PipelineBase
 from openchadpy.context import agent_ctx, model_id_ctx
@@ -10,8 +11,13 @@ import logging
 import json
 import time
 import copy
+import os
 import re
 logger = logging.getLogger(__name__)
+
+# If self.query exceeds this character count it will be spooled to disk and
+# the LLM will receive a compact file-reference instruction instead.
+MAX_QUERY_CHARS: int = 4000
 
 def _format_chunk(chunk: Any, max_length: int = 200) -> str:
     """Gracefully format any chunk type for logging."""
@@ -118,6 +124,7 @@ def safe_get(data, *keys, default=None):
 #   {"type": "code_block", "id": str, "lang": str, "code": str}
 
 class Chat(PipelineBase):
+    root_agent: str
     logs: Dict[str, Any]
     r: Dict[str, Any]
     message_template: List[Dict[str, Any]]
@@ -144,7 +151,8 @@ class Chat(PipelineBase):
             self.tools.extend(self.mcp_manager.get_openai_schemas())
         agent = agent_ctx.get()
         if agent and isinstance(agent, dict):
-            current_agent_id = next(iter(agent))
+            self.root_agent = next(iter(agent))
+            current_agent_id = self.root_agent
             agent_node = agent.get(current_agent_id)
             if agent_node:
                     allowed_tools = set(agent_node.get("tools", []))
@@ -584,6 +592,38 @@ class Chat(PipelineBase):
         logger.info("[%s] get_history complete | collected %d messages (last %d turns)", self.__class__.__name__, len(result) // 2, MAX_HISTORY_TURNS)
         return result
     async def setup(self) -> None:
+        # --- Long-query guard ---------------------------------------------------
+        # If the incoming query is too large to include verbatim in the message
+        # context, spool it to a file and give the LLM a file-reference prompt.
+        if self.query and len(self.query) > MAX_QUERY_CHARS:
+            try:
+                project_root = os.getenv("OPENCHAD_PROJECT_DIR")
+                if project_root and self.workspace and self.tab_id:
+                    from pathlib import Path as _Path
+                    storage_dir = _Path(project_root, "Workspaces", self.workspace, self.tab_id)
+                    storage_dir.mkdir(parents=True, exist_ok=True)
+                    query_file = storage_dir / "query_input.txt"
+                    query_file.write_text(self.query, encoding="utf-8")
+                    abs_path = str(query_file.resolve())
+                    logger.info(
+                        "[%s] setup | query too long (%d chars) – spooled to %s",
+                        self.__class__.__name__,
+                        len(self.query),
+                        abs_path,
+                    )
+                    self.query = (
+                        f"The user's input is too long to include directly. \n"
+                        f"Please use the relevant tools to read and analyze the file's full content, then create a task plan based on it.\n"
+                        f"[file={abs_path}]"
+                    )
+                else:
+                    logger.warning(
+                        "[%s] setup | query too long but storage path unavailable; truncating",
+                        self.__class__.__name__,
+                    )
+            except Exception as _e:
+                logger.exception("[%s] setup | long-query spool failed: %s", self.__class__.__name__, _e)
+        # --- End long-query guard -----------------------------------------------
         if not self.tab_db:
             raise RuntimeError("[setup] database (tab_db) is not configured or is None")
         try:
@@ -1172,6 +1212,29 @@ class Chat(PipelineBase):
                                                     if tasks_to_run:
                                                         grouped_results = await asyncio.gather(*tasks_to_run)
                                                         results = [res for agent_res in grouped_results for res in agent_res]
+                                                        content_str = json.dumps(results)
+                                                        if len(content_str) > 10000:
+                                                            import os
+                                                            from pathlib import Path
+
+                                                            project_root = os.getenv("OPENCHAD_PROJECT_DIR")
+                                                            if project_root and self.workspace:
+                                                                storage_path = Path(project_root, "Workspaces", self.workspace, ".agent", self.root_agent, current_agent_id)
+                                                                storage_path.mkdir(parents=True, exist_ok=True)
+                                                                logger.info(f"[Chat] Workspace storage path: {storage_path}")
+
+                                                                output_task_storage_file = storage_path / "output.txt"
+                                                                try:
+                                                                    with open(output_task_storage_file, 'w', encoding='utf-8') as f:
+                                                                        f.write(f"{content_str}\n")
+                                                                        results = [{
+                                                                            "agent_id": current_agent_id,
+                                                                            "response": f"Task Output Too Long, check file {str(output_task_storage_file.resolve())}\n",
+                                                                            "preview": f"{content_str[:512]}..." 
+                                                                        }]
+                                                                    logger.info(f"[Chat] Saved output to {output_task_storage_file}")
+                                                                except Exception as e:
+                                                                    logger.exception("[Chat] Error writing task file: %s", e)
                                                     else:
                                                         results = []
                                                     

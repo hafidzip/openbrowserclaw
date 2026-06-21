@@ -103,6 +103,14 @@ class PipelineBase:
                         ),
                     },
                     {"role": "user", "content": query},
+                ] if not agent else [
+                    {
+                        "role": "system",
+                        "content": (
+                            "",
+                        ),
+                    },
+                    {"role": "user", "content": query},
                 ]
                 
                 multi_step = (agent_ctx.get() is not None)
@@ -169,6 +177,7 @@ class PipelineBase:
                                 content_str = json.dumps(result)
                             else:
                                 content_str = str(result)
+                                
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": call_id,
@@ -182,6 +191,7 @@ class PipelineBase:
                 return {}
         logger.error("Model manager not found")
         return {}
+
     
     def __init__(self, **kwargs):
         self.attempt = 0
