@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
-import { Plus, Trash2, Edit2, Check, X, ChevronDown, Clock, Repeat, Calendar, Mic, Video, Volume2, FileText, File as FileIcon, FileCode } from "lucide-react";
+import { Plus, Trash2, Edit2, Check, X, ChevronDown, Clock, Repeat, Calendar, Mic, Video, Volume2, FileText, File as FileIcon, FileCode, PowerOff } from "lucide-react";
 import { Checkbox } from "./ui/checkbox";
 import { ScrollArea } from "./ui/scroll-area";
 import { Table, TableBody, TableCell, TableRow } from "./ui/table";
@@ -16,7 +16,7 @@ import { parseModelsFromConfig, INTERVAL_OPTIONS, ScheduleInterval } from "./com
 import { Dropdown } from "./dropdown";
 import { renderToStaticMarkup } from "react-dom/server";
 import { open } from "@tauri-apps/plugin-dialog";
-import Record from "./record";
+import Record, { RecordComponentRef } from "./record";
 import { ensureTextAfter, ensureTextBefore, placeCaret, plainToBlocks, blocksToPlain, MIME_MAP } from "./composer";
 
 const CODE_EXTS = new Set(['js', 'jsx', 'ts', 'tsx', 'py', 'java', 'c', 'cpp', 'h', 'css', 'html', 'json', 'xml', 'yaml', 'yml', 'go', 'rs', 'php', 'rb']);
@@ -109,9 +109,9 @@ function QueryContent({ query }: { query: string }) {
                     const cleanedText = (block.value || "").replace(/\s+/g, ' ');
                     if (!cleanedText.trim()) return null;
                     return (
-                        <span 
-                            key={i} 
-                            className="text-xs text-foreground/80 truncate max-w-[300px] md:max-w-[500px] select-none" 
+                        <span
+                            key={i}
+                            className="text-xs text-foreground/80 truncate max-w-[300px] md:max-w-[500px] select-none"
                             title={block.value}
                         >
                             {cleanedText.trim()}
@@ -191,7 +191,7 @@ const IntervalBadge = memo(({ value }: { value: string | undefined }) => {
     let label = "Run Once";
     let Icon = Clock;
     let colorClasses = "border-blue-500/20 bg-blue-500/10 text-blue-500 dark:text-blue-400";
-    
+
     if (val === "infinite") {
         label = "Infinite";
         Icon = Repeat;
@@ -212,6 +212,10 @@ const IntervalBadge = memo(({ value }: { value: string | undefined }) => {
         label = "Monthly";
         Icon = Calendar;
         colorClasses = "border-rose-500/20 bg-rose-500/10 text-rose-500 dark:text-rose-400";
+    } else {
+        label = "Disabled";
+        Icon = PowerOff;
+        colorClasses = "border-gray-500/20 bg-gray-500/10 text-gray-500 dark:text-gray-400";
     }
 
     return (
@@ -221,7 +225,7 @@ const IntervalBadge = memo(({ value }: { value: string | undefined }) => {
         )}>
             <Icon className="w-3 h-3 shrink-0" />
             <span>{label}</span>
-            <ChevronDown className="w-3 h-3 shrink-0"/>
+            <ChevronDown className="w-3 h-3 shrink-0" />
         </span>
     );
 });
@@ -240,7 +244,13 @@ const TabRow = memo((
     }
 ) => {
     const handleToggle = useCallback(() => onToggle(tab.id), [tab.id, onToggle]);
-    const handleOpen = useCallback(() => onOpen(tab.id), [tab.id, onOpen]);
+    const handleOpen = useCallback((e: React.MouseEvent) => {
+        const target = e.target as HTMLElement;
+        if (target.closest('[data-img="true"]')) {
+            return;
+        }
+        onOpen(tab.id);
+    }, [tab.id, onOpen]);
     const handleDelete = useCallback((e: React.MouseEvent) => {
         e.stopPropagation();
         onDelete(tab.id);
@@ -263,6 +273,26 @@ const TabRow = memo((
     const queryRef = useRef<HTMLDivElement>(null);
     const savedRange = useRef<Range | null>(null);
     const escaping = useRef(false);
+    const recordRef = useRef<RecordComponentRef>(null);
+
+    const [isRecording] = useGlobal(`isRecording-${tab.id}`, { initialValue: false });
+    const N_BARS = 60;
+    const volumeRef = useRef(0);
+    const [volumeHistory, setVolumeHistory] = useState<number[]>(() => Array(N_BARS).fill(0.08));
+
+    useEffect(() => {
+        if (!isRecording) {
+            setVolumeHistory(Array(N_BARS).fill(0.08));
+            volumeRef.current = 0;
+            return;
+        }
+
+        const interval = setInterval(() => {
+            setVolumeHistory(prev => [...prev.slice(1), volumeRef.current]);
+        }, 50);
+
+        return () => clearInterval(interval);
+    }, [isRecording]);
 
     const syncState = useCallback(() => {
         const div = queryRef.current;
@@ -377,6 +407,7 @@ const TabRow = memo((
                 return; // Do not abort when selecting dropdowns
             }
             if (editContainerRef.current && !editContainerRef.current.contains(target)) {
+                recordRef.current?.cancelRecording();
                 setIsEditingQuery(false);
             }
         };
@@ -387,6 +418,7 @@ const TabRow = memo((
     }, [isEditingQuery]);
 
     const handleSaveQuery = useCallback(() => {
+        recordRef.current?.cancelRecording();
         const plainText = queryRef.current ? blocksToPlain(serializeMsgNode(queryRef.current)) : "";
         if (plainText !== tab.query) {
             onUpdateTab(tab.id, { query: plainText });
@@ -561,6 +593,7 @@ const TabRow = memo((
             return;
         }
         if (e.key === 'Escape') {
+            recordRef.current?.cancelRecording();
             setIsEditingQuery(false);
             return;
         }
@@ -679,24 +712,83 @@ const TabRow = memo((
             </TableCell>
             {/* Query Cell */}
             {isEditingQuery ? (
-                <TableCell colSpan={4} onClick={e => e.stopPropagation()} className="py-2.5 align-top">
+                <TableCell
+                    colSpan={4}
+                    onClick={(e) => {
+                        const target = e.target as HTMLElement;
+                        if (target.closest('[data-img="true"]') && !target.closest('[data-rm-chip="true"]')) {
+                            return;
+                        }
+                        e.stopPropagation();
+                    }}
+                    className="py-2.5 align-top"
+                >
                     <div ref={editContainerRef} className="flex flex-col gap-2 w-full">
-                        <div
-                            ref={queryRef}
-                            contentEditable
-                            suppressContentEditableWarning
-                            onKeyDown={handleEditorKeyDown}
-                            onPointerDown={handleEditorPointerDown}
-                            onCopy={handleCopy}
-                            onCut={handleCut}
-                            onPaste={handlePaste}
-                            className="w-full bg-accent/5 border border-accent/20 rounded-lg p-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring overflow-y-auto transition-all font-sans min-h-[64px] max-h-[300px] outline-none whitespace-pre-wrap break-words"
-                        />
+                        <div className="relative w-full">
+                            <div
+                                ref={queryRef}
+                                contentEditable
+                                suppressContentEditableWarning
+                                onKeyDown={handleEditorKeyDown}
+                                onPointerDown={handleEditorPointerDown}
+                                onCopy={handleCopy}
+                                onCut={handleCut}
+                                onPaste={handlePaste}
+                                className={clsx(
+                                    "w-full bg-accent/5 border border-accent/20 rounded-lg p-2 text-xs focus:outline-none focus:ring-1 focus:ring-ring transition-all font-sans max-h-[300px] outline-none whitespace-pre-wrap break-words",
+                                    isRecording
+                                        ? "overflow-hidden cursor-not-allowed opacity-0 select-none pointer-events-none"
+                                        : "min-h-[64px] overflow-y-auto"
+                                )}
+                                style={{
+                                    minHeight: isRecording ? "30px" : undefined,
+                                    maxHeight: isRecording ? "30px" : undefined,
+                                }}
+                            />
+                            {isRecording && (
+                                <div className="absolute inset-0 flex items-center gap-3 px-3 pointer-events-none select-none bg-accent/5 border border-accent/20 rounded-lg">
+                                    {/* Recording label */}
+                                    <div className="flex items-center gap-2 text-red-500 shrink-0">
+                                        <span className="relative flex h-2 w-2">
+                                            <span className="animate-ping absolute inline-flex h-full w-[50%] rounded-full bg-red-400 opacity-75"></span>
+                                            <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+                                        </span>
+                                        <span className="text-xs font-semibold tracking-wider">Recording...</span>
+                                    </div>
+                                    {/* Full-width scrolling train waveform */}
+                                    <svg
+                                        className="flex-1 h-5 min-w-0"
+                                        preserveAspectRatio="none"
+                                        viewBox={`0 0 ${volumeHistory.length} 1`}
+                                        xmlns="http://www.w3.org/2000/svg"
+                                    >
+                                        {volumeHistory.map((vol, i) => {
+                                            const h = Math.max(0.12, vol * 0.88)
+                                            const y = (1 - h) / 2
+                                            const opacity = 0.2 + (i / (volumeHistory.length - 1)) * 0.8
+                                            return (
+                                                <rect
+                                                    key={i}
+                                                    x={i + 0.2}
+                                                    y={y}
+                                                    width={0.6}
+                                                    height={h}
+                                                    rx={0.3}
+                                                    fill="#ef4444"
+                                                    fillOpacity={opacity}
+                                                />
+                                            )
+                                        })}
+                                    </svg>
+                                </div>
+                            )}
+                        </div>
                         <div className="flex justify-between items-center gap-3 mt-1">
                             {/* Inner Model, Interval & Attachment Selectors */}
                             <div className="flex items-center gap-2">
                                 {/* Agent Selector */}
                                 <Dropdown
+                                    placeholder={"Agent"}
                                     content={modelDropdownContent}
                                     align="start"
                                     className="max-w-none min-w-44"
@@ -737,6 +829,8 @@ const TabRow = memo((
 
                                 {/* Audio Recorder (Mic) */}
                                 <Record
+                                    ref={recordRef}
+                                    name={tab.id}
                                     workspace={workspace ?? "global"}
                                     onFileSaved={(filePath) => {
                                         const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
@@ -744,35 +838,53 @@ const TabRow = memo((
                                         insertChipAtCursor(`/file/${filePath}`, fileName, getMimeType(ext));
                                     }}
                                 >
-                                    {({ isRecording, startRecording, stopRecording }) => (
-                                        <button
-                                            type="button"
-                                            onClick={isRecording ? stopRecording : startRecording}
-                                            className={clsx(
-                                                "h-7 w-7 flex items-center justify-center rounded-md border transition-all",
-                                                isRecording
-                                                    ? "text-red-500 opacity-100 bg-red-500/10 border-red-500/20"
-                                                    : "opacity-60 hover:opacity-100 hover:bg-accent/10 border-accent/10 hover:border-accent/25"
-                                            )}
-                                            title={isRecording ? "Stop recording" : "Record audio"}
-                                        >
-                                            <Mic className="w-4 h-4" />
-                                        </button>
-                                    )}
+                                    {({ isRecording, startRecording, stopRecording, cancelRecording, volume }) => {
+                                        volumeRef.current = volume;
+                                        return (
+                                            <div className="flex items-center gap-1">
+                                                <button
+                                                    type="button"
+                                                    onClick={isRecording ? stopRecording : startRecording}
+                                                    className={clsx(
+                                                        "h-7 w-7 flex items-center justify-center rounded-md border transition-all",
+                                                        isRecording
+                                                            ? "text-red-500 opacity-100 bg-red-500/10 border-red-500/20 animate-pulse"
+                                                            : "opacity-60 hover:opacity-100 hover:bg-accent/10 border-accent/10 hover:border-accent/25"
+                                                    )}
+                                                    title={isRecording ? "Stop recording" : "Record audio"}
+                                                >
+                                                    <Mic className="w-4 h-4" />
+                                                </button>
+                                                {isRecording && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={cancelRecording}
+                                                        className="h-7 w-7 flex items-center justify-center rounded-md border text-muted-foreground opacity-60 hover:opacity-100 hover:bg-accent/10 border-accent/10 hover:border-accent/25 transition-all"
+                                                        title="Cancel recording"
+                                                    >
+                                                        <X className="w-4 h-4" />
+                                                    </button>
+                                                )}
+                                            </div>
+                                        );
+                                    }}
                                 </Record>
                             </div>
 
                             {/* Help Text / Actions */}
                             <div className="flex items-center gap-2 text-[11px]">
                                 <span className="text-[10px] opacity-60 hidden sm:inline">Press Enter to save, Shift+Enter for newline</span>
-                                <button 
-                                    onClick={() => { setIsEditingQuery(false); }} 
+                                <button
+                                    onClick={() => {
+                                        recordRef.current?.cancelRecording();
+                                        setIsEditingQuery(false);
+                                    }}
                                     className="px-2 py-1 rounded hover:bg-accent/10 hover:text-foreground transition-all cursor-pointer font-medium"
                                 >
                                     Cancel
                                 </button>
-                                <button 
-                                    onClick={handleSaveQuery} 
+                                <button
+                                    onClick={handleSaveQuery}
                                     className="px-3 py-1 rounded bg-primary text-primary-foreground hover:bg-primary/90 transition-all font-semibold shadow-sm cursor-pointer"
                                 >
                                     Save
@@ -804,6 +916,7 @@ const TabRow = memo((
                     {/* Agent Cell */}
                     <TableCell align="right" onClick={e => e.stopPropagation()} className="h-12">
                         <Dropdown
+                            placeholder={"Agent"}
                             content={modelDropdownContent}
                             align="start"
                             className="max-w-none min-w-44"
@@ -863,7 +976,7 @@ export default function Tasks({
     const { SetActive } = useSnapshot(TabInfo);
     const [, setChatId] = useGlobal<string | null>('chatId', { initialValue: null })
     const { pyInvoke } = usePython();
-    const {agents, isLoading} = useAvailableAgents()
+    const { agents, isLoading } = useAvailableAgents()
 
 
     const handleUpdateTab = useCallback(async (id: string, updatedFields: Partial<any>) => {

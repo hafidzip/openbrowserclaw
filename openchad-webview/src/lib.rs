@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    env,
     fs,
     path::{Path, PathBuf},
 };
@@ -28,7 +29,9 @@ use tauri::{
         config::{CapabilityEntry, FrontendDist},
         platform::Target,
     },
-    Assets, Config, Manager
+    AppHandle, Assets, Config, Manager,
+    PhysicalPosition, PhysicalSize,
+    WebviewBuilder, WebviewUrl,
 };
 
 type TauriContext = tauri::Context<Runtime>;
@@ -484,7 +487,8 @@ pub fn builder_factory(
             }
         })
         .invoke_handler(tauri::generate_handler![
-            eval_in_webview
+            eval_in_webview,
+            create_webview
         ]))
 }
 #[tauri::command]
@@ -493,6 +497,106 @@ fn eval_in_webview(app: tauri::AppHandle, label: String, script: String) -> Resu
         .get_webview(&label)
         .ok_or_else(|| format!("webview '{}' not found", label))?;
     webview.eval(&script).map_err(|e| e.to_string())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateWebviewArgs {
+    parent_label: String,
+    label: String,
+    url: Option<String>,
+    x: Option<i32>,
+    y: Option<i32>,
+    width: Option<u32>,
+    height: Option<u32>,
+    incognito: Option<bool>,
+    user_agent: Option<String>,
+}
+
+#[tauri::command]
+async fn create_webview(
+    app: AppHandle,
+    args: CreateWebviewArgs,
+) -> Result<(), String> {
+    let url_str = args.url.as_deref().unwrap_or("about:blank");
+
+    let parent_window = app
+        .get_window(&args.parent_label)
+        .ok_or_else(|| format!("parent window '{}' not found", args.parent_label))?;
+
+    let webview_url = url_str
+        .parse::<url::Url>()
+        .map(WebviewUrl::External)
+        .unwrap_or_else(|_| WebviewUrl::App("index.html".into()));
+
+    let mut builder = WebviewBuilder::new(&args.label, webview_url);
+    let label = if args.label.starts_with("webview-agent-") { &args.label } else { "shared" };
+
+    #[cfg(target_os = "windows")]
+    let ext_path: Option<PathBuf> = env::var_os("OPENCHAD_EXTENSION_PATH")
+        .map(PathBuf::from);
+
+    {
+        let data_dir: PathBuf = app
+            .path()
+            .app_local_data_dir()
+            .map_err(|e| e.to_string())?
+            .join("browser-data")
+            .join(label);
+
+        builder = builder.data_directory(data_dir);
+
+        #[cfg(target_os = "windows")]
+        if let Some(path) = ext_path {
+            builder = builder
+                .browser_extensions_enabled(true)
+                .extensions_path(path);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        // data_store_identifier is the official replacement for data_directory
+        // on WKWebView. Requires macOS ≥ 14; silently does nothing on older.
+        builder = builder.data_store_identifier(label_to_store_id(label));
+    }
+
+    if let Some(ua) = &args.user_agent {
+        builder = builder.user_agent(ua);
+    }
+    if args.incognito.unwrap_or(false) {
+        builder = builder.incognito(true);
+    }
+
+    parent_window
+        .add_child(
+            builder,
+            PhysicalPosition::new(args.x.unwrap_or(0), args.y.unwrap_or(0)),
+            PhysicalSize::new(args.width.unwrap_or(800), args.height.unwrap_or(600)),
+        )
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+fn label_to_store_id(label: &str) -> [u8; 16] {
+    const FNV_PRIME: u64 = 0x00000100000001B3;
+    const SEED_A: u64 = 0xcbf29ce484222325;
+    const SEED_B: u64 = 0x14650fb0739d0383;
+    let mut a = SEED_A;
+    let mut b = SEED_B;
+
+    for byte in label.bytes() {
+        a ^= byte as u64;
+        a = a.wrapping_mul(FNV_PRIME);
+        b ^= byte.wrapping_add(0x5A) as u64;
+        b = b.wrapping_mul(FNV_PRIME);
+    }
+
+    let mut id = [0u8; 16];
+    id[..8].copy_from_slice(&a.to_le_bytes());
+    id[8..].copy_from_slice(&b.to_le_bytes());
+    id
 }
 
 enum FactoryError {

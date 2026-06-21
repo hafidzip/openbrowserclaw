@@ -10,7 +10,7 @@ import * as Icons from "lucide-react"
 import type { AppInfo } from "./utils";
 import clsx from 'clsx';
 import { getAllWebviews } from '@tauri-apps/api/webview';
-import { AsyncLock } from '..';
+import { AsyncLock } from './../index';
 
 export const LucideIcons = Icons
 

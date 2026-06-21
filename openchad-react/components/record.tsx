@@ -1,7 +1,9 @@
-import React, { useState, useRef, useCallback } from 'react';
+import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { writeFile } from '@tauri-apps/plugin-fs';
 import uuidv4 from '../utils/uuid';
+import { useGlobal } from './useGlobal';
 interface RecordProps {
+  name: string;
   workspace: string;
   onRecordingComplete?: (audioBlob: Blob, normalizedSamples: Float32Array) => void;
   onFileSaved?: (path: string) => void;
@@ -16,15 +18,19 @@ interface RecordProps {
     isRecording: boolean;
     startRecording: () => Promise<void>;
     stopRecording: () => void;
+    cancelRecording: () => void;
+    volume: number;
   }) => React.ReactNode);
 }
 interface RecordComponentRef {
   startRecording: () => Promise<void>;
   stopRecording: () => void;
+  cancelRecording: () => void;
   isRecording: boolean;
 }
 
 const Record = React.forwardRef<RecordComponentRef, RecordProps>(({
+  name,
   workspace,
   onRecordingComplete,
   onFileSaved,
@@ -36,7 +42,11 @@ const Record = React.forwardRef<RecordComponentRef, RecordProps>(({
   downsample = true,
   children
 }, ref) => {
-  const [isRecording, setIsRecording] = useState(false);
+  const [isRecording, setIsRecording] = useGlobal(`isRecording-${name}`, {initialValue: false});
+  const [volume, setVolume] = useState(0);
+  const volumeAudioCtxRef = useRef<AudioContext | null>(null);
+  const volumeRafRef = useRef<number | null>(null);
+  const cancelledRef = useRef(false); // flag to suppress onstop save
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceNodeRef = useRef<MediaStreamAudioSourceNode | null>(null);
@@ -48,6 +58,14 @@ const Record = React.forwardRef<RecordComponentRef, RecordProps>(({
   const chunksRef = useRef<Blob[]>([]);
   const highPassFilterRef = useRef<BiquadFilterNode | null>(null);
   const lowPassFilterRef = useRef<BiquadFilterNode | null>(null);
+
+  useEffect(()=>{
+    if(isRecording){
+      onRecordingStart?.();
+    }else{
+      onRecordingStop?.();
+    }
+  },[isRecording])
   // Audio normalization function
   const normalizeAudio = useCallback((samples: Float32Array): Float32Array => {
     let max = 0;
@@ -100,6 +118,35 @@ const Record = React.forwardRef<RecordComponentRef, RecordProps>(({
         }
       });
       streamRef.current = stream;
+
+      // Start volume level analysis
+      try {
+        const volumeCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const volumeSource = volumeCtx.createMediaStreamSource(stream);
+        const analyserNode = volumeCtx.createAnalyser();
+        analyserNode.fftSize = 256;
+        volumeSource.connect(analyserNode);
+        volumeAudioCtxRef.current = volumeCtx;
+
+        const updateVolume = () => {
+          if (!analyserNode) return;
+          const dataArray = new Uint8Array(analyserNode.frequencyBinCount);
+          analyserNode.getByteTimeDomainData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) {
+            const v = (dataArray[i] - 128) / 128;
+            sum += v * v;
+          }
+          const rms = Math.sqrt(sum / dataArray.length);
+          // Scale it for better visual representation of speech levels
+          const level = Math.min(1, rms * 5);
+          setVolume(level);
+          volumeRafRef.current = requestAnimationFrame(updateVolume);
+        };
+        volumeRafRef.current = requestAnimationFrame(updateVolume);
+      } catch (e) {
+        console.warn('Volume analysis creation failed:', e);
+      }
       // Strengthen WebRTC audio processing if available
       try {
         const [track] = stream.getAudioTracks();
@@ -124,6 +171,7 @@ const Record = React.forwardRef<RecordComponentRef, RecordProps>(({
           }
         };
         mediaRecorder.onstop = async () => {
+          if (cancelledRef.current) return; // discard — cancelled
           try {
             const audioBlob = new Blob(chunksRef.current, { type: 'audio/wav' });
             const normalizedSamples = await processAudioBlob(audioBlob);
@@ -334,6 +382,15 @@ const Record = React.forwardRef<RecordComponentRef, RecordProps>(({
           lowPassFilterRef.current = null;
         }
       }
+      if (volumeRafRef.current) {
+        cancelAnimationFrame(volumeRafRef.current);
+        volumeRafRef.current = null;
+      }
+      if (volumeAudioCtxRef.current) {
+        try { volumeAudioCtxRef.current.close(); } catch {}
+        volumeAudioCtxRef.current = null;
+      }
+      setVolume(0);
       setIsRecording(false);
       onRecordingStop?.();
       // Clean up stream
@@ -343,16 +400,75 @@ const Record = React.forwardRef<RecordComponentRef, RecordProps>(({
       }
     })();
   }, [isRecording, onFileSaved, onRecordingStop, processAudioBlob, downsample, targetSampleRate]);
+
+  // Cancel recording — tears down everything without saving
+  const cancelRecording = useCallback(() => {
+    if (!isRecording) return;
+    cancelledRef.current = true;
+    // Kill MediaRecorder without triggering its onstop save path
+    if (mediaRecorderRef.current) {
+      try { mediaRecorderRef.current.stop(); } catch {}
+    }
+    // Disconnect manual PCM nodes
+    try { processorNodeRef.current?.disconnect(); } catch {}
+    try {
+      workletNodeRef.current && (workletNodeRef.current.port.onmessage = null as any);
+      workletNodeRef.current?.disconnect();
+    } catch {}
+    try { sourceNodeRef.current?.disconnect(); } catch {}
+    try { highPassFilterRef.current?.disconnect(); } catch {}
+    try { lowPassFilterRef.current?.disconnect(); } catch {}
+    if (audioContextRef.current) {
+      audioContextRef.current.close().catch(() => {});
+      audioContextRef.current = null;
+    }
+    // Clear recorded data so nothing gets saved
+    chunksRef.current = [];
+    recordedFloat32Ref.current = [];
+    processorNodeRef.current = null;
+    workletNodeRef.current = null;
+    sourceNodeRef.current = null;
+    highPassFilterRef.current = null;
+    lowPassFilterRef.current = null;
+    if (workletUrlRef.current) {
+      try { URL.revokeObjectURL(workletUrlRef.current); } catch {}
+      workletUrlRef.current = null;
+    }
+    // Stop volume analysis
+    if (volumeRafRef.current) { cancelAnimationFrame(volumeRafRef.current); volumeRafRef.current = null; }
+    if (volumeAudioCtxRef.current) { volumeAudioCtxRef.current.close().catch(() => {}); volumeAudioCtxRef.current = null; }
+    setVolume(0);
+    // Stop stream tracks
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    streamRef.current = null;
+    setIsRecording(false);
+    // Reset flag for next recording
+    setTimeout(() => { cancelledRef.current = false; }, 100);
+  }, [isRecording]);
+
+  // Cancel recording on unmount if it's active
+  const cancelOnUnmountRef = useRef(cancelRecording);
+  useEffect(() => {
+    cancelOnUnmountRef.current = cancelRecording;
+  }, [cancelRecording]);
+
+  useEffect(() => {
+    return () => {
+      cancelOnUnmountRef.current();
+    };
+  }, []);
+
   // Expose methods through ref
   React.useImperativeHandle(ref, () => ({
     startRecording,
     stopRecording,
+    cancelRecording,
     isRecording
-  }), [startRecording, stopRecording, isRecording]);
+  }), [startRecording, stopRecording, cancelRecording, isRecording]);
   // Render children with recording state
   return (
     <>
-      {children({ isRecording, startRecording, stopRecording })}
+      {children({ isRecording, startRecording, stopRecording, cancelRecording, volume })}
     </>
   );
 });

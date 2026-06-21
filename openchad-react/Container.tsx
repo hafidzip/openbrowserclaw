@@ -47,6 +47,8 @@ if (typeof window !== 'undefined') {
     });
   }
 }
+
+
 // Component that uses the promise
 
 const TabItem = React.memo(({ children, isOpened }: { children: React.ReactNode, isOpened: boolean }) => {
@@ -105,10 +107,11 @@ import Bar from './Bar'
 import { getAllWebviews, getCurrentWebview, Webview } from '@tauri-apps/api/webview'
 import type { ControllableBrowser } from './components/ControllableBrowsers'
 import { isRegistered, register, unregister } from '@tauri-apps/plugin-global-shortcut'
-import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
+import { getCurrentWebviewWindow, WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import Chat from './components/chat'
 import Composer, { ScheduleInterval } from './components/composer'
 import { toast } from 'sonner'
+import { createWebview } from './utils'
 
 export default function Container({ Apps }: { Apps: Project }) {
   if (Apps.defaultTab.tabs.length === 0) {
@@ -135,20 +138,16 @@ export default function Container({ Apps }: { Apps: Project }) {
   });
   const [mounted, setMounted] = useState(false);
   const [isCreateTask, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: false });
-  const [animateExit, setAnimateExit] = useState(false);
+  const [, setAnimateExit] = useState(false);
   const [selectedAgent, setSelectedAgent] = useState<IAgent | null>(null);
   const [taskInterval, setTaskInterval] = useDatabaseImpl<ScheduleInterval>("taskInterval", { initialValue: 'once' });
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const [isSwitchWorkspace, setIsSwitchWorkspace] = useGlobal('isSwitchWorkspace', { initialValue: false });
-  const [showSearchDialog, setShowSearchDialog] = useGlobal('showSearchDialog', { initialValue: false });
-  const [showMcpDialog, setShowMcpDialog] = useGlobal('showMcpDialog', { initialValue: false });
+  const [, setShowSearchDialog] = useGlobal('showSearchDialog', { initialValue: false });
+  const [, setShowMcpDialog] = useGlobal('showMcpDialog', { initialValue: false });
   const [showCredentialsDialog, setShowCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false });
   const [showLocalModelDialog, setShowLocalModelDialog] = useGlobal('showLocalModelDialog', { initialValue: false });
   const [showCustomEndpointDialog, setShowCustomEndpointDialog] = useGlobal('showCustomEndpointDialog', { initialValue: false });
-  const [showSettingsDialog, setShowSettingsDialog] = useGlobal('showSettingsDialog', { initialValue: false });
-  const [showTaskDialog, setShowTaskDialog] = useGlobal('showTaskDialog', { initialValue: false });
-  const [showControllableBrowsersDialog, setShowControllableBrowsersDialog] = useGlobal('showControllableBrowsersDialog', { initialValue: false });
-  const [showAgentsDialog, setShowAgentsDialog] = useGlobal('showAgentsDialog', { initialValue: false });
   const [showCodeDialog, setShowCodeDialog] = useGlobal('showCodeDialog', { initialValue: false });
   const [codeLanguage, setCodeLanguage] = useGlobal('codeLanguage', { initialValue: "text" });
   const [code, setCode] = useGlobal('code', { initialValue: "" });
@@ -225,9 +224,8 @@ export default function Container({ Apps }: { Apps: Project }) {
         const label = `webview-${uuid}`;
 
         if (!all.find((wv) => wv.label === label)) {
-          await AsyncLock.acquire();
           console.log(browser);
-          const w = new Webview(win, label, {
+          const w = await createWebview(label, {
             url: browser.url || 'about:blank',
             width: 100,
             height: 100,
@@ -235,43 +233,48 @@ export default function Container({ Apps }: { Apps: Project }) {
             y: 100,
           });
 
-          await w.once('tauri://created', async () => {
-            await w.hide();
-            current += 1;
+          if (w) {
+            await w.once('tauri://created', async () => {
+              await w.hide();
+              current += 1;
 
-            if (current === target) {
-              setInitializeBrowser(true);
-            }
-            AsyncLock.release();
-          });
+              if (current === target) {
+                setInitializeBrowser(true);
+              }
+            });
 
-          await w.listen('page_loaded', (event) => {
-            window.dispatchEvent(new CustomEvent('page_loaded', { detail: event.payload }));
-          });
+            await w.once('tauri://error', (e) => {
+              console.error(`Webview "${label}" failed to create:`, e);
+            })
 
-          await w.listen('focus', (event) => {
-            window.dispatchEvent(new CustomEvent('focus', { detail: event.payload }));
-          });
+            await w.listen('page_loaded', (event) => {
+              window.dispatchEvent(new CustomEvent('page_loaded', { detail: event.payload }));
+            });
 
-          await w.listen('update_location', (event) => {
-            window.dispatchEvent(new CustomEvent('update_location', { detail: event.payload }));
-          });
+            await w.listen('focus', (event) => {
+              window.dispatchEvent(new CustomEvent('focus', { detail: event.payload }));
+            });
 
-          await w.listen('update_location_title_icon', (event) => {
-            window.dispatchEvent(new CustomEvent('update_location_title_icon', { detail: event.payload }));
-          });
+            await w.listen('update_location', (event) => {
+              window.dispatchEvent(new CustomEvent('update_location', { detail: event.payload }));
+            });
 
-          await w.listen('delete_tab', (event) => {
-            window.dispatchEvent(new CustomEvent('delete_tab', { detail: event.payload }));
-          });
+            await w.listen('update_location_title_icon', (event) => {
+              window.dispatchEvent(new CustomEvent('update_location_title_icon', { detail: event.payload }));
+            });
 
-          await w.listen('switch_tab', (event) => {
-            window.dispatchEvent(new CustomEvent('switch_tab', { detail: event.payload }));
-          });
+            await w.listen('delete_tab', (event) => {
+              window.dispatchEvent(new CustomEvent('delete_tab', { detail: event.payload }));
+            });
 
-          await w.listen('create_task', async (event) => {
-            window.dispatchEvent(new CustomEvent('create_task', { detail: event.payload }));
-          })
+            await w.listen('switch_tab', (event) => {
+              window.dispatchEvent(new CustomEvent('switch_tab', { detail: event.payload }));
+            });
+
+            await w.listen('create_task', async (event) => {
+              window.dispatchEvent(new CustomEvent('create_task', { detail: event.payload }));
+            })
+          }
 
         } else {
           // Fallback: If the webview already exists, we still need to increment 
@@ -750,21 +753,6 @@ export default function Container({ Apps }: { Apps: Project }) {
   }
 
   useEffect(() => {
-    (async () => {
-      if (typeof window !== 'undefined' && !!(window as any).__TAURI__) {
-        try {
-          const res = await pyInvoke<{ data?: Record<string, unknown>; error?: string }>('check_tauri', {});
-          if (res && typeof res === 'object' && 'data' in res) {
-            console.warn(res.data);
-          }
-        } catch (e) {
-          console.error(e);
-          window.location.reload();
-        }
-      }
-    })()
-  }, [])
-  useEffect(() => {
     setTabs((prevTabs: any) => {
       const nextTabs = { ...prevTabs };
       let hasChanges = false;
@@ -805,6 +793,7 @@ export default function Container({ Apps }: { Apps: Project }) {
         const url = chip.getAttribute('data-url') || '';
         const source = chip.getAttribute('data-source') || '';
         if (url && source) {
+          e.stopPropagation();
           const path = url.startsWith('/file/') ? decodeURIComponent(url.slice(6)) : url;
           try {
             const r = await pyInvoke('file', {
@@ -816,7 +805,7 @@ export default function Container({ Apps }: { Apps: Project }) {
               toast("File revealed", {
                 position: 'bottom-right',
                 description: <div className='flex flex-col'>
-                  Path: {path}<br />
+                  <span className='truncate w-[300px]'>Path: {path} </span>
                 </div>,
               })
             } else {
@@ -827,9 +816,9 @@ export default function Container({ Apps }: { Apps: Project }) {
             console.error(e)
             toast("Failed to reveal file", {
               position: 'bottom-right',
-              description: <div className='flex flex-col'>
-                Path: {path}<br />
-                Error: {String(e)}
+              description: <div className='flex flex-col pointer-events-none relative w-full select-none'>
+                <span className='truncate w-[300px]'>Path: {path} </span>
+                <span>{String(e)}</span>
               </div>,
             })
           }
@@ -1057,7 +1046,7 @@ export default function Container({ Apps }: { Apps: Project }) {
       />
 
       <Toaster
-        theme={snaptheme.theme==='dark'?'dark':'light'}
+        theme={snaptheme.theme === 'dark' ? 'dark' : 'light'}
         position="bottom-right"
         style={{ '--toast-z-index': '2147483647' } as React.CSSProperties}
       />
@@ -1080,157 +1069,156 @@ export default function Container({ Apps }: { Apps: Project }) {
         </DialogContent>
       </DialogUI>
 
-      <AnimatePresence custom={animateExit}>
-        {isCreateTask && (
-          <motion.div
-            key="composer-overlay"
-            custom={animateExit}
-            variants={composerVariants}
-            initial="initial"
-            animate="animate"
-            exit="exit"
-            transition={{ duration: 0.2, ease: 'easeOut' }}
-            className={clsx(
-              'w-full h-full absolute',
-              isCreateTask && 'bg-black/90'
-            )}
-            style={{ zIndex: 50 }}
-          >
-            <div className='w-full h-full flex items-center justify-center'>
-              <div onClick={() => {
-                setIsCreateTask(false);
-                setAnimateExit(false);
-              }} className='w-full h-full absolute top-0 left-0 bg-transparent'>
-
-              </div>
-              <Composer
-                showModelSelection={true}
-                showInterval={true}
-                showHeader={false}
-                workspace={workspace}
-                agent={selectedAgent}
-                setAgent={setSelectedAgent}
-                selectionMode={'agent'}
-                interval={taskInterval}
-                onIntervalChange={setTaskInterval}
-                onSubmit={async (value: string) => {
-                  console.log(value);
-                  setAnimateExit(true);
-                  setIsCreateTask(false);
-                  const taskId = uuidv4()
-                  const db = workspace ?? 'global';
-                  const sql = `INSERT OR REPLACE INTO tasks (id, metadata) VALUES (?, ?)`;
-                  await pyInvoke("sqlite", {
-                    db,
-                    command: "execute",
-                    sql: `CREATE TABLE IF NOT EXISTS tasks (
-                                                    id    TEXT PRIMARY KEY,
-                                                    metadata TEXT
-                                                )`,
-                    params: []
-                  });
-
-                  await pyInvoke("sqlite", {
-                    db,
-                    command: "execute",
-                    sql,
-                    params: [
-                      taskId,
-                      JSON.stringify({
-                        icon: 'AlarmClockCheck',
-                        query: value,
-                        interval: taskInterval,
-                        agent: selectedAgent?.id,
-                        timestamp: Date.now(),
-                      })
-                    ]
-                  });
-
-
-
-                  const branch = sha256("0").slice(0, 32);
-                  const tbRaw = "msg_" + branch + "_0";
-                  // Note: do NOT pre-hash tbRaw — the backend hashes it as
-                  // generateIdFromString(tab_id + "/" + tb), matching MessageContainer's useDatabase.
-                  const branchId = sha256(branch).slice(0, 32);
-                  const branchIndex = 0;
-                  const activeId = taskId + "_response_" + branchId + "_0_" + branchIndex;
-
-                  const initTb = generateIdFromString(taskId + "/" + "message_state");
-
-                  let initialValue = {
-                    title: { _v: value },
-                    activeId: { _v: activeId },
-                    errorMsg: { _v: "" },
-                    initialized: { _v: true },
-                    isStreaming: { _v: true },
-                    context: { _v: "" },
-                    dontStop: { _v: true },
-                  }
-
-                  await pyInvoke("sqlite", {
-                    db, table: initTb, command: 'sync_table', data: initialValue
-                  });
-                  let errorlog: string | null = null;
-                  if (selectedAgent?.id && value.trim().length > 0) {
-                    try {
-                      const streamRes = await pyInvoke("v1/chat/completions", {
-                        id: activeId,
-                        query: value,
-                        stream: true,
-                        agent: selectedAgent?.id,
-                        tab_id: taskId,
-                        branch_id: branchId,
-                        index: branchIndex,
-                        response_branch: 0,
-                        tb: tbRaw,
-                        workspace: db,
-                        app_name: "",
-                        pipeline: settings["Others/app_settings/string.pipeline"]?.value || "openchad/chat"
-                      });
-                      if (streamRes && typeof streamRes === 'object' && Symbol.asyncIterator in streamRes) {
-                        for await (const _ of streamRes as any) { /* consume stream */ }
-                      }
-                    } catch (error) {
-                      errorlog = JSON.stringify(error);
-                    } finally {
-                      await pyInvoke("sqlite", {
-                        db, table: initTb, command: 'sync_table', data: {
-                          ...initialValue,
-                          ...(errorlog && { errorMsg: errorlog }),
-                          isStreaming: { _v: false },
-                          activeId: { _v: "" }
-                        }
-                      });
-                    }
-                  } else {
-                    await pyInvoke("sqlite", {
-                      db, table: initTb, command: 'sync_table', data: {
-                        ...initialValue,
-                        errorMsg: { _v: "No Agent Selected" },
-                        isStreaming: { _v: false },
-                        activeId: { _v: "" }
-                      }
-                    });
-                  }
-
-
-                }}
-                width={1920}
-                height={1080}
-                isStreaming={false}
-                style={{ maxWidth: `100vw` }}
-                ref={composerRef}
-                maxHeight={'90vh'}
-                className={clsx(
-                  "w-[768px] mx-auto z-30",
-                  'relative',
-                )}
-              />
-            </div>
-          </motion.div>
+      <motion.div
+        key="composer-overlay"
+        animate={isCreateTask
+          ? { opacity: 1, scale: 1, pointerEvents: 'auto' as const }
+          : { opacity: 0, scale: 0.95, pointerEvents: 'none' as const }
+        }
+        initial={{ opacity: 0, scale: 0.95, pointerEvents: 'none' as const }}
+        transition={{ duration: 0.2, ease: 'easeOut' }}
+        className={clsx(
+          'w-full h-full absolute',
+          isCreateTask && 'bg-black/90'
         )}
-      </AnimatePresence>
+        style={{ zIndex: 50, visibility: isCreateTask ? 'visible' : 'hidden' }}
+      >
+        <div className='w-full h-full flex items-center justify-center'>
+          <div onClick={() => {
+            setIsCreateTask(false);
+            setAnimateExit(false);
+          }} className='w-full h-full absolute top-0 left-0 bg-transparent'>
+
+          </div>
+          <Composer
+            name={'task'}
+            tabId={'task'}
+            activeId={isCreateTask ? 'task' : 'task-inactive'}
+            showModelSelection={true}
+            showInterval={true}
+            showHeader={false}
+            workspace={workspace}
+            agent={selectedAgent}
+            setAgent={setSelectedAgent}
+            selectionMode={'agent'}
+            interval={taskInterval}
+            onIntervalChange={setTaskInterval}
+            onSubmit={async (value: string) => {
+              console.log(value);
+              setAnimateExit(true);
+              setIsCreateTask(false);
+              const taskId = uuidv4()
+              const db = workspace ?? 'global';
+              const sql = `INSERT OR REPLACE INTO tasks (id, metadata) VALUES (?, ?)`;
+              await pyInvoke("sqlite", {
+                db,
+                command: "execute",
+                sql: `CREATE TABLE IF NOT EXISTS tasks (
+                                                id    TEXT PRIMARY KEY,
+                                                metadata TEXT
+                                            )`,
+                params: []
+              });
+
+              await pyInvoke("sqlite", {
+                db,
+                command: "execute",
+                sql,
+                params: [
+                  taskId,
+                  JSON.stringify({
+                    icon: 'AlarmClockCheck',
+                    query: value,
+                    interval: taskInterval,
+                    agent: selectedAgent?.id,
+                    timestamp: Date.now(),
+                  })
+                ]
+              });
+
+
+
+              const branch = sha256("0").slice(0, 32);
+              const tbRaw = "msg_" + branch + "_0";
+              // Note: do NOT pre-hash tbRaw — the backend hashes it as
+              // generateIdFromString(tab_id + "/" + tb), matching MessageContainer's useDatabase.
+              const branchId = sha256(branch).slice(0, 32);
+              const branchIndex = 0;
+              const activeId = taskId + "_response_" + branchId + "_0_" + branchIndex;
+
+              const initTb = generateIdFromString(taskId + "/" + "message_state");
+
+              let initialValue = {
+                title: { _v: value },
+                activeId: { _v: activeId },
+                errorMsg: { _v: "" },
+                initialized: { _v: true },
+                isStreaming: { _v: true },
+                context: { _v: "" },
+                dontStop: { _v: true },
+              }
+
+              await pyInvoke("sqlite", {
+                db, table: initTb, command: 'sync_table', data: initialValue
+              });
+              let errorlog: string | null = null;
+              if (selectedAgent?.id && value.trim().length > 0) {
+                try {
+                  const streamRes = await pyInvoke("v1/chat/completions", {
+                    id: activeId,
+                    query: value,
+                    stream: true,
+                    agent: selectedAgent?.id,
+                    tab_id: taskId,
+                    branch_id: branchId,
+                    index: branchIndex,
+                    response_branch: 0,
+                    tb: tbRaw,
+                    workspace: db,
+                    app_name: "",
+                    pipeline: settings["Others/app_settings/string.pipeline"]?.value || "openchad/chat"
+                  });
+                  if (streamRes && typeof streamRes === 'object' && Symbol.asyncIterator in streamRes) {
+                    for await (const _ of streamRes as any) { /* consume stream */ }
+                  }
+                } catch (error) {
+                  errorlog = JSON.stringify(error);
+                } finally {
+                  await pyInvoke("sqlite", {
+                    db, table: initTb, command: 'sync_table', data: {
+                      ...initialValue,
+                      ...(errorlog && { errorMsg: errorlog }),
+                      isStreaming: { _v: false },
+                      activeId: { _v: "" }
+                    }
+                  });
+                }
+              } else {
+                await pyInvoke("sqlite", {
+                  db, table: initTb, command: 'sync_table', data: {
+                    ...initialValue,
+                    errorMsg: { _v: "No Agent Selected" },
+                    isStreaming: { _v: false },
+                    activeId: { _v: "" }
+                  }
+                });
+              }
+
+
+            }}
+            width={1920}
+            height={1080}
+            isStreaming={false}
+            style={{ maxWidth: `100vw` }}
+            ref={composerRef}
+            maxHeight={'90vh'}
+            className={clsx(
+              "w-[768px] mx-auto z-30",
+              'relative',
+            )}
+          />
+        </div>
+      </motion.div>
       <motion.div
         animate={{
           opacity: isSearchChatOpen ? 1 : 0,

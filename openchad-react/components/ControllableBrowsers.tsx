@@ -136,7 +136,10 @@ export default function ControllableBrowsers({
             await AsyncLock.run(async () => {
                 const all = await getAllWebviews();
                 const w = all.find((wv) => wv.label === `webview-${label}`);
-                if (w) await w.close();
+                if (w) {
+                    await w.clearAllBrowsingData()
+                    await w.close();
+                }
             });
             (async () => { await deleteTabWithGroupSelection(label); })();
         });
@@ -214,7 +217,7 @@ export default function ControllableBrowsers({
                 </div>
                 <div className="flex items-center text-xs opacity-50 gap-1">
                     <MessageCircleWarning size={10} />
-                    <span>These browsers can be controlled by an agent and stay active in the background.</span>
+                    <span>These browsers can be controlled by an agent{ !(window as any).IS_LINUX && <>, each with an isolated browser profile</>}, and remain active in the background.</span>
                 </div>
                 <div className="flex-1" />
                 {!isAdding && (

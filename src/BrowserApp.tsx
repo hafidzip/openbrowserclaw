@@ -11,7 +11,7 @@ import { BrowserBar } from 'openchad-react/Bar';
 import { deleteActiveTabWithGroupSelection, MenuBar, TabInfo, TabState } from 'openchad-react/utils/state';
 
 import { emitTo } from '@tauri-apps/api/event';
-import { uuidv4 } from 'openchad-react/utils';
+import { createWebview, uuidv4 } from 'openchad-react/utils';
 import { useDatabaseImpl } from 'openchad-react/components/useDatabase';
 import type { ControllableBrowser } from 'openchad-react/components/ControllableBrowsers';
 
@@ -237,7 +237,6 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
   const [focus, setFocus] = useState(false)
   const [refresh, setRefresh] = useState(0)
 
-  const [loaded, setLoaded] = useState(false)
   const [showPalette, setShowPalette] = useState(false)
   const [initialized, setInitialized] = useState(false)
 
@@ -397,7 +396,7 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
       MenuBar.tabId = tabId
       MenuBar.current = ref(<>{element}</>) as React.JSX.Element
     }
-  }, [activeTabId, activeAppId, element])
+  }, [activeTabId, activeAppId, url, element])
 
   useEffect(() => {
     if (!mounted) setMount(activeTabId == tabId)
@@ -500,7 +499,6 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
       if (existing) {
         setFocus(false)
         setRefresh(prev => (prev + 1) % 2)
-        setLoaded(true)
         await existing.show()
       } else {
         console.log('init webview')
@@ -510,48 +508,45 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
           const rect = container.getBoundingClientRect()
           if (rect.width === 0 || rect.height === 0) return
 
-          setLoaded(false)
-          await AsyncLock.acquire();
-          const wvw = new Webview(await getCurrentWindow(), label, {
+          // await AsyncLock.acquire();
+          const wvw = await createWebview(label, {
             url: /^https?:\/\//.test(url.url) ? url.url : "about:blank",
             width: Math.round(rect.width),
             height: Math.round(rect.height),
             x: screenX,
             y: screenY
           })
+          // AsyncLock.release();
+          setFocus(false)
+          setRefresh(prev => (prev + 1) % 2)
 
-          wvw.listen('page_loaded', (event) => {
-            window.dispatchEvent(new CustomEvent('page_loaded', { detail: event.payload }));
-          });
+          if (wvw) {
+            wvw.listen('page_loaded', (event) => {
+              window.dispatchEvent(new CustomEvent('page_loaded', { detail: event.payload }));
+            });
 
-          wvw.listen('update_location', (event) => {
-            window.dispatchEvent(new CustomEvent('update_location', { detail: event.payload }));
-          })
-          wvw.listen('update_location_title_icon', (event) => {
-            window.dispatchEvent(new CustomEvent('update_location_title_icon', { detail: event.payload }));
-          })
-          wvw.listen('delete_tab', async (event) => {
-            window.dispatchEvent(new CustomEvent('delete_tab', { detail: event.payload }));
-          })
-          
-          wvw.listen('switch_tab', async (event) => {
-            window.dispatchEvent(new CustomEvent('switch_tab', { detail: event.payload }));
-          })
+            wvw.listen('update_location', (event) => {
+              window.dispatchEvent(new CustomEvent('update_location', { detail: event.payload }));
+            })
+            wvw.listen('update_location_title_icon', (event) => {
+              window.dispatchEvent(new CustomEvent('update_location_title_icon', { detail: event.payload }));
+            })
+            wvw.listen('delete_tab', async (event) => {
+              window.dispatchEvent(new CustomEvent('delete_tab', { detail: event.payload }));
+            })
 
-          wvw.listen('create_task', async (event) => {
-            window.dispatchEvent(new CustomEvent('create_task', { detail: event.payload }));
-          })
+            wvw.listen('switch_tab', async (event) => {
+              window.dispatchEvent(new CustomEvent('switch_tab', { detail: event.payload }));
+            })
 
-          wvw.listen('focus', async (event) => {
-            window.dispatchEvent(new CustomEvent('focus', { detail: event.payload }));
-          })
+            wvw.listen('create_task', async (event) => {
+              window.dispatchEvent(new CustomEvent('create_task', { detail: event.payload }));
+            })
 
-          await wvw.once('tauri://created', async () => {
-            setLoaded(true)
-            setFocus(false)
-            setRefresh(prev => (prev + 1) % 2)
-            AsyncLock.release();
-          })
+            wvw.listen('focus', async (event) => {
+              window.dispatchEvent(new CustomEvent('focus', { detail: event.payload }));
+            })
+          }
         }
         await initWebview()
       }
@@ -579,7 +574,7 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
           const db = workspaceRef.current ?? "global"
           const sql = `INSERT OR REPLACE INTO site_registry (id, metadata) VALUES (?, ?)`
 
-          if(browserReadyRef.current && appId.startsWith("agent")) {
+          if (browserReadyRef.current && appId.startsWith("agent")) {
             console.log(browsers);
             setBrowsers((prev) => {
               const newBrowsers = { ...prev }
@@ -602,8 +597,8 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
                     )`,
             params: []
           })
-          
-          if(data.icon && layoutRef.current === "single"){
+
+          if (data.icon && layoutRef.current === "single") {
             setIcon(data.icon)
           }
 
@@ -684,7 +679,7 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
       // TODO
     }
 
-    const onCreateTask = () =>{
+    const onCreateTask = () => {
       setIsCreateTask(true);
     }
 
@@ -731,7 +726,7 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
       }}
       className={clsx(
         "flex flex-col w-full h-full relative overflow-hidden",
-        !loaded && "bg-card"
+        !initialized && "bg-card"
       )}>
 
       {/*

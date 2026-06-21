@@ -17,6 +17,7 @@
     "core:webview:allow-set-webview-position",
     "core:webview:allow-webview-hide",
     "core:webview:allow-webview-show",
+    "core:webview:allow-clear-all-browsing-data",
     "core:window:default",
     "core:window:allow-get-all-windows",
     "core:window:allow-create",

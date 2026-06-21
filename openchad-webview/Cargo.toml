@@ -93,4 +93,5 @@ pytauri = { version = "0.8", features = [
 pytauri-core = { version = "0.8" }
 tauri-plugin-pytauri = { version = "0.8" }
 pyo3-utils = { version = "0.4", features = ["unstable"] }
+url = { version = "2" }
 # 👆

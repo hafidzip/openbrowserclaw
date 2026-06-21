@@ -8,7 +8,7 @@ import MessageContainer from "./message-container";
 import { sha256 } from "js-sha256";
 import ModelSelection from "./model-selection";
 import { ArrowDown } from "lucide-react";
-import { generateIdFromString, useAvailableAgents, type IAgent } from "../index";
+import { generateIdFromString, useAvailableAgents, useGlobal, type IAgent } from "../index";
 import type { SelectionMode } from "./composer";
 import { MenuBar, TabState } from "openchad-react/utils/state";
 
@@ -66,14 +66,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
     })
 
     useEffect(() => {
-        if (activeId == tabId) {
-            MenuBar.appId = appId
-            MenuBar.tabId = tabId
-            MenuBar.current = null
-        }
-    }, [activeId])
-
-    useEffect(() => {
         if (title) return;
         const _t = messageState.title;
         if (mounted && _t && typeof currentTab?.childrenProps !== "undefined") {
@@ -99,15 +91,13 @@ export default function DefaultPage(AppInfo: AppInfo) {
     }, [ready]);
 
     useEffect(() => {
-        if (activeId == tabId && ready) {
-            setTimeout(() => {
-                scrollToBottom('instant');
-                setJustOpen(false);
-            }, 100);
+        if (activeId == tabId) {
+            scrollToBottom('instant');
+            setJustOpen(false);
         } else {
             setJustOpen(true);
         }
-    }, [activeId, ready]);
+    }, [activeId]);
 
 
     useEffect(() => {
@@ -223,7 +213,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
         } finally {
             setMessageState(prev => ({
                 ...prev,
-                activeId:'',
+                activeId: '',
                 isStreaming: false,
                 ...(errorlog && { errorMsg: errorlog })
             }));
@@ -417,6 +407,9 @@ export default function DefaultPage(AppInfo: AppInfo) {
                         </button>
                     )}
                     <Composer
+                        name={tabId}
+                        tabId={tabId}
+                        activeId={activeId}
                         workspace={workspace}
                         onSubmit={async (value: string) => {
                             if (messageState.isStreaming) {

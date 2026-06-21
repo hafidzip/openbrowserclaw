@@ -2,7 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import './globals.css'
 import App from './App'
-import { Container, OpenChadIcon, type Project } from "openchad-react"
+import { AgentNodeEditor, Container, type Project } from "openchad-react"
 import BrowserApp from './BrowserApp'
 import loader from '@monaco-editor/loader'
 import * as monaco from 'monaco-editor'
@@ -11,6 +11,7 @@ import jsonWorker from 'monaco-editor/esm/vs/language/json/json.worker?worker'
 import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker'
 import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker'
 import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
+import { Layers } from 'lucide-react'
 
 // Configure Monaco workers to use local bundled files (CDN is blocked by CSP)
 self.MonacoEnvironment = {
@@ -28,7 +29,7 @@ loader.config({ monaco })
 
 const Apps: Project = {
   projectName: "OpenBrowser",
-  projectIcon: OpenChadIcon,
+  projectIcon: () => <Layers className='w-5 h-5'/>,
   defaultTab: {
     layout: "single",
     icon: "Compass",
@@ -42,7 +43,7 @@ const Apps: Project = {
   },
   size: [50],
   appRegistry: {
-    "agent": App 
+    "agent": AgentNodeEditor 
   }
 }
 

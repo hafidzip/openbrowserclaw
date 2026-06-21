@@ -41,7 +41,7 @@ import remarkGfm from 'remark-gfm'
 import Composer from './components/composer'
 import { AnimatePresence, motion, type Variants } from 'motion/react'
 import Tasks from './components/Tasks'
-import { useDatabase, generateIdFromString } from '.'
+import { useDatabase, generateIdFromString } from './index'
 import Chat from './components/chat'
 import type { Model } from './utils'
 import { useDatabaseImpl } from './components/useDatabase'
@@ -1074,23 +1074,6 @@ export default function ContainerOverlayApp(
     }, []);
 
 
-
-    useEffect(() => {
-        (async () => {
-            if (typeof window !== 'undefined' && !!(window as any).__TAURI__) {
-                try {
-                    const res = await pyInvoke<{ data?: Record<string, unknown>; error?: string }>('check_tauri', {});
-                    if (res && typeof res === 'object' && 'data' in res) {
-                        console.warn(res.data);
-                    }
-                } catch (e) {
-                    console.error(e);
-                    window.location.reload();
-                }
-            }
-        })()
-    }, [])
-
     useEffect(() => {
         setMounted(true);
         if (isTauri) {
@@ -1260,6 +1243,7 @@ export default function ContainerOverlayApp(
 
                                     </div>
                                     <Composer
+                                        name='task'
                                         showModelSelection={true}
                                         workspace={'global'}
                                         model={model}

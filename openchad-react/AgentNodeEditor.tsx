@@ -27,10 +27,12 @@ import {
   AlertTriangle,
   AlertCircle
 } from 'lucide-react'
-import { ref, useFolder, useTheme, type AppInfo, Dropdown, useAvailableModels, uuidv4, usePythonEvent } from 'openchad-react'
+import { ref, useFolder, useTheme, type AppInfo, Dropdown, useAvailableModels, uuidv4, usePythonEvent, useGlobal } from 'openchad-react'
 import clsx from 'clsx'
-import { MenuBar } from 'openchad-react/utils/state'
+import { Model } from './utils'
+import { MenuBar } from './utils/state'
 import { open } from '@tauri-apps/plugin-dialog';
+
 
 
 
@@ -43,12 +45,38 @@ export interface AgentNode {
   children: string[]
   toolValues: Record<string, Record<string, any>>
   isRunning: boolean
-  isParallel: boolean
+  allowMultiple: boolean
   model: string | null
   warnings?: string[]
   errors?: string[]
   skillPath?: string | null
 }
+
+
+export type TreeNode = Omit<AgentNode, 'children'> & {
+  children: Record<string, TreeNode>;
+};
+
+export function buildTree(flat: Record<string, AgentNode>): Record<string, TreeNode> {
+  const allChildIds = new Set(
+    Object.values(flat).flatMap(n => n.children)
+  );
+
+  const rootIds = Object.keys(flat).filter(id => !allChildIds.has(id));
+
+  function buildNode(id: string): TreeNode {
+    const { children: childIds, ...rest } = flat[id];
+    return {
+      ...rest,
+      children: Object.fromEntries(
+        childIds.map(cid => [cid, buildNode(cid)])
+      ),
+    };
+  }
+
+  return Object.fromEntries(rootIds.map(id => [id, buildNode(id)]));
+}
+
 
 //  Constants 
 
@@ -59,7 +87,7 @@ const CARD_W = 176         // w-44 = 176px
 const CARD_H = 52
 const CARD_HALF_W = CARD_W / 2
 const CARD_HALF_H = CARD_H / 2
-const ZOOM_MIN = 0.4
+const ZOOM_MIN = 0.1
 const ZOOM_MAX = 2.0
 
 
@@ -732,6 +760,8 @@ const CollapsibleTextItem = React.memo(function CollapsibleTextItem({
 interface AgentEditorProps {
   selected: string
   agents: Record<string, AgentNode>
+  availableModels: Model[]
+  modelsLoading: boolean
   handleUpdateAgentProperty: (id: string, fields: Partial<AgentNode>, isTextField?: boolean) => void
   availableTools: { name: string; description: string; source: 'internal' | 'mcp' }[]
   handleAddAgent: (parentId: string) => void
@@ -744,6 +774,8 @@ interface AgentEditorProps {
 const AgentEditor = ({
   selected,
   agents,
+  availableModels,
+  modelsLoading,
   handleUpdateAgentProperty,
   availableTools,
   handleAddAgent,
@@ -752,7 +784,6 @@ const AgentEditor = ({
   toolFields,
   tabId
 }: AgentEditorProps) => {
-  const { models: availableModels, isLoading: modelsLoading } = useAvailableModels()
   const modelObj = availableModels.find(m => m.id === agents[selected].model)
   const label = modelObj?.name ?? agents[selected].model
 
@@ -950,7 +981,7 @@ const AgentEditor = ({
             label: m.name ?? m.id!,
             description: m.backend?.split(':').pop(),
           }))}
-        value=""
+        value={agents[selected].model || ""}
         onChange={(val) => {
           if (val) handleUpdateAgentProperty(selected, { model: val })
         }}
@@ -1230,17 +1261,17 @@ const AgentEditor = ({
         </div>
       ))}
 
-    {/* isParallel toggle */}
+    {/* Allow multiple toggle */}
     <div className="flex flex-col gap-1.5">
       <label className="text-xs font-semibold flex items-center gap-1" style={{ color: themeStyles.mutedFg }}>
-        <span>Parallel</span>
+        <span>Allow Multiple</span>
         <TooltipProvider>
           <Tooltip>
             <TooltipTrigger>
               <InfoIcon size={12} />
             </TooltipTrigger>
             <TooltipContent>
-              <p>If enabled, all children will be execute at the same time.</p>
+              <p>Allow multiple children of this agent to run concurrently.</p>
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
@@ -1248,24 +1279,24 @@ const AgentEditor = ({
       <div className="flex items-center gap-2">
         <button
           type="button"
-          id={`btn-parallel-${selected}`}
-          onClick={() => handleUpdateAgentProperty(selected, { isParallel: !agents[selected].isParallel })}
+          id={`btn-allow-multiple-${selected}`}
+          onClick={() => handleUpdateAgentProperty(selected, { allowMultiple: !agents[selected].allowMultiple })}
           className="relative w-9 h-5 rounded-full flex-shrink-0 transition-colors duration-200 focus:outline-none"
           style={{
-            background: agents[selected].isParallel ? '#34d399' : themeStyles.muted,
-            border: `1px solid ${agents[selected].isParallel ? '#34d399' : themeStyles.border}`,
+            background: agents[selected].allowMultiple ? '#34d399' : themeStyles.muted,
+            border: `1px solid ${agents[selected].allowMultiple ? '#34d399' : themeStyles.border}`,
           }}
         >
           <span
             className="absolute top-0.5 w-4 h-4 rounded-full shadow transition-all duration-200"
             style={{
-              background: agents[selected].isParallel ? '#fff' : themeStyles.mutedFg,
-              left: agents[selected].isParallel ? '17px' : '2px',
+              background: agents[selected].allowMultiple ? '#fff' : themeStyles.mutedFg,
+              left: agents[selected].allowMultiple ? '17px' : '2px',
             }}
           />
         </button>
-        <span className="text-xs" style={{ color: agents[selected].isParallel ? '#34d399' : themeStyles.mutedFg }}>
-          {agents[selected].isParallel ? 'Active' : 'Idle'}
+        <span className="text-xs" style={{ color: agents[selected].allowMultiple ? '#34d399' : themeStyles.mutedFg }}>
+          {agents[selected].allowMultiple ? 'Active' : 'Idle'}
         </span>
       </div>
     </div>
@@ -1337,7 +1368,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
       tools: [],
       children: [],
       isRunning: false,
-      isParallel: false,
+      allowMultiple: false,
       toolValues: {},
       model: null
     }
@@ -1351,6 +1382,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
   const [availableTools, setAvailableTools] = useState<{ name: string; description: string; source: 'internal' | 'mcp' }[]>([])
   const [tools] = useFolder('Tools')
   const [toolFields, setToolFields] = useState<Record<string, any[]>>({})
+  const { models: availableModels, isLoading: modelsLoading } = useAvailableModels()
   const { workspace } = useWorkspace()
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
@@ -1412,9 +1444,17 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
 
   useEffect(() => {
     if (activeTabId == tabId) {
-      MenuBar.current = MenuBar.current = null
+      MenuBar.current = null
     }
   }, [activeTabId])
+
+  const [, setSetupModel] = useGlobal('setupModel', { initialValue: false });
+
+  useEffect(() => {
+    if (activeTabId == tabId && availableModels.length == 0 && !modelsLoading) {
+      setSetupModel(true);
+    }
+  }, [activeTabId, availableModels, modelsLoading])
 
   useEffect(() => {
     if (!tools || tools.length === 0) return
@@ -1571,7 +1611,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
           tools: [],
           children: [],
           toolValues: {},
-          isParallel: false,
+          allowMultiple: false,
           isRunning: false,
           model: null
         }
@@ -2097,7 +2137,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
       tools: [],
       children: [],
       toolValues: {},
-      isParallel: false,
+      allowMultiple: false,
       isRunning: false,
       model: null
     }
@@ -2409,7 +2449,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
           ref={gridRef}
           className="absolute inset-0 pointer-events-none"
           style={{
-            backgroundImage: `radial-gradient(circle at 1px 1px, ${themeStyles.gridDot} 1px, transparent 0)`,
+            backgroundImage: `radial-gradient(circle at 1px 1px, rgba(${isDark ? 255 : 0},${isDark ? 255 : 0},${isDark ? 255 : 0}, ${0.07 * zoom}) 1px, transparent 0)`,
             backgroundSize: `${32 * zoom}px ${32 * zoom}px`,
             backgroundPosition: `${pan.x}px ${pan.y}px`,
             willChange: 'background-size, background-position',
@@ -2574,7 +2614,10 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
           </button>
           <button
             id="btn-fit-view"
-            onClick={fitView}
+            onClick={() => {
+              fitView();
+              console.log(agents)
+            }}
             className="p-2 rounded-lg transition-colors"
             style={{ color: themeStyles.mutedFg }}
             onMouseEnter={(e) => (e.currentTarget.style.color = themeStyles.accent)}
@@ -2624,6 +2667,8 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
 
           {selectedAgentId && agents[selectedAgentId] ? (
             <AgentEditor
+              availableModels={availableModels}
+              modelsLoading={modelsLoading}
               selected={selectedAgentId}
               agents={agents}
               handleUpdateAgentProperty={handleUpdateAgentProperty}

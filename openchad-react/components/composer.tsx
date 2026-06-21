@@ -1,4 +1,4 @@
-import { ArrowUp, Plus, Mic, Square, FileCode, Video, Volume2, FileText, File as FileIcon, ChevronDown, Unplug, Info, Bot, Cpu, Drama } from 'lucide-react'
+import { ArrowUp, Plus, Mic, Square, FileCode, Video, Volume2, FileText, File as FileIcon, ChevronDown, Unplug, Info, Bot, Cpu, Drama, X } from 'lucide-react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { useState, useRef, useEffect, useCallback, useMemo, memo, type CSSProperties } from 'react'
 import clsx from 'clsx'
@@ -87,7 +87,8 @@ export type ScheduleInterval =
   | '1d'
   | '1w'
   | '1m'
-
+  | 'disabled'
+ 
 export const INTERVAL_OPTIONS: { value: ScheduleInterval; label: string }[] = [
   { value: 'once', label: 'One-Time Execution' },
   { value: 'infinite', label: 'Automatically Re-run When Finished' },
@@ -95,6 +96,7 @@ export const INTERVAL_OPTIONS: { value: ScheduleInterval; label: string }[] = [
   { value: '1d', label: 'Every 1 Day' },
   { value: '1w', label: 'Every 1 Week' },
   { value: '1m', label: 'Every 1 Month' },
+  { value: 'disabled', label: 'Register First Run Later' },
 ]
 
 export function isLLMorVLM(m: Model): boolean {
@@ -324,6 +326,9 @@ function buildChipHTML(url: string, name: string, fileType?: string): string {
 export type SelectionMode = 'model' | 'agent'
 
 export default function Composer({
+  name,
+  tabId,
+  activeId,
   workspace,
   onSubmit,
   className,
@@ -345,6 +350,9 @@ export default function Composer({
   onIntervalChange,
   isStreaming,
 }: {
+  name: string,
+  tabId?: string,
+  activeId?: string | null,
   workspace: string
   onSubmit: (text: string, blocks?: ContentBlock[]) => void
   className: string
@@ -389,7 +397,39 @@ export default function Composer({
   const [availableModels, setAvailableModels] = useState<Model[]>([])
   const [modelSearch, setModelSearch] = useState('')
   const [agentSearch, setAgentSearch] = useState('')
-  const [, setOpen] = useGlobal('showAgentsDialog', {initialValue: false});
+  const [isRecording] = useGlobal(`isRecording-${name}`, { initialValue: false });
+  const isRecordingRef = useRef(false)
+  const N_BARS = 60
+  const volumeRef = useRef(0)
+  const cancelRecordingRef = useRef<(() => void) | null>(null)
+  const [volumeHistory, setVolumeHistory] = useState<number[]>(() => Array(N_BARS).fill(0.08))
+
+  useEffect(() => {
+    isRecordingRef.current = isRecording
+    if (!isRecording) {
+      setVolumeHistory(Array(N_BARS).fill(0.08))
+
+      volumeRef.current = 0
+      return
+    }
+
+    const interval = setInterval(() => {
+      setVolumeHistory(prev => [...prev.slice(1), volumeRef.current])
+    }, 50)
+
+    return () => clearInterval(interval)
+  }, [isRecording])
+
+
+  useEffect(() => {
+    if (activeId && tabId && cancelRecordingRef.current) {
+      if (activeId !== tabId) {
+        cancelRecordingRef.current();
+      }
+    }
+  }, [activeId]);
+
+  const [, setOpen] = useGlobal('showAgentsDialog', { initialValue: false });
   const debouncedModelSearch = useDebounce(modelSearch, MODEL_DEBOUNCE_MS)
   const debouncedAgentSearch = useDebounce(agentSearch, MODEL_DEBOUNCE_MS)
   const [isScanning, setIsScanning] = useState(false)
@@ -467,8 +507,10 @@ export default function Composer({
       return [{ content: <div className="flex items-center justify-center gap-3"><Spinner /><span>Loading…</span></div> }]
     }
     if (filteredAgents.length === 0) {
-      return [{ content: <div className="w-full flex flex-col items-center justify-center gap-3"><span>No agents found.</span>
-      {availableAgents.length == 0 && <Button size={'sm'} onClick={(e) => {setOpen(true);}}>Open Agents Menu</Button>}</div> }];
+      return [{
+        content: <div className="w-full flex flex-col items-center justify-center gap-3"><span>No agents found.</span>
+          {availableAgents.length == 0 && <Button size={'sm'} onClick={(e) => { setOpen(true); }}>Open Agents Menu</Button>}</div>
+      }];
     }
     return filteredAgents.map(a => ({
       content: (
@@ -493,7 +535,7 @@ export default function Composer({
     const chips = div.querySelectorAll<HTMLElement>('[data-img]')
     const hasImg = chips.length > 0
     const empty = text.length === 0 && !hasImg
-    const expanded = hasImg || text.includes('\n') || text.length > maxCharsRef.current
+    const expanded = !isRecordingRef.current && (hasImg || text.includes('\n') || text.length > maxCharsRef.current)
     setIsEmpty(prev => prev === empty ? prev : empty)
     setIsExpanded(prev => prev === expanded ? prev : expanded)
     // Cursor-guard: only needed when chips exist
@@ -511,6 +553,10 @@ export default function Composer({
   // internals (chips are <span contenteditable=false>, so they won't
   // receive childList mutations anyway, but childList:true + subtree:false
   // makes this explicit).
+  useEffect(() => {
+    syncState()
+  }, [isRecording])
+
   useEffect(() => {
     if (model && setModel && availableModels.findIndex(m => m.id === model.id) === -1) setModel({ name: null, id: null })
   }, [availableModels])
@@ -715,7 +761,7 @@ export default function Composer({
   }, [insertBlocks, insertChipAtCursor])
 
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
-    if (isStreaming) {
+    if (isStreaming || isRecording) {
       e.preventDefault()
       return
     }
@@ -845,7 +891,7 @@ export default function Composer({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isEmpty, isStreaming, syncState])
+  }, [isEmpty, isStreaming, isRecording, syncState])
 
   const handleSubmit = useCallback(() => {
     const blocks = serializeNode(editorRef.current!)
@@ -885,20 +931,21 @@ export default function Composer({
   ), [small, isExpanded])
 
   const editorCls = useMemo(() => clsx(
-    'relative w-[96.5%] bg-transparent focus:outline-none overflow-y-auto',
+    'relative w-[96.5%] bg-transparent focus:outline-none',
     'leading-normal break-all whitespace-pre-wrap',
-    'transition-[margin-left,margin-right,margin-bottom] duration-100 ease-out',
+    'transition-[margin-left,margin-right,margin-bottom,max-height] duration-100 ease-out',
     isExpanded ? 'mb-[35px]' : 'mb-0',
-    isStreaming && 'cursor-not-allowed opacity-0 select-none',
-  ), [isExpanded, isStreaming])
+    isRecording ? 'overflow-hidden cursor-not-allowed opacity-0 select-none pointer-events-none' : 'overflow-y-auto',
+    isStreaming && !isRecording && 'cursor-not-allowed opacity-0 select-none',
+  ), [isExpanded, isStreaming, isRecording])
 
   const editorStyle = useMemo(() => ({
     marginLeft: isExpanded ? '10px' : padH,
     marginRight: isExpanded ? '10px' : padH,
     wordBreak: 'normal' as const,
     overflowWrap: 'anywhere' as const,
-    maxHeight: maxHeight,
-  }), [isExpanded, maxHeight])
+    maxHeight: isRecording ? '30px' : maxHeight,
+  }), [isExpanded, maxHeight, isRecording])
 
   const plusCls = useMemo(() => clsx(
     isExpanded ? bottomExpanded : centerY,
@@ -921,16 +968,16 @@ export default function Composer({
 
   const micCls = useMemo(() => (isRecording: boolean) => clsx(
     isExpanded ? bottomExpanded : centerY,
-    'h-5 w-5 absolute flex items-center justify-center',
+    'h-5 w-5 absolute flex items-center justify-center z-10',
     small ? 'scale-[0.75] right-10' : 'right-14',
-    isRecording ? 'text-red-500' : 'text-accent',
+    isRecording ? 'text-red-500 animate-pulse' : 'text-accent',
   ), [isExpanded, bottomExpanded, centerY, small])
 
   return (
     <div style={style} className={className}>
       {showHeader && <h1 className='text-center w-full py-5 text-3xl font-bold'>Add Task</h1>}
       <div className={wrapperCls}>
-        {isEmpty && (
+        {isEmpty && !isRecording && (
           <span
             className="absolute pointer-events-none select-none text-zinc-500"
             style={{ left: isExpanded ? '10px' : '40px', top: '50%', transform: 'translateY(-50%)' }}
@@ -953,6 +1000,43 @@ export default function Composer({
           style={editorStyle}
           data-tauri-cursor-region={true}
         />
+        {isRecording && (
+          <div className="absolute inset-y-0 left-10 flex items-center gap-3 pointer-events-none select-none" style={{ right: `${80 + (showModelSelection ? 140 : 0) + (showInterval ? 80 : 0)}px` }}>
+            {/* Recording label */}
+            <div className="flex items-center gap-2 text-red-500 shrink-0">
+              <span className="relative flex h-2 w-2">
+                <span className="animate-ping absolute inline-flex h-full w-[50%] rounded-full bg-red-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+              </span>
+              <span className="text-xs font-semibold tracking-wider">Recording...</span>
+            </div>
+            {/* Full-width scrolling train waveform */}
+            <svg
+              className="flex-1 h-5 min-w-0"
+              preserveAspectRatio="none"
+              viewBox={`0 0 ${volumeHistory.length} 1`}
+              xmlns="http://www.w3.org/2000/svg"
+            >
+              {volumeHistory.map((vol, i) => {
+                const h = Math.max(0.12, vol * 0.88)
+                const y = (1 - h) / 2
+                const opacity = 0.2 + (i / (volumeHistory.length - 1)) * 0.8
+                return (
+                  <rect
+                    key={i}
+                    x={i + 0.2}
+                    y={y}
+                    width={0.6}
+                    height={h}
+                    rx={0.3}
+                    fill="#ef4444"
+                    fillOpacity={opacity}
+                  />
+                )
+              })}
+            </svg>
+          </div>
+        )}
         {(showModelSelection || showInterval) && (
           <TooltipProvider>
             <div className={clsx(
@@ -1035,10 +1119,13 @@ export default function Composer({
             </div>
           </TooltipProvider>
         )}
-        <button onClick={handlePlusClick} className={plusCls}>
-          <Plus />
-        </button>
+        {!isRecording && (
+          <button onClick={handlePlusClick} className={plusCls}>
+            <Plus />
+          </button>
+        )}
         <Record
+          name={name}
           workspace={workspace}
           onFileSaved={(filePath) => {
             const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
@@ -1046,24 +1133,40 @@ export default function Composer({
             insertChipAtCursor(`/file/${filePath}`, fileName, getMimeType(ext))
           }}
         >
-          {({ isRecording, startRecording, stopRecording }) => (
-            <button
-              onClick={isRecording ? stopRecording : startRecording}
-              className={micCls(isRecording)}
-            >
-              <Mic />
-            </button>
-          )}
+          {({ startRecording, stopRecording, cancelRecording, volume }) => {
+            volumeRef.current = volume
+            cancelRecordingRef.current = cancelRecording
+            return (
+              <>
+                <button
+                  onClick={isRecording ? stopRecording : startRecording}
+                  className={micCls(isRecording)}
+                >
+                  <Mic />
+                </button>
+              </>
+            )
+          }}
         </Record>
-        {isStreaming ? (
-          <button onClick={handleSubmit} className={stopCls}>
-            <Square fill="currentColor" className="w-4 h-4" />
+        {isRecording ?
+          <button
+            onClick={() => {
+              if (cancelRecordingRef.current) cancelRecordingRef.current()
+            }}
+            title="Cancel recording"
+            className={stopCls}
+          >
+            <X fill="currentColor" className="w-5 h-5" />
           </button>
-        ) : (
-          <button onClick={handleSubmit} className={sendCls}>
-            {<ArrowUp className="w-5 h-5" />}
-          </button>
-        )}
+          : (isStreaming ? (
+            <button onClick={handleSubmit} className={stopCls}>
+              <Square fill="currentColor" className="w-4 h-4" />
+            </button>
+          ) : (
+            <button onClick={handleSubmit} className={sendCls}>
+              {<ArrowUp className="w-5 h-5" />}
+            </button>
+          ))}
       </div>
     </div>
   )

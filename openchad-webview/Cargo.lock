@@ -3675,6 +3675,7 @@ dependencies = [
  "tauri-plugin-websocket",
  "tauri-plugin-window-state",
  "tauri-utils",
+ "url",
 ]
 
 [[package]]

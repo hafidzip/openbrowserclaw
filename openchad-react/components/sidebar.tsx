@@ -1235,7 +1235,7 @@ export default function Sidebar({
               </div>
             </DialogTitle>
           </DialogHeader>
-          <ControllableBrowsers workspace={workspace} isOpen={showControllableBrowsersDialog} setOpen={setShowControllableBrowsersDialog} query={searchTaskQuery} />
+          <ControllableBrowsers workspace={workspace} isOpen={showControllableBrowsersDialog} setOpen={setShowControllableBrowsersDialog} query={searchControllableBrowsersQuery} />
         </DialogContent>
       </DialogUI>
       <DialogUI open={showAgentsDialog} onOpenChange={setShowAgentsDialog}>
@@ -1254,7 +1254,7 @@ export default function Sidebar({
               </div>
             </DialogTitle>
           </DialogHeader>
-          <Agents workspace={workspace} isOpen={showAgentsDialog} setOpen={setShowAgentsDialog} query={searchTaskQuery} />
+          <Agents workspace={workspace} isOpen={showAgentsDialog} setOpen={setShowAgentsDialog} query={searchAgentsQuery} />
         </DialogContent>
       </DialogUI>
       <DialogUI open={showTaskDialog} onOpenChange={setShowTaskDialog}>

@@ -4,7 +4,6 @@ import { CircleCheckIcon, InfoIcon, TriangleAlertIcon, OctagonXIcon, Loader2Icon
 const Toaster = ({ ...props }: ToasterProps) => {
   return (
     <Sonner
-      className="bg-red-500"
       icons={{
         success: (
           <CircleCheckIcon className="size-4" />
@@ -26,6 +25,7 @@ const Toaster = ({ ...props }: ToasterProps) => {
       toastOptions={{
         classNames: {
           toast: "cn-toast",
+          title: "select-none"
         },
       }}
       {...props}

@@ -1,6 +1,6 @@
 "$schema" = "https://schema.tauri.app/config/2"
-productName = "openbrowser"
-version = "0.1.21"
+productName = "OpenBrowser"
+version = "0.1.0"
 identifier = "com.openbrowser.app"
 [build]
 frontendDist = "./frontend"

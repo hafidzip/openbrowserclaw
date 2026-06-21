@@ -321,36 +321,35 @@ export default function Bar({ children, theme, isRightToLeft }: { children?: Rea
     >
 
       {children ? children : <div className='flex-1'></div>}
-
       {/* Right Controls */}
       <div className={clsx(
-        "flex items-center gap-4 pointer-events-auto",
+        "flex items-center pointer-events-auto",
       )}>
         {/* Tauri Window buttons */}
         <div className={clsx(
-          "flex items-center gap-1",
+          "flex items-center",
           isRightToLeft ? "flex-row-reverse" : "flex-row"
         )}>
           <button
             onClick={handleMinimize}
-            className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-white/10 dark:hover:bg-white/5 transition-colors cursor-pointer text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
+            className="flex items-center justify-center w-6 h-6 rounded-lg hover:bg-white/10 dark:hover:bg-white/5 transition-colors cursor-pointer text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
             aria-label="Minimize"
           >
-            <Minus className="w-4 h-4" />
+            <div className="w-3 h-3 rounded-full bg-green-500" />
           </button>
           <button
             onClick={handleMaximize}
-            className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-white/10 dark:hover:bg-white/5 transition-colors cursor-pointer text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
+            className="flex items-center justify-center w-6 h-6 rounded-lg hover:bg-white/10 dark:hover:bg-white/5 transition-colors cursor-pointer text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200"
             aria-label="Maximize"
           >
-            <Square className="w-3.5 h-3.5" />
+            <div className="w-3 h-3 rounded-full bg-yellow-500" />
           </button>
           <button
             onClick={handleClose}
-            className="flex items-center justify-center w-7 h-7 rounded-lg hover:bg-red-500/10 hover:text-red-500 transition-colors cursor-pointer text-zinc-400"
+            className="flex items-center justify-center w-6 h-6 rounded-lg hover:bg-red-500/10 hover:text-red-500 transition-colors cursor-pointer text-zinc-400"
             aria-label="Close"
           >
-            <X className="w-4 h-4" />
+            <div className="w-3 h-3 rounded-full bg-red-500" />
           </button>
         </div>
       </div>

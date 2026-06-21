@@ -223,21 +223,6 @@ export default function ContainerSingleApp({ App, enableWorkspace = false }: { A
         }
     }, [workspaces.length, enableWorkspace, setWorkspace])
 
-    useEffect(() => {
-        (async () => {
-            if (typeof window !== 'undefined' && !!(window as any).__TAURI__) {
-                try {
-                    const res = await pyInvoke<{ data?: Record<string, unknown>; error?: string }>('check_tauri', {});
-                    if (res && typeof res === 'object' && 'data' in res) {
-                        console.warn(res.data);
-                    }
-                } catch (e) {
-                    console.error(e);
-                    window.location.reload();
-                }
-            }
-        })()
-    }, [])
 
     useEffect(() => {
         setMounted(true);

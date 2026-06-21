@@ -1,3 +1,4 @@
+from openchadpy.context import agent_ctx
 from aiortc import rtcrtptransceiver
 from mcp.types import JSONRPCMessage
 from openchadpy.tool_base import ToolBase
@@ -162,6 +163,33 @@ model_provider_manager = ModelProviderManager(
     emitter=event_emitter,
     on_change=lambda provider_id=None: asyncio.create_task(scan_models(provider_id))
 )
+
+def build_tree(flat: dict) -> dict:
+    all_child_ids = {
+        cid
+        for node in flat.values()
+        for cid in node.get("children", [])
+    }
+
+    root_ids = [id for id in flat if id not in all_child_ids]
+
+    def build_node(id: str) -> dict:
+        node = flat[id]
+        return {
+            **{k: v for k, v in node.items() if k != "children"},
+            "children": {cid: build_node(cid) for cid in node.get("children", [])},
+        }
+
+    return {id: build_node(id) for id in root_ids}
+
+async def get_agent_tree_internal(agent_id: Optional[str], workspace: str = "global") -> dict:
+    agent_dict = {}
+    if agent_id:
+        db = Database(workspace=workspace, tab_id=agent_id)
+        flat_agents = await db.get("agents")
+        if flat_agents:
+            agent_dict = build_tree(flat_agents)
+    return agent_dict
 
 async def credentials_handler_with_rescan(request: dict) -> dict:
     result = await credentials_handler(request)
@@ -409,7 +437,6 @@ async def pytauri_send_json(data: Dict[str, Any]) -> bool:
     return True
 
 async def _setup_pipeline(
-    agent: Optional[str],
     requested_model: Optional[str],
     files: List[str],
     query: Optional[str],
@@ -431,7 +458,6 @@ async def _setup_pipeline(
 ):
     """Helper to setup pipeline and prepare chat arguments."""
     pipeline = await pipeline_manager.create_instance(
-        agent=agent,
         model_id=requested_model,
         files=files,
         query=query,
@@ -517,8 +543,9 @@ async def handle_pytauri_chat(msg_id: str, body: Dict[str, Any], app_handle: App
         "pipeline",
         "agent",
     ]}
+    agent_tree: Optional[Dict[str, Any]] = (await get_agent_tree_internal(agent_id=agent, workspace=workspace))
+    agent_ctx.set(agent_tree)
     pipeline, chat_kwargs = await _setup_pipeline(
-        agent=agent,
         requested_model=requested_model,
         files=files,
         query=query,
@@ -709,6 +736,11 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
                 if name:
                     await event_emitter.emit(name, payload)
                 return {'result': 'ok'}
+            case 'get_agent_tree':
+                agent_id = request.get("agentId", None)
+                workspace = request.get("workspace", "global")
+                agent_dict = await get_agent_tree_internal(agent_id, workspace)
+                return {'tree': agent_dict}                
             case 'check_backend':
                 try:                    
                     return { 'is_installing': is_installing, 'is_installed': is_installed('llama_cpp') 
@@ -1281,6 +1313,18 @@ async def mcp_tool_reload_api(request: Request):
     except Exception as e:
         return {'error': str(e)}
 
+@app.post("/api/agent/tree")
+async def get_agent_tree_api(request: Request):
+    """Retrieve agent tree structure."""
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    agent_id = body.get("agentId", None)
+    workspace = body.get("workspace", "global")
+    agent_dict = await get_agent_tree_internal(agent_id, workspace)
+    return {'tree': agent_dict}
+
 @app.post('/api/eval')
 async def eval_api(request: Request):
     """
@@ -1363,8 +1407,9 @@ async def chat_endpoint_api(request: Request):
         ]}
         pipeline_name = data.get("pipeline", None)
         is_continue = [True]
+        agent_tree: Optional[Dict[str, Any]] = (await get_agent_tree_internal(agent_id=agent, workspace=workspace))
+        agent_ctx.set(agent_tree)
         pipeline, chat_kwargs = await _setup_pipeline(
-            agent=agent,
             requested_model=requested_model,
             files=files,
             query=query,
@@ -1534,6 +1579,11 @@ async def handle_ws_command(conn_id: str, data: dict, send_func: Callable[[dict]
                 if name:                   
                     await event_emitter.emit(name, payload)
                 return {'result': 'ok'}
+            case 'get_agent_tree':
+                agent_id = body.get("agentId", None)
+                workspace = body.get("workspace", "global")
+                agent_dict = await get_agent_tree_internal(agent_id, workspace)
+                return {'tree': agent_dict}
             case 'check_backend':
                 try:                    
                     return { 'is_installing': is_installing, 'installed': is_installed('llama_cpp') 
@@ -1767,8 +1817,9 @@ async def handle_ws_chat(msg_id: str, body: dict, send_func: Callable[[dict], Aw
     pipeline_name = body.get("pipeline", None)
     is_continue = [True]
     cancel_event = _register_cancel_event(msg_id)
+    agent_tree: Optional[Dict[str, Any]] = (await get_agent_tree_internal(agent_id=agent, workspace=workspace))
+    agent_ctx.set(agent_tree)
     pipeline, chat_kwargs = await _setup_pipeline(
-        agent=agent,
         requested_model=requested_model,
         files=files,
         query=query,

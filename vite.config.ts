@@ -6,11 +6,14 @@ import { splashScreen } from "vite-plugin-splash-screen";
 import tsconfigPaths from "vite-tsconfig-paths";
 
 const ignoredDirs = [
+    '.cache',
     'openchad-webview',
     'openchadpy',
     'python',
     'hafidz',
     'Backend',
+    'Settings',
+    'SKILLS',
     'Models',
     'Pipeline',
     'Tools',
@@ -51,6 +54,9 @@ export default defineConfig(({ mode }) => ({
             ignored: (p) => {
                 const normalized = p.replace(/\\/g, '/');
                 if (normalized.includes('/.git/') || normalized.includes('/__pycache__/') || normalized.includes('/.venv/')) {
+                    return true;
+                }
+                if (normalized.endsWith('/settings.db') || normalized.endsWith('/settings.db-wal') || normalized.endsWith('/settings.db-shm')) {
                     return true;
                 }
                 return ignoredDirs.some(dir => normalized === dir || normalized.startsWith(dir + '/'));

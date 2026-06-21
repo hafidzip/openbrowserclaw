@@ -8,7 +8,7 @@ import MessageContainer from "./message-container";
 import { sha256 } from "js-sha256";
 import ModelSelection from "./model-selection";
 import { ArrowDown } from "lucide-react";
-import { generateIdFromString, useAvailableAgents, useDatabase, type IAgent } from "../index";
+import { generateIdFromString, useAvailableAgents, useDatabase, useGlobal, type IAgent } from "../index";
 import type { SelectionMode } from "./composer";
 import { useDatabaseImpl } from "./useDatabase";
 import { useSettings } from "./useSettings";
@@ -26,6 +26,7 @@ export interface MessageState {
 
 
 export default function Chat({ id, open }: { id: string, open: boolean }) {
+    const [chatId, setChatId] = useGlobal<string | null>('chatId', { initialValue: null })
     const { workspace } = useSnapshot(Workspace);
     const { settings } = useSettings();
     const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -112,7 +113,7 @@ export default function Chat({ id, open }: { id: string, open: boolean }) {
     }, [messageState.isStreaming, messageState.initialized]);
     async function request(query: string, targetTable: string, branchId: string, index: number | string, response_branch: number) {
         const activeId = id + "_response_" + branchId + "_" + response_branch + "_" + index;
-        let errorlog : string | null = null;
+        let errorlog: string | null = null;
         if (messageState.activeId === activeId) {
             return;
         }
@@ -343,6 +344,9 @@ export default function Chat({ id, open }: { id: string, open: boolean }) {
                     </button>
                 )}
                 <Composer
+                    name={id}
+                    tabId={id}
+                    activeId={chatId}
                     workspace={workspace ?? "global"}
                     onSubmit={async (value: string) => {
                         if (messageState.isStreaming) {

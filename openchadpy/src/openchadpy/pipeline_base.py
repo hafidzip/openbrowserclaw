@@ -1,3 +1,4 @@
+from openchadpy.context import agent_ctx
 import json
 import json
 import logging
@@ -29,8 +30,6 @@ class PipelineBase:
     settings_manager: Optional["Settings"]
     event_emitter: Optional["EventEmitter"]
     mcp_manager: Optional["MCPManager"]
-    agent: Optional[Dict[str, Any]]
-    agentId: Optional[str]
     workspace: Optional[str]
     history: List[Dict[str, str]]    
     model_responses: List[Dict[str, str]]
@@ -60,7 +59,7 @@ class PipelineBase:
         self,
         query: str,
         tool_registry: Optional[Dict[str, ToolRegistry]] = None,
-    ) -> Dict[str, Any]:
+    ) -> Any:
         chat_kwargs: Dict[str, Any] = {}
         mid_ctx = model_id_ctx.get()
         tools: list = []
@@ -73,73 +72,111 @@ class PipelineBase:
                 tools.extend(self.tool_manager.get_openai_schemas())
             if self.mcp_manager:
                 tools.extend(self.mcp_manager.get_openai_schemas())
-            
+        agent = agent_ctx.get()
+        if not tool_registry and agent and isinstance(agent, dict):
+            current_agent_id = next(iter(agent))
+            agent_node = agent.get(current_agent_id)
+            if agent_node:
+                allowed_tools_list = agent_node.get("tools", [])
+                if allowed_tools_list:
+                    allowed_set = set(allowed_tools_list)
+                    tools = [
+                        t for t in tools
+                        if t.get("function", {}).get("name") in allowed_set
+                    ]
+
         if tools:
             chat_kwargs["tools"] = tools
                 
         if self.model_manager:
             model_id = mid_ctx if mid_ctx else self.model_manager.get_default_id("llm")
             if model_id:
-                response = await self.model_manager.text_chat(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are a tool-calling assistant. You MUST call a tool for every single response"
-                                "RULES:\n"
-                                "1. Every response must be a tool call.\n"
-                                "2. Read each tool's description fully and follow it exactly.\n"
-                                "3. Match the user's intent to the correct tool. Do not guess or improvise.\n"
-                            ),
-                        },
-                        {"role": "user", "content": query},
-                    ],
-                    model_id=model_id,
-                    stream=False,
-                    **chat_kwargs,
-                )
+                messages = [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are a tool-calling assistant. You MUST call a tool for every single response"
+                            "RULES:\n"
+                            "1. Every response must be a tool call.\n"
+                            "2. Read each tool's description fully and follow it exactly.\n"
+                            "3. Match the user's intent to the correct tool. Do not guess or improvise.\n"
+                        ),
+                    },
+                    {"role": "user", "content": query},
+                ]
                 
-                assert isinstance(response, dict), f"Expected dict, got {type(response)}"
-                logger.info(f"[llm_tool] query {query}")
-                logger.info(f"[llm_tool] response {type(response)}, {json.dumps(response)}")
-                logger.info(f"[llm_tool] tools available {type(tools)}, {json.dumps(tools)}")
-                try:
-                    tool_calls = response["choices"][0]["message"].get("tool_calls")
-                except (KeyError, IndexError, TypeError):
-                    logger.error(f"[llm_tool] error when try to get tool calls")
-                    tool_calls = None
-                    return {}
-                if not tool_calls:
-                    logger.error("[llm_tool] no tool_calls")
-                if tool_calls and (self.tool_manager or tool_registry):
-                    results = {}
-                    for call in tool_calls:
-                        fn_name: str = call["function"]["name"]
-                        raw_args: str = call["function"].get("arguments", "{}")
-                        call_id: str = call.get("id", fn_name)
-                        try:
-                            kwargs = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                        except json.JSONDecodeError:
-                            logger.warning(f"[llm_tool] Failed to parse arguments for {fn_name}: {raw_args}")
-                            kwargs = {}
-                            return {}
-                        logger.info(f"[llm_tool] Executing tool '{fn_name}' with kwargs={kwargs}")
-                        if tool_registry and fn_name in tool_registry:
-                            result = await tool_registry[fn_name].execute(**kwargs)
+                multi_step = (agent_ctx.get() is not None)
+                
+                while True:
+                    response = await self.model_manager.text_chat(
+                        messages=messages,
+                        model_id=model_id,
+                        stream=False,
+                        **chat_kwargs,
+                    )
+                    
+                    assert isinstance(response, dict), f"Expected dict, got {type(response)}"
+                    logger.info(f"[llm_tool] query {query}")
+                    logger.info(f"[llm_tool] response {type(response)}, {json.dumps(response)}")
+                    logger.info(f"[llm_tool] tools available {type(tools)}, {json.dumps(tools)}")
+                    try:
+                        message = response["choices"][0]["message"]
+                        tool_calls = message.get("tool_calls")
+                    except (KeyError, IndexError, TypeError):
+                        logger.error(f"[llm_tool] error when try to get tool calls")
+                        tool_calls = None
+                        return {}
+                    if not tool_calls:
+                        logger.info("[llm_tool] no tool_calls")
+                        if multi_step:
+                            return message.get("content") or ""
                         else:
-                            if self.tool_manager:
-                                result = await self.tool_manager.execute_tool(
-                                    fn_name,
-                                    caller="direct",
-                                    workspace=self.workspace,
-                                    tab_id=self.tab_id,
-                                    **kwargs,
-                                )
-                            else:
+                            return {}
+                    if tool_calls and (self.tool_manager or tool_registry):
+                        results = {}
+                        for call in tool_calls:
+                            fn_name: str = call["function"]["name"]
+                            raw_args: str = call["function"].get("arguments", "{}")
+                            call_id: str = call.get("id", fn_name)
+                            try:
+                                kwargs = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                            except json.JSONDecodeError:
+                                logger.warning(f"[llm_tool] Failed to parse arguments for {fn_name}: {raw_args}")
+                                kwargs = {}
                                 return {}
-                        results[call_id] = result
-                    return results[next(iter(results))] if len(results) == 1 else results
-                return {}
+                            logger.info(f"[llm_tool] Executing tool '{fn_name}' with kwargs={kwargs}")
+                            if tool_registry and fn_name in tool_registry:
+                                result = await tool_registry[fn_name].execute(**kwargs)
+                            else:
+                                if self.tool_manager:
+                                    result = await self.tool_manager.execute_tool(
+                                        fn_name,
+                                        caller="direct",
+                                        workspace=self.workspace,
+                                        tab_id=self.tab_id,
+                                        **kwargs,
+                                    )
+                                else:
+                                    return {}
+                            results[call_id] = result
+                        
+                        if not multi_step:
+                            return results[next(iter(results))] if len(results) == 1 else results
+                        
+                        messages.append(message)
+                        for call_id, result in results.items():
+                            if isinstance(result, dict):
+                                content_str = json.dumps(result)
+                            else:
+                                content_str = str(result)
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": call_id,
+                                "name": next((c["function"]["name"] for c in tool_calls if c.get("id", c["function"]["name"]) == call_id), ""),
+                                "content": content_str
+                            })
+                    else:
+                        return {}
             else:
                 logger.error("Model ID not found")
                 return {}
@@ -156,8 +193,6 @@ class PipelineBase:
         self.model_manager = kwargs.get('model_manager', None)
         self.messages = kwargs.get('messages', [])
         self.args = kwargs.get('args', {})
-        self.agent = kwargs.get('agent', None)
-        self.agentId = kwargs.get('agentId', None)
         self.workspace = kwargs.get('workspace', None)        
         self.model_responses = []
         self.last_response = ""

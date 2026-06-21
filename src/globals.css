@@ -1531,3 +1531,17 @@ body {
   }
 }
 
+@keyframes soundwave {
+  0% {
+    transform: scaleY(0.2);
+  }
+  100% {
+    transform: scaleY(1);
+  }
+}
+
+.animate-soundwave {
+  animation: soundwave 0.5s ease-in-out infinite alternate;
+}
+
+
