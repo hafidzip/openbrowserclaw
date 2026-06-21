@@ -1,7 +1,6 @@
 use std::{
     borrow::Cow,
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -15,7 +14,6 @@ use pyo3_utils::{
     serde::PySerde,
 };
 use pytauri_core::{tauri_runtime::Runtime, utils::TauriError};
-use tauri_plugin_prevent_default::Flags;
 use tauri::{
     image::Image,
     ipc::RuntimeCapability,
@@ -29,10 +27,10 @@ use tauri::{
         config::{CapabilityEntry, FrontendDist},
         platform::Target,
     },
-    AppHandle, Assets, Config, Manager,
-    PhysicalPosition, PhysicalSize,
-    WebviewBuilder, WebviewUrl,
+    webview::NewWindowResponse,
+    AppHandle, Assets, Config, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewBuilder, WebviewUrl,
 };
+use tauri_plugin_prevent_default::Flags;
 
 type TauriContext = tauri::Context<Runtime>;
 
@@ -324,8 +322,8 @@ pub fn builder_factory(
     _kwargs: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<tauri::Builder<Runtime>> {
     let prevent_plugin = tauri_plugin_prevent_default::Builder::new()
-    .with_flags(Flags::RELOAD)
-    .build();
+        .with_flags(Flags::RELOAD)
+        .build();
 
     Ok(tauri::Builder::default()
         .plugin(prevent_plugin)
@@ -366,22 +364,37 @@ pub fn builder_factory(
                     const _emitUpdateLocationTitleIcon = async (url) => {
                         const label = await window.__TAURI__.webview.getCurrentWebview().label;
                         const getIconBase64 = async () => {
-                            try {
-                                const iconUrl = `${location.origin}/favicon.ico`;
-                                const res = await fetch(iconUrl);
-                                if (!res.ok) return 'default';
-                                const blob = await res.blob();
-                                if (!blob.size) return 'default';
-                                return await new Promise((resolve, reject) => {
-                                    const reader = new FileReader();
-                                    reader.onloadend = () => resolve(reader.result);
-                                    reader.onerror = reject;
-                                    reader.readAsDataURL(blob);
-                                });
-                            } catch {
-                                return 'default';
+                            const hostname = location.hostname;
+                            const linkEl = document.querySelector('link[type="image/x-icon"]') || 
+                                        document.querySelector('link[rel*="icon"]');
+                            const urls = [
+                                linkEl?.href,
+                                `https://www.google.com/s2/favicons?domain=${hostname}&sz=32`,
+                                `https://icons.duckduckgo.com/ip3/${hostname}.ico`, // <-- Added missing comma here
+                                `${location.origin}/favicon.ico`,
+                            ].filter(Boolean);
+
+                            for (const url of urls) {
+                                try {
+                                    const res = await fetch(url);
+                                    if (!res.ok) continue;
+
+                                    const blob = await res.blob();
+                                    if (!blob.size) continue;
+
+                                    return await new Promise((resolve, reject) => {
+                                        const reader = new FileReader();
+                                        reader.onloadend = () => resolve(reader.result);
+                                        reader.onerror = reject;
+                                        reader.readAsDataURL(blob);
+                                    });
+                                } catch {
+                                    continue;
+                                }
                             }
-                        };
+
+                            return 'Globe';
+                        };                   
                         await window.__TAURI__.event.emit('update_location_title_icon', {
                             target: label,
                             title: window.document.title,
@@ -427,7 +440,7 @@ pub fn builder_factory(
                         window.__listenToKeyDown = true;
                         window.addEventListener('pointerdown', async (event) => {
                             await _emitFocus();
-                        });
+                        }, true);
                         window.addEventListener('keydown', async (event) => {
                             const label = await window.__TAURI__.webview.getCurrentWebview().label;
 
@@ -448,7 +461,7 @@ pub fn builder_factory(
                                 const tab_index = n === 9 ? -1 : n - 1;
                                 await window.__TAURI__.event.emit('switch_tab', { target: label, tab_index });
                             }
-                        });
+                        }, true);
                     }
 
                     if (!window.AsyncLock) {
@@ -514,11 +527,9 @@ struct CreateWebviewArgs {
 }
 
 #[tauri::command]
-async fn create_webview(
-    app: AppHandle,
-    args: CreateWebviewArgs,
-) -> Result<(), String> {
+async fn create_webview(app: AppHandle, args: CreateWebviewArgs) -> Result<(), String> {
     let url_str = args.url.as_deref().unwrap_or("about:blank");
+    let app_for_handler = app.clone();
 
     let parent_window = app
         .get_window(&args.parent_label)
@@ -530,11 +541,14 @@ async fn create_webview(
         .unwrap_or_else(|_| WebviewUrl::App("index.html".into()));
 
     let mut builder = WebviewBuilder::new(&args.label, webview_url);
-    let label = if args.label.starts_with("webview-agent-") { &args.label } else { "shared" };
+    let label = if args.label.starts_with("webview-agent-") {
+        &args.label
+    } else {
+        "shared"
+    };
 
     #[cfg(target_os = "windows")]
-    let ext_path: Option<PathBuf> = env::var_os("OPENCHAD_EXTENSION_PATH")
-        .map(PathBuf::from);
+    let ext_path: Option<PathBuf> = env::var_os("OPENCHAD_EXTENSION_PATH").map(PathBuf::from);
 
     {
         let data_dir: PathBuf = app
@@ -567,6 +581,11 @@ async fn create_webview(
     if args.incognito.unwrap_or(false) {
         builder = builder.incognito(true);
     }
+
+    builder = builder.on_new_window(move |url, _features| {
+        let _ = app_for_handler.emit("browser:open-new-tab", url.to_string());
+        NewWindowResponse::Deny
+    });
 
     parent_window
         .add_child(

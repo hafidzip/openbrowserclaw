@@ -279,20 +279,15 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
   const handleNavigate = async (newUrl: string) => {
     const url = normalizeUrl(newUrl)
     if (!url) return
-    // JSON.stringify escapes quotes/special chars — safer than bare template literal
-    AsyncLock.run(async () => {
-      await pyInvoke('eval', { label, script: `window.location = ${JSON.stringify(url)}` })
-    })
+    await pyInvoke('eval', { label, script: `window.location = ${JSON.stringify(url)}` })
   }
 
   const handleBack = async () => {
     if (currentIndex > 0) {
       pendingNav.current = 'back'
-      AsyncLock.run(async () => {
-        await pyInvoke('eval', {
-          label,
-          script: `window.history.back()`
-        })
+      await pyInvoke('eval', {
+        label,
+        script: `window.history.back()`
       })
     }
   }
@@ -300,21 +295,17 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
   const handleForward = async () => {
     if (currentIndex < history.length - 1) {
       pendingNav.current = 'forward'
-      AsyncLock.run(async () => {
-        await pyInvoke('eval', {
-          label,
-          script: `window.history.forward()`
-        })
+      await pyInvoke('eval', {
+        label,
+        script: `window.history.forward()`
       })
     }
   }
 
   const handleRefresh = async () => {
-    AsyncLock.run(async () => {
-      await pyInvoke('eval', {
-        label,
-        script: `window.location.reload()`
-      })
+    await pyInvoke('eval', {
+      label,
+      script: `window.location.reload()`
     })
   }
 
@@ -673,6 +664,7 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
 
     const onTabDelete = async () => {
       await deleteActiveTabWithGroupSelection()
+      setRefresh(prev => (prev + 1) % 2)
     }
 
     const onTabSwitch = async (event: any) => {

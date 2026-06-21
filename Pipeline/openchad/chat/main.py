@@ -109,7 +109,7 @@ def _clean_assistant_content(text: str) -> str:
     text = _RE_CODE_BLOCK.sub(lambda m: re.sub(r"<CodeBlock\b[^>]*>", "", m.group(0)).replace("</CodeBlock>", ""), text)
     return text.strip()
 
-def safe_get(data, *keys, default=None):
+def safe_get(data: Any, *keys: Any, default: Any = None) -> Any:
     for key in keys:
         try:
             data = data[key]
@@ -132,14 +132,11 @@ class Chat(PipelineBase):
     tool_logs: List[List[Dict[str, Any]]]
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.prompt = re.sub(
-            r"^(\s*)\.",
-            "",
-            """
-        .You are a helpful assistant.
-        """,
-            flags=re.MULTILINE,
-        ).strip()
+        
+        self.prompt = """
+        You are a helpful assistant.
+        """
+
         self.message_template = [
             {
                 "role": "system",
@@ -151,18 +148,18 @@ class Chat(PipelineBase):
             self.tools.extend(self.mcp_manager.get_openai_schemas())
         agent = agent_ctx.get()
         if agent and isinstance(agent, dict):
+            # Backup all available tools before filtering
+            all_tools = list(self.tools)
+            
             self.root_agent = next(iter(agent))
             current_agent_id = self.root_agent
             agent_node = agent.get(current_agent_id)
             if agent_node:
-                    allowed_tools = set(agent_node.get("tools", []))
-                    self.tools = [
-                        t for t in self.tools
-                        if t.get("function", {}).get("name") in allowed_tools
-                    ]
-                    if agent_node.get("children", []):  
-                        if agent_node.get("allowMultiple", False):
-                            self.tools.append({
+                # Add agent_query tool schema if children exist
+                children = agent_node.get("children")
+                if children:  
+                    if agent_node.get("allowMultiple", False):
+                        self.tools.append({
                             "type": "function",
                             "function": {
                                 "name": "agent_query",
@@ -198,8 +195,8 @@ class Chat(PipelineBase):
                                 }
                             }
                         })
-                        else:
-                            self.tools.append({
+                    else:
+                        self.tools.append({
                                 "type": "function",
                                 "function": {
                                     "name": "agent_query",
@@ -224,6 +221,144 @@ class Chat(PipelineBase):
                                     }
                                 }
                             })
+                    # Add the appended agent_query to all_tools
+                    all_tools.append(self.tools[-1])
+
+                # Helper to check if a file exists and is not empty
+                def is_file_non_empty(file_path: str) -> bool:
+                    if not file_path:
+                        return False
+                    try:
+                        return os.path.isfile(file_path) and os.path.getsize(file_path) > 0
+                    except Exception:
+                        return False
+
+                # Helper to read full skill content for root agent (depth 0)
+                def get_skill_content(skill_path: str) -> str:
+                    if not skill_path:
+                        return ""
+                    try: 
+                        with open(skill_path, "r", encoding="utf-8") as f:
+                            return f.read().strip()
+                    except Exception as e: 
+                        logger.error(f"[Chat] error when try to get skill path: {e}")
+                        return ""
+
+                # Helper to extract skill name and description for sub-agents (depth > 0)
+                def get_skill_info(skill_path: str) -> Tuple[str, str]:
+                    if not skill_path:
+                        return "", ""
+                    try:
+                        skill_filename = os.path.basename(skill_path)
+                    except Exception:
+                        skill_filename = "skill.md"
+                    try:
+                        with open(skill_path, "r", encoding="utf-8") as f:
+                            for line in f:
+                                stripped = line.strip()
+                                if stripped:
+                                    # Found the first non-empty line. Strip headers/bullets.
+                                    desc = stripped.lstrip("#").lstrip("-").lstrip("*").strip()
+                                    return skill_filename, desc
+                            return skill_filename, "No description available"
+                    except Exception:
+                        return skill_filename, "No description available"
+
+                # Recursive agent prompt formatter
+                def format_agent(a_id: str, a_node: dict, depth: int) -> str:
+                    lines = []
+                    
+                    # 1. Agent Header
+                    if depth == 0:
+                        lines.append(f"# Agent `{a_id}`")
+                    elif depth == 1:
+                        lines.append(f"### `{a_id}`")
+                    else:
+                        lines.append(f"##### `{a_id}`")
+                    lines.append("")
+
+                    # 2. Skills
+                    skill_path = a_node.get("skillPath")
+                    if skill_path and is_file_non_empty(skill_path):
+                        if depth == 0:
+                            content = get_skill_content(skill_path)
+                            if content:
+                                lines.append("## Skills")
+                                lines.append(content)
+                                lines.append("")
+                        else:
+                            header = "#### Skills" if depth == 1 else "**Skills**"
+                            fname, fdesc = get_skill_info(skill_path)
+                            if fname and fdesc:
+                                lines.append(header)
+                                fdesc = fdesc.strip().rstrip('.')
+                                lines.append(f"- `{fname}` — {fdesc}.")
+                                lines.append("")
+
+                    # 3. Tools
+                    allowed_tools_list = a_node.get("tools", [])
+                    a_children = a_node.get("children", {})
+                    has_tools = bool(allowed_tools_list) or bool(a_children)
+                    if has_tools:
+                        if depth == 0:
+                            lines.append("## Tools")
+                        elif depth == 1:
+                            lines.append("#### Tools")
+                        else:
+                            lines.append("**Tools**")
+
+                        for t_name in allowed_tools_list:
+                            t_desc = "No description available"
+                            for t in all_tools:
+                                if isinstance(t, dict) and t.get("function", {}).get("name") == t_name:
+                                    t_desc = t.get("function", {}).get("description") or "No description available"
+                                    break
+                            t_desc = t_desc.strip().rstrip('.')
+                            lines.append(f"- `{t_name}` — {t_desc}.")
+
+                        # Handle agent_query if children exist
+                        if a_children:
+                            if depth == 0:
+                                lines.append("- `agent_query` — Delegate a task to a sub-agent.")
+                            else:
+                                lines.append("- `agent_query` — Delegate a task to a sub-agent (see below).")
+                        lines.append("")
+
+                    # 4. Sub-Agents
+                    if a_children and depth < 2:
+                        if depth == 0:
+                            lines.append("## Sub-Agents")
+                        elif depth == 1:
+                            lines.append("#### Sub-Agents")
+                        else:
+                            lines.append("**Sub-Agents**")
+                        lines.append("")
+
+                        for child_id, child_node in a_children.items():
+                            child_str = format_agent(child_id, child_node, depth + 1)
+                            if child_str:
+                                lines.append(child_str)
+                                lines.append("")
+
+                    return "\n".join(lines).strip()
+
+                # Generate raw prompt and clean up consecutive newlines
+                raw_prompt = format_agent(current_agent_id, agent_node, 0)
+                self.prompt = re.sub(r'\n{3,}', '\n\n', raw_prompt).strip()
+
+                # Ensure agent_query is allowed if children exist
+                allowed_tools = set(agent_node.get("tools", []))
+                if children:
+                    allowed_tools.add("agent_query")
+
+                # Filter self.tools for the root agent
+                self.tools = [
+                    t for t in self.tools
+                    if t.get("function", {}).get("name") in allowed_tools
+                ]
+
+                self.message_template[0]["content"] = self.prompt
+        
         self.logs = {}
         self.parser = Parser(detect_code_blocks=False)
         self._stream_start_time = 0.0
@@ -234,6 +369,10 @@ class Chat(PipelineBase):
         self.r: Dict[str, Any] = {}
         self.content = ""
         self.tool_logs = []
+        # Agent task planning state
+        self._agent_tasks: List[str] = []    # tasks from create_tasks
+        self._task_context_messages: List[Dict[str, str]] = []  # accumulated prior task messages
+        self._current_task_idx: int = 0      # index into _agent_tasks
         # Think content is tracked separately and always rendered at the top.
         self._think_content: str = ""       # all completed think block text
         self._think_in_progress: bool = False
@@ -424,7 +563,6 @@ class Chat(PipelineBase):
                         self.tool_calls.append(copy.deepcopy(tc))
     
     # Cost calculation
-    
     def _calculate_costs(
         self,
         pricing: Optional[Dict[str, Any]],
@@ -472,7 +610,275 @@ class Chat(PipelineBase):
                 }
             )
         return self._costs
-    
+
+    # ── Agent task-planning helpers ──────────────────────────────────────
+    async def _build_initial_messages(self) -> None:
+        """Build the initial message list from history and current query.
+        Extracted so it can be reused when transitioning between agent tasks."""
+        cleaned_history: List[Dict[str, str]] = []
+        context = ""
+        if self.tab_db and self.tb:
+            tab_info = await self.tab_db.get("message_state")
+            if isinstance(tab_info["context"], str):
+                context = tab_info["context"]
+        for turn in (self.history or []):
+            if turn.get("role") == "assistant":
+                cleaned_history.append({
+                    "role": "assistant",
+                    "content": _clean_assistant_content(turn.get("content", "")),
+                })
+            else:
+                cleaned_history.append(turn)
+        self.messages = (
+            self.message_template
+            + cleaned_history
+            + self._task_context_messages
+            + [
+                {
+                    "role": "user",
+                    "content": f"{context}{self.query}",
+                }
+            ]
+        )
+
+    async def _process_query(self, query: str) -> str:
+        request: Dict[str, Any] = {"query": query}
+        files = re.findall(r'\[file=(.*?)\]', query)
+        async def analyze_text(**kwargs) -> Dict[str, Any]:
+            query_val = kwargs.get("query")
+            file_arg = kwargs.get("file")
+            if not file_arg:
+                return {"error": "No file path provided."}
+            
+            from pathlib import Path as StdPath
+            file_path = StdPath(file_arg)
+            if not file_path.is_absolute():
+                project_root = os.getenv("OPENCHAD_PROJECT_DIR")
+                if project_root and self.workspace:
+                    if self.tab_id:
+                        storage_dir = StdPath(project_root) / "Workspaces" / self.workspace / self.tab_id
+                    else:
+                        storage_dir = StdPath(project_root) / "Workspaces" / self.workspace
+                    resolved_path = storage_dir / file_path
+                    if resolved_path.exists():
+                        file_path = resolved_path
+                    else:
+                        resolved_path_no_tab = StdPath(project_root) / "Workspaces" / self.workspace / file_path
+                        if resolved_path_no_tab.exists():
+                            file_path = resolved_path_no_tab
+            
+            if not file_path.exists():
+                cwd_path = StdPath.cwd() / file_arg
+                if cwd_path.exists():
+                    file_path = cwd_path
+                else:
+                    return {"error": f"File not found: {file_arg}"}
+            
+            if file_path.is_dir():
+                return {"error": f"Path is a directory: {file_arg}"}
+
+            try:
+                content = file_path.read_text(encoding="utf-8", errors="ignore")
+            except Exception as e:
+                return {"error": f"Failed to read file: {str(e)}"}
+
+            if not content.strip():
+                return {
+                    "file": file_arg,
+                    "analysis": "File is empty.",
+                    "status": "success"
+                }
+
+            file_len = len(content)
+            chunk_size = 12000
+            overlap = 2000
+            max_chunks = 15
+            
+            if file_len > chunk_size:
+                estimated_chunks = file_len / (chunk_size - overlap)
+                if estimated_chunks > max_chunks:
+                    chunk_size = int(file_len / max_chunks) + overlap
+                    chunk_size = min(chunk_size, 60000)
+
+            chunks = []
+            start = 0
+            while start < file_len:
+                end = start + chunk_size
+                chunks.append(content[start:end])
+                start += chunk_size - overlap
+                if start >= file_len:
+                    break
+
+            extracted_results = []
+            
+            async def extract_information(**kwargs_extract) -> Dict[str, Any]:
+                info = kwargs_extract.get("information", "")
+                extracted_results.append(info)
+                return {"status": "extracted"}
+
+            extract_registry = {
+                "extract_information": ToolRegistry(
+                    call=extract_information,
+                    schema={
+                        "type": "function",
+                        "function": {
+                            "name": "extract_information",
+                            "description": "Extract relevant details, structure, code, or context from the file chunk that are needed to fulfill the user's request.",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "information": {
+                                        "type": "string",
+                                        "description": "Extracted key details, functions, code snippets, or context from this chunk that are relevant to the user request."
+                                    }
+                                },
+                                "required": ["information"]
+                            }
+                        }
+                    }
+                )
+            }
+
+            chunk_tasks = []
+            for i, chunk in enumerate(chunks):
+                chunk_prompt = (
+                    f"You are analyzing a chunk of the file: {file_path.name}\n"
+                    f"Chunk {i + 1} of {len(chunks)}:\n"
+                    f"```\n{chunk}\n```\n\n"
+                    f"User request: {query}\n\n"
+                    f"Extract all information, key functions, classes, definitions, or context "
+                    f"from this chunk that is relevant to the user request. "
+                    f"Call the extract_information tool with the extracted information."
+                )
+                chunk_tasks.append(
+                    self.llm_tool(
+                        query=chunk_prompt,
+                        tool_registry=extract_registry
+                    )
+                )
+
+            chunk_results = await asyncio.gather(*chunk_tasks, return_exceptions=True)
+            for res in chunk_results:
+                if isinstance(res, Exception):
+                    logger.error(f"Chunk extraction error: {res}")
+
+            # Combine the results
+            combined_analysis = "\n\n".join([
+                f"--- Chunk {idx + 1} Analysis ---\n{res}"
+                for idx, res in enumerate(extracted_results)
+                if res and res.strip()
+            ])
+
+            if not combined_analysis.strip():
+                combined_analysis = f"No specific relevant information extracted from {file_path.name}. Here is the start of the file:\n{content[:2000]}"
+
+            return {
+                "file": file_arg,
+                "analysis": combined_analysis,
+                "status": "success"
+            }
+
+        analyses = await asyncio.gather(
+            *[self.llm_tool(
+                query=(
+                    f"Please analyze the file located at: {file}\n"
+                ),
+                tool_registry={"analyze_text": ToolRegistry(call=analyze_text, schema={
+                    "type": "function",
+                    "function": {
+                        "name": "analyze_text",
+                        "description": "Read and analyze the content of a file, return structured relevant information.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "Specific query or instruction on what to extract from the file"
+                                },
+                                "file": {
+                                    "type": "string",
+                                    "description": "The path of the file to analyze"
+                                }
+                            },
+                            "required": ["query", "file"]
+                        }
+                    }
+                })},
+            ) for file in files],
+            return_exceptions=True,
+        )
+
+        request["files_context"] = [
+            {"file": file, "content": analysis}
+            if not isinstance(analysis, Exception)
+            else {"file": file, "error": str(analysis)}
+            for file, analysis in zip(files, analyses)
+        ]
+
+        return json.dumps(request)
+
+    async def _execute_create_tasks(self, query: str) -> List[str]:
+        """Use LLM to break down a user query into sequential tasks.
+        Returns a list of task strings.  Falls back to [query] on failure."""
+        captured_tasks: List[str] = []
+
+        async def _create_tasks_callback(**kwargs) -> Dict[str, Any]:
+            tasks = kwargs.get("tasks", [])
+            captured_tasks.extend(tasks)
+            return {"tasks": tasks, "status": "created"}
+
+        create_tasks_tool = ToolRegistry(
+            call=_create_tasks_callback,
+            schema={
+                "type": "function",
+                "function": {
+                    "name": "create_tasks",
+                    "description": (
+                        "Analyze the user's request and break it down into a list of "
+                        "clear, sequential tasks."
+                    ),
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "tasks": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Ordered list of tasks to execute sequentially"
+                            }
+                        },
+                        "required": ["tasks"]
+                    }
+                }
+            }
+        )
+
+        # Temporarily clear agent context so llm_tool runs in single-step
+        # mode and returns the tool result directly.
+        old_agent = agent_ctx.get()
+        agent_ctx.set(None)
+        try:
+            processed_query = await self._process_query(query)
+            await self.llm_tool(
+                query=(
+                    "Analyze the following user request and break it down into clear, "
+                    "sequential tasks. Call the create_tasks tool with the list of tasks.\n\n"
+                    f"User request: {processed_query}"
+                ),
+                tool_registry={"create_tasks": create_tasks_tool},
+            )
+        except Exception as e:
+            logger.error(
+                "[%s] _execute_create_tasks failed: %s",
+                self.__class__.__name__, e,
+            )
+        finally:
+            agent_ctx.set(old_agent)
+
+        if captured_tasks:
+            return captured_tasks
+        # Fallback: if task planning failed, use the original query as a single task
+        return [query]
+
     # PipelineBase lifecycle
     
     async def get_history(self) -> List[Dict[str, Any]]:
@@ -1007,298 +1413,345 @@ class Chat(PipelineBase):
     async def start(self, **kwargs) -> None:
         if not self.messages:
             # Build history context: clean think/tool tags from assistant turns
-            cleaned_history: List[Dict[str, str]] = []
-            context = ""
-            if self.tab_db and self.tb:
-                tab_info = await self.tab_db.get("message_state")
-                if isinstance(tab_info["context"], str):
-                    context = tab_info["context"]
+            await self._build_initial_messages()
 
-            for turn in (self.history or []):
-                if turn.get("role") == "assistant":
-                    cleaned_history.append({
-                        "role": "assistant",
-                        "content": _clean_assistant_content(turn.get("content", "")),
-                    })
-                else:
-                    cleaned_history.append(turn)
-            self.messages = (
-                self.message_template
-                + cleaned_history
-                + [
-                    {
-                        "role": "user",
-                        "content": f"{context}{self.query}",
+            # Force task planning on first attempt when agent is set
+            agent = agent_ctx.get()
+            if agent and isinstance(agent, dict) and self.attempt == 0:
+                self.tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": "create_tasks",
+                        "description": (
+                            "Analyze the user's intent and create a list of sequential "
+                            "tasks. You MUST call this tool with the user's query to "
+                            "plan the execution."
+                        ),
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "query": {
+                                    "type": "string",
+                                    "description": "The user's query to analyze and break into tasks"
+                                }
+                            },
+                            "required": ["query"]
+                        }
                     }
-                ]
-            )
-        elif self.tool_calls and isinstance(self.tool_calls, list):
-            self.messages.append(
-                {
-                    "role": "assistant",
-                    "tool_calls": self.tool_calls,
-                    "content": "",
-                }
-            )
-            self.tool_logs.append(copy.deepcopy(self.tool_calls))
-            cancel_sentinel: Optional[asyncio.Task] = None
-            if self.cancel_event:
-                cancel_sentinel = asyncio.get_event_loop().create_task(
-                    self.cancel_event.wait(),
-                    name=f"cancel_sentinel_{id(self)}",
+                })
+
+                logger.info(
+                    "[%s] start | attempt 0 agent mode – forcing create_tasks",
+                    self.__class__.__name__,
                 )
-            try:
-                for tool_call in self.tool_calls:
-                    # Fast-path: already cancelled before we even start the next tool.
-                    if self.cancel_event and self.cancel_event.is_set():
-                        logger.info(
-                            "[%s] start | cancelled before tool '%s'  aborting loop",
-                            self.__class__.__name__,
-                            safe_get(tool_call, "function", "name", default="?"),
-                        )
-                        break
-                    name = safe_get(tool_call, "function", "name", default=None)
-                    args_str = safe_get(tool_call, "function", "arguments", default="")
-                    tool_result = None
-                    if args_str and name:
-                        try:
-                            p_args = json.loads(args_str)
-                        except json.JSONDecodeError:
-                            p_args = None
-                        if isinstance(p_args, dict):
-                            # Wrap the real tool call in a cancellable task.
-                            if self.tool_manager:
-                                async def execute_tool(**kwargs) -> Dict[str, Any]:
-                                    call_args = kwargs if kwargs else p_args
-                                    if name == "agent_query":   
-                                        agent = agent_ctx.get()
-                                        schema = None
-                                        agent_query = None
-                                        results = []
-                                        if agent and isinstance(agent, dict):
-                                            current_agent_id = next(iter(agent))
-                                            agent_node = agent.get(current_agent_id)
-                                            if agent_node:
-                                                if agent_node.get("children"):  
-                                                    if agent_node.get("allowMultiple", False):
-                                                        schema = {
-                                                            "type": "function",
-                                                            "function": {
-                                                                "name": "agent_query",
-                                                                "description": "Send queries to one or more agents and retrieve their responses. Use this to delegate subtasks or gather information from specialized agents.",
-                                                                "parameters": {
-                                                                    "type": "object",
-                                                                    "properties": {
-                                                                        "queries": {
-                                                                            "type": "array",
-                                                                            "description": "List of queries to send to agents. Multiple entries allow querying several agents in a single call.",
-                                                                            "items": {
-                                                                                "type": "object",
-                                                                                "properties": {
-                                                                                    "agent_id": {
-                                                                                        "type": "string",
-                                                                                        "description": "The unique identifier of the target agent."
-                                                                                    },
-                                                                                    "tasks": {
-                                                                                        "type": "array",
-                                                                                        "description": "List of tasks or questions to delegate to the target agent.",
-                                                                                        "items": {
-                                                                                            "type": "string",
-                                                                                            "description": "A specific question or instruction for the agent."
-                                                                                        }
-                                                                                    }
-                                                                                },
-                                                                                "required": ["agent_id", "tasks"]
-                                                                            },
-                                                                            "minItems": 1
-                                                                        }
-                                                                    },
-                                                                    "required": ["queries"]
-                                                                }
-                                                            }
-                                                        }
-                                                    else:
-                                                        schema = {
-                                                            "type": "function",
-                                                            "function": {
-                                                                "name": "agent_query",
-                                                                "description": "Send a list of tasks to a specific agent and retrieve its response. Use this to delegate subtasks or gather information from specialized agents.",
-                                                                "parameters": {
-                                                                    "type": "object",
-                                                                    "properties": {
-                                                                        "agent_id": {
-                                                                            "type": "string",
-                                                                            "description": "The unique identifier of the target agent."
-                                                                        },
-                                                                        "tasks": {
-                                                                            "type": "array",
-                                                                            "description": "List of tasks or questions to delegate to the target agent.",
-                                                                            "items": {
-                                                                                "type": "string",
-                                                                                "description": "A specific question or instruction for the agent."
-                                                                            }
-                                                                        }
-                                                                    },
-                                                                    "required": ["agent_id", "tasks"]
-                                                                }
-                                                            }
-                                                        }
-                                                    
-                                                    if schema:
-                                                        agent_query = ToolRegistry(call=execute_tool, schema=schema)
-                                                    
-                                                    queries = call_args.get("queries")
-                                                    if not queries:
-                                                        query_val = call_args.get("query") or call_args.get("tasks")
-                                                        queries = [{"agent_id": call_args.get("agent_id"), "tasks": query_val}]
-                                                    
-                                                    async def run_agent_queries(q_item: dict) -> List[dict]:
-                                                        sub_agent_id = q_item.get("agent_id")
-                                                        sub_tasks = q_item.get("tasks") or q_item.get("query")
-                                                        if not sub_agent_id or not sub_tasks:
-                                                            return []
-                                                        if isinstance(sub_tasks, str):
-                                                            sub_tasks = [sub_tasks]
-                                                        
-                                                        agent_results = []
-                                                        sub_agent_tree = agent_node.get("children", {}).get(sub_agent_id)
-                                                        if sub_agent_tree:
-                                                            old_agent = agent_ctx.get()
-                                                            old_model = model_id_ctx.get()
-                                                            
-                                                            agent_ctx.set({sub_agent_id: sub_agent_tree})
-                                                            sub_model = sub_agent_tree.get("model")
-                                                            if sub_model:
-                                                                model_id_ctx.set(sub_model)
-                                                            
-                                                            try:
-                                                                for task in sub_tasks:
-                                                                    if agent_query:
-                                                                        try:
-                                                                            ans = await self.llm_tool(query=task, tool_registry={
-                                                                                'agent_query' : agent_query
-                                                                            })
-                                                                            agent_results.append({
-                                                                                "agent_id": sub_agent_id,
-                                                                                "response": ans
-                                                                            })
-                                                                        except Exception as e:
-                                                                            logger.exception("Error executing sub-agent task: %s", task)
-                                                                            agent_results.append({
-                                                                                "agent_id": sub_agent_id,
-                                                                                "response": f"Error: {str(e)}"
-                                                                            })
-                                                                    else:
-                                                                        agent_results.append({
-                                                                            "agent_id": sub_agent_id,
-                                                                            "response": "Error: Agent query schema not found."
-                                                                        })
-                                                            finally:
-                                                                agent_ctx.set(old_agent)
-                                                                model_id_ctx.set(old_model)
-                                                        else:
-                                                            agent_results.append({
-                                                                "agent_id": sub_agent_id,
-                                                                "response": f"Error: Agent '{sub_agent_id}' not found."
-                                                            })
-                                                        return agent_results
-                                                    
-                                                    tasks_to_run = []
-                                                    for q_item in queries:
-                                                        tasks_to_run.append(
-                                                            asyncio.create_task(run_agent_queries(q_item))
-                                                        )
-                                                    
-                                                    if tasks_to_run:
-                                                        grouped_results = await asyncio.gather(*tasks_to_run)
-                                                        results = [res for agent_res in grouped_results for res in agent_res]
-                                                        content_str = json.dumps(results)
-                                                        if len(content_str) > 10000:
-                                                            import os
-                                                            from pathlib import Path
-
-                                                            project_root = os.getenv("OPENCHAD_PROJECT_DIR")
-                                                            if project_root and self.workspace:
-                                                                storage_path = Path(project_root, "Workspaces", self.workspace, ".agent", self.root_agent, current_agent_id)
-                                                                storage_path.mkdir(parents=True, exist_ok=True)
-                                                                logger.info(f"[Chat] Workspace storage path: {storage_path}")
-
-                                                                output_task_storage_file = storage_path / "output.txt"
-                                                                try:
-                                                                    with open(output_task_storage_file, 'w', encoding='utf-8') as f:
-                                                                        f.write(f"{content_str}\n")
-                                                                        results = [{
-                                                                            "agent_id": current_agent_id,
-                                                                            "response": f"Task Output Too Long, check file {str(output_task_storage_file.resolve())}\n",
-                                                                            "preview": f"{content_str[:512]}..." 
-                                                                        }]
-                                                                    logger.info(f"[Chat] Saved output to {output_task_storage_file}")
-                                                                except Exception as e:
-                                                                    logger.exception("[Chat] Error writing task file: %s", e)
-                                                    else:
-                                                        results = []
-                                                    
-                                                    if "queries" in call_args:
-                                                        return {"responses": results} if len(results) > 1 else results[0]
-                                                    else:
-                                                        return results[0] if results else {"error": "No query executed"}
-                                        return {"error": "No query executed"}
-                                    else: 
-                                        return await self.tool_manager.execute_tool(name, **p_args)
-                                    
-                                tool_task: asyncio.Task = asyncio.get_event_loop().create_task(
-                                    execute_tool(),
-                                    name=f"tool_{name}_{id(self)}",
-                                )
-                                try:
-                                    if cancel_sentinel is not None:
-                                        # Race: whichever finishes first wins.
-                                        done, _ = await asyncio.wait(
-                                            {tool_task, cancel_sentinel},
-                                            return_when=asyncio.FIRST_COMPLETED,
-                                        )
-                                        if cancel_sentinel in done:
-                                            # Stop was requested while the tool was in flight.
-                                            logger.info(
-                                                "[%s] start | cancel_event fired during tool '%s'  cancelling task",
-                                                self.__class__.__name__,
-                                                name,
-                                            )
-                                            tool_task.cancel()
-                                            try:
-                                                await tool_task
-                                            except (asyncio.CancelledError, Exception):
-                                                pass
-                                            break  # exit the tool loop
-                                        # Tool finished normally  retrieve result.
-                                        tool_result = tool_task.result()
-                                    else:
-                                        tool_result = await tool_task
-                                except asyncio.CancelledError:
-                                    # The outer coroutine itself was cancelled.
-                                    tool_task.cancel()
-                                    raise
-                                except Exception as e:
-                                    tool_result = str(e)
-                            else:
-                                tool_result = "Tool manager is not available"
-                    if tool_result:
-                        self.messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tool_call["id"],
-                                "content": json.dumps(tool_result),
-                            }
-                        )
-            finally:
-                # Always clean up the sentinel so it never leaks.
-                if cancel_sentinel is not None and not cancel_sentinel.done():
-                    cancel_sentinel.cancel()
+        elif self.tool_calls and isinstance(self.tool_calls, list):
+            # ── Intercept create_tasks for agent task planning ──
+            _ct_call = next(
+                (tc for tc in self.tool_calls
+                 if safe_get(tc, "function", "name") == "create_tasks"),
+                None,
+            )
+            if _ct_call:
+                args_str = safe_get(
+                    _ct_call, "function", "arguments", default="{}"
+                )
+                if args_str is not None:
                     try:
-                        await cancel_sentinel
-                    except (asyncio.CancelledError, Exception):
-                        pass
-            self.logs["messages"] = self.messages
+                        p_args = json.loads(args_str)
+                    except json.JSONDecodeError:
+                        p_args = {}
+                else:
+                    p_args = {}
+                query = p_args.get("query", self.query or "")
+
+                # Execute task planning via llm_tool
+                tasks = await self._execute_create_tasks(query)
+                self._agent_tasks = tasks
+                self._current_task_idx = 0
+
+                logger.info(
+                    "[%s] create_tasks returned %d tasks: %s",
+                    self.__class__.__name__,
+                    len(tasks),
+                    [t[:80] for t in tasks],
+                )
+
+                # Set up for first task execution
+                self.query = self._agent_tasks[0]
+                self.tool_calls = None
+                self._task_context_messages = []
+                self.messages = []
+
+                # Rebuild messages with first task as the query
+                await self._build_initial_messages()
+            else:
+                # ── Normal tool-call processing ──
+                self.messages.append(
+                    {
+                        "role": "assistant",
+                        "tool_calls": self.tool_calls,
+                        "content": "",
+                    }
+                )
+                self.tool_logs.append(copy.deepcopy(self.tool_calls))
+                cancel_sentinel: Optional[asyncio.Task] = None
+                if self.cancel_event:
+                    cancel_sentinel = asyncio.get_event_loop().create_task(
+                        self.cancel_event.wait(),
+                        name=f"cancel_sentinel_{id(self)}",
+                    )
+                try:
+                    for tool_call in self.tool_calls:
+                        # Fast-path: already cancelled before we even start the next tool.
+                        if self.cancel_event and self.cancel_event.is_set():
+                            logger.info(
+                                "[%s] start | cancelled before tool '%s'  aborting loop",
+                                self.__class__.__name__,
+                                safe_get(tool_call, "function", "name", default="?"),
+                            )
+                            break
+                        name = safe_get(tool_call, "function", "name", default=None)
+                        args_str = safe_get(tool_call, "function", "arguments", default="")
+                        tool_result = None
+                        if args_str and name:
+                            try:
+                                p_args = json.loads(args_str)
+                            except json.JSONDecodeError:
+                                p_args = None
+                            if isinstance(p_args, dict):
+                                # Wrap the real tool call in a cancellable task.
+                                if self.tool_manager:
+                                    async def execute_tool(**kwargs) -> Dict[str, Any]:
+                                        call_args = kwargs if kwargs else p_args
+                                        if name == "agent_query":   
+                                            agent = agent_ctx.get()
+                                            schema = None
+                                            agent_query = None
+                                            results = []
+                                            if agent and isinstance(agent, dict):
+                                                current_agent_id = next(iter(agent))
+                                                agent_node = agent.get(current_agent_id)
+                                                if agent_node:
+                                                    if agent_node.get("children"):  
+                                                        if agent_node.get("allowMultiple", False):
+                                                            schema = {
+                                                                "type": "function",
+                                                                "function": {
+                                                                    "name": "agent_query",
+                                                                    "description": "Send queries to one or more agents and retrieve their responses. Use this to delegate subtasks or gather information from specialized agents.",
+                                                                    "parameters": {
+                                                                        "type": "object",
+                                                                        "properties": {
+                                                                            "queries": {
+                                                                                "type": "array",
+                                                                                "description": "List of queries to send to agents. Multiple entries allow querying several agents in a single call.",
+                                                                                "items": {
+                                                                                    "type": "object",
+                                                                                    "properties": {
+                                                                                        "agent_id": {
+                                                                                            "type": "string",
+                                                                                            "description": "The unique identifier of the target agent."
+                                                                                        },
+                                                                                        "tasks": {
+                                                                                            "type": "array",
+                                                                                            "description": "List of tasks or questions to delegate to the target agent.",
+                                                                                            "items": {
+                                                                                                "type": "string",
+                                                                                                "description": "A specific question or instruction for the agent."
+                                                                                            }
+                                                                                        }
+                                                                                    },
+                                                                                    "required": ["agent_id", "tasks"]
+                                                                                },
+                                                                                "minItems": 1
+                                                                            }
+                                                                        },
+                                                                        "required": ["queries"]
+                                                                    }
+                                                                }
+                                                            }
+                                                        else:
+                                                            schema = {
+                                                                "type": "function",
+                                                                "function": {
+                                                                    "name": "agent_query",
+                                                                    "description": "Send a list of tasks to a specific agent and retrieve its response. Use this to delegate subtasks or gather information from specialized agents.",
+                                                                    "parameters": {
+                                                                        "type": "object",
+                                                                        "properties": {
+                                                                            "agent_id": {
+                                                                                "type": "string",
+                                                                                "description": "The unique identifier of the target agent."
+                                                                            },
+                                                                            "tasks": {
+                                                                                "type": "array",
+                                                                                "description": "List of tasks or questions to delegate to the target agent.",
+                                                                                "items": {
+                                                                                    "type": "string",
+                                                                                    "description": "A specific question or instruction for the agent."
+                                                                                }
+                                                                            }
+                                                                        },
+                                                                        "required": ["agent_id", "tasks"]
+                                                                    }
+                                                                }
+                                                            }
+                                                        
+                                                        if schema:
+                                                            agent_query = ToolRegistry(call=execute_tool, schema=schema)
+                                                        
+                                                        queries = call_args.get("queries")
+                                                        if not queries:
+                                                            query_val = call_args.get("query") or call_args.get("tasks")
+                                                            queries = [{"agent_id": call_args.get("agent_id"), "tasks": query_val}]
+                                                        
+                                                        async def run_agent_queries(q_item: dict) -> List[dict]:
+                                                            sub_agent_id = q_item.get("agent_id")
+                                                            sub_tasks = q_item.get("tasks") or q_item.get("query")
+                                                            if not sub_agent_id or not sub_tasks:
+                                                                return []
+                                                            if isinstance(sub_tasks, str):
+                                                                sub_tasks = [sub_tasks]
+                                                            
+                                                            agent_results = []
+                                                            sub_agent_tree = agent_node.get("children", {}).get(sub_agent_id)
+                                                            if sub_agent_tree:
+                                                                old_agent = agent_ctx.get()
+                                                                old_model = model_id_ctx.get()
+                                                                
+                                                                agent_ctx.set({sub_agent_id: sub_agent_tree})
+                                                                sub_model = sub_agent_tree.get("model")
+                                                                if sub_model:
+                                                                    model_id_ctx.set(sub_model)
+                                                                
+                                                                try:
+                                                                    for task in sub_tasks:
+                                                                        if agent_query:
+                                                                            try:
+                                                                                ans = await self.llm_tool(query=task, tool_registry={
+                                                                                    'agent_query' : agent_query
+                                                                                })
+                                                                                agent_results.append({
+                                                                                    "agent_id": sub_agent_id,
+                                                                                    "response": ans
+                                                                                })
+                                                                            except Exception as e:
+                                                                                logger.exception("Error executing sub-agent task: %s", task)
+                                                                                agent_results.append({
+                                                                                    "agent_id": sub_agent_id,
+                                                                                    "response": f"Error: {str(e)}"
+                                                                                })
+                                                                        else:
+                                                                            agent_results.append({
+                                                                                "agent_id": sub_agent_id,
+                                                                                "response": "Error: Agent query schema not found."
+                                                                            })
+                                                                finally:
+                                                                    agent_ctx.set(old_agent)
+                                                                    model_id_ctx.set(old_model)
+                                                            else:
+                                                                agent_results.append({
+                                                                    "agent_id": sub_agent_id,
+                                                                    "response": f"Error: Agent '{sub_agent_id}' not found."
+                                                                })
+                                                            return agent_results
+                                                        
+                                                        tasks_to_run = []
+                                                        for q_item in queries:
+                                                            tasks_to_run.append(
+                                                                asyncio.create_task(run_agent_queries(q_item))
+                                                            )
+                                                        
+                                                        if tasks_to_run:
+                                                            grouped_results = await asyncio.gather(*tasks_to_run)
+                                                            results = [res for agent_res in grouped_results for res in agent_res]
+                                                            content_str = json.dumps(results)
+                                                            if len(content_str) > 10000:
+                                                                import os
+                                                                from pathlib import Path
+
+                                                                project_root = os.getenv("OPENCHAD_PROJECT_DIR")
+                                                                if project_root and self.workspace:
+                                                                    storage_path = Path(project_root, "Workspaces", self.workspace, ".agent", self.root_agent, current_agent_id)
+                                                                    storage_path.mkdir(parents=True, exist_ok=True)
+                                                                    logger.info(f"[Chat] Workspace storage path: {storage_path}")
+
+                                                                    output_task_storage_file = storage_path / "output.txt"
+                                                                    try:
+                                                                        with open(output_task_storage_file, 'w', encoding='utf-8') as f:
+                                                                            f.write(f"{content_str}\n")
+                                                                            results = [{
+                                                                                "agent_id": current_agent_id,
+                                                                                "response": f"Task Output Too Long, check file {str(output_task_storage_file.resolve())}\n",
+                                                                                "preview": f"{content_str[:512]}..." 
+                                                                            }]
+                                                                        logger.info(f"[Chat] Saved output to {output_task_storage_file}")
+                                                                    except Exception as e:
+                                                                        logger.exception("[Chat] Error writing task file: %s", e)
+                                                        else:
+                                                            results = []
+                                                        
+                                                        if "queries" in call_args:
+                                                            return {"responses": results} if len(results) > 1 else results[0]
+                                                        else:
+                                                            return results[0] if results else {"error": "No query executed"}
+                                            return {"error": "No query executed"}
+                                        else: 
+                                            return await self.tool_manager.execute_tool(name, **p_args)
+                                        
+                                    tool_task: asyncio.Task = asyncio.get_event_loop().create_task(
+                                        execute_tool(),
+                                        name=f"tool_{name}_{id(self)}",
+                                    )
+                                    try:
+                                        if cancel_sentinel is not None:
+                                            # Race: whichever finishes first wins.
+                                            done, _ = await asyncio.wait(
+                                                {tool_task, cancel_sentinel},
+                                                return_when=asyncio.FIRST_COMPLETED,
+                                            )
+                                            if cancel_sentinel in done:
+                                                # Stop was requested while the tool was in flight.
+                                                logger.info(
+                                                    "[%s] start | cancel_event fired during tool '%s'  cancelling task",
+                                                    self.__class__.__name__,
+                                                    name,
+                                                )
+                                                tool_task.cancel()
+                                                try:
+                                                    await tool_task
+                                                except (asyncio.CancelledError, Exception):
+                                                    pass
+                                                break  # exit the tool loop
+                                            # Tool finished normally  retrieve result.
+                                            tool_result = tool_task.result()
+                                        else:
+                                            tool_result = await tool_task
+                                    except asyncio.CancelledError:
+                                        # The outer coroutine itself was cancelled.
+                                        tool_task.cancel()
+                                        raise
+                                    except Exception as e:
+                                        tool_result = str(e)
+                                else:
+                                    tool_result = "Tool manager is not available"
+                        if tool_result:
+                            self.messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call["id"],
+                                    "content": json.dumps(tool_result),
+                                }
+                            )
+                finally:
+                    # Always clean up the sentinel so it never leaks.
+                    if cancel_sentinel is not None and not cancel_sentinel.done():
+                        cancel_sentinel.cancel()
+                        try:
+                            await cancel_sentinel
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                self.logs["messages"] = self.messages
         self.args["tools"] = self.tools
         self.tool_calls = None
         self.last_response = ""
@@ -1319,6 +1772,33 @@ class Chat(PipelineBase):
         self.logs["tools_called_" + str(self.attempt)] = json.dumps(self.tool_calls)
         if self.tool_calls:
             is_continue = True
+        # ── Transition to next agent task if current task completed ──
+        if (
+            not self.tool_calls
+            and self._agent_tasks
+            and self._current_task_idx + 1 < len(self._agent_tasks)
+        ):
+            # Append the completed task's query and cleaned final response to prior task messages
+            self._task_context_messages.append({
+                "role": "user",
+                "content": self.query or "",
+            })
+            self._task_context_messages.append({
+                "role": "assistant",
+                "content": _clean_assistant_content(self.last_response or ""),
+            })
+
+            self._current_task_idx += 1
+            self.query = self._agent_tasks[self._current_task_idx]
+            self.messages = []  # will be rebuilt in start()
+            is_continue = True
+            logger.info(
+                "[%s] transitioning to task %d/%d: %s",
+                self.__class__.__name__,
+                self._current_task_idx + 1,
+                len(self._agent_tasks),
+                self.query[:100],
+            )
         if self.set_continue:
             self.set_continue(is_continue)
         self.logs["output_" + str(self.attempt)] = self.last_response

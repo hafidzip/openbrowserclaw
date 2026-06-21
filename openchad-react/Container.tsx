@@ -198,8 +198,23 @@ export default function Container({ Apps }: { Apps: Project }) {
   }, [])
 
 
-  usePythonEvent('agents-update', () => {
-    console.warn('[Container] agents updated')
+
+  usePythonEvent('browser:open-new-tab', (data) => {
+    if (typeof data === 'string' && /^https?:\/\//.test(data)) {
+      addTab({
+        uuid: uuidv4(),
+        iconOverride: "Compass",
+        layout: "single",
+        childrenProps: {
+          [uuidv4()]: {
+            icon: "Compass",
+            title: null,
+            appname: "main-app",
+            data: { url: data }
+          }
+        }
+      });
+    }
   })
 
   useEffect(() => {

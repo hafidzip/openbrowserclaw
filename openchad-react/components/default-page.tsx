@@ -61,9 +61,11 @@ export default function DefaultPage(AppInfo: AppInfo) {
     const title = AppInfo.useTitle();
     const currentTab = AppInfo.useTab()
 
-    usePythonEvent('agents-update', () => {
-        console.warn('agents updated')
-    })
+    useEffect(() => {
+        if (activeId == tabId && currentTab && currentTab.children[0] == appId) {
+            MenuBar.current = null
+        }
+    }, [activeId])
 
     useEffect(() => {
         if (title) return;

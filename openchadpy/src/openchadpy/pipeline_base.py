@@ -1,9 +1,10 @@
 from openchadpy.context import agent_ctx
 import json
-import json
 import logging
+import os
+import re
 from openchadpy.tool_base import ToolRegistry
-from typing import Any, Optional, List, Dict, Callable, Awaitable, TYPE_CHECKING
+from typing import Any, Optional, List, Dict, Callable, Awaitable, Tuple, TYPE_CHECKING
 import asyncio
 from pathlib import Path
 from .context import workspace_ctx, tab_id_ctx, model_id_ctx
@@ -63,6 +64,7 @@ class PipelineBase:
         chat_kwargs: Dict[str, Any] = {}
         mid_ctx = model_id_ctx.get()
         tools: list = []
+        context = ""
         
         if tool_registry:
             for reg in tool_registry.values():
@@ -74,16 +76,211 @@ class PipelineBase:
                 tools.extend(self.mcp_manager.get_openai_schemas())
         agent = agent_ctx.get()
         if not tool_registry and agent and isinstance(agent, dict):
+            all_tools = list(tools)
             current_agent_id = next(iter(agent))
             agent_node = agent.get(current_agent_id)
             if agent_node:
-                allowed_tools_list = agent_node.get("tools", [])
-                if allowed_tools_list:
-                    allowed_set = set(allowed_tools_list)
-                    tools = [
-                        t for t in tools
-                        if t.get("function", {}).get("name") in allowed_set
-                    ]
+                # Add agent_query tool schema if children exist
+                children = agent_node.get("children")
+                if children:  
+                    if agent_node.get("allowMultiple", False):
+                        tools.append({
+                            "type": "function",
+                            "function": {
+                                "name": "agent_query",
+                                "description": "Send queries to one or more agents and retrieve their responses. Use this to delegate subtasks or gather information from specialized agents.",
+                                "parameters": {
+                                    "type": "object",
+                                    "properties": {
+                                        "queries": {
+                                            "type": "array",
+                                            "description": "List of queries to send to agents. Multiple entries allow querying several agents in a single call.",
+                                            "items": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "agent_id": {
+                                                        "type": "string",
+                                                        "description": "The unique identifier of the target agent."
+                                                    },
+                                                    "tasks": {
+                                                        "type": "array",
+                                                        "description": "List of tasks or questions to delegate to the target agent.",
+                                                        "items": {
+                                                            "type": "string",
+                                                            "description": "A specific question or instruction for the agent."
+                                                        }
+                                                    }
+                                                },
+                                                "required": ["agent_id", "tasks"]
+                                            },
+                                            "minItems": 1
+                                        }
+                                    },
+                                    "required": ["queries"]
+                                }
+                            }
+                        })
+                    else:
+                        tools.append({
+                                "type": "function",
+                                "function": {
+                                    "name": "agent_query",
+                                    "description": "Send a list of tasks to a specific agent and retrieve its response. Use this to delegate subtasks or gather information from specialized agents.",
+                                    "parameters": {
+                                        "type": "object",
+                                        "properties": {
+                                            "agent_id": {
+                                                "type": "string",
+                                                "description": "The unique identifier of the target agent."
+                                            },
+                                            "tasks": {
+                                                "type": "array",
+                                                "description": "List of tasks or questions to delegate to the target agent.",
+                                                "items": {
+                                                    "type": "string",
+                                                    "description": "A specific question or instruction for the agent."
+                                                }
+                                            }
+                                        },
+                                        "required": ["agent_id", "tasks"]
+                                    }
+                                }
+                            })
+                    # Add the appended agent_query to all_tools
+                    all_tools.append(tools[-1])
+
+                # Helper to check if a file exists and is not empty
+                def is_file_non_empty(file_path: str) -> bool:
+                    if not file_path:
+                        return False
+                    try:
+                        return os.path.isfile(file_path) and os.path.getsize(file_path) > 0
+                    except Exception:
+                        return False
+
+                # Helper to read full skill content for root agent (depth 0)
+                def get_skill_content(skill_path: str) -> str:
+                    if not skill_path:
+                        return ""
+                    try: 
+                        with open(skill_path, "r", encoding="utf-8") as f:
+                            return f.read().strip()
+                    except Exception as e: 
+                        logger.error(f"[llm_tool] error when try to get skill path: {e}")
+                        return ""
+
+                # Helper to extract skill name and description for sub-agents (depth > 0)
+                def get_skill_info(skill_path: str) -> Tuple[str, str]:
+                    if not skill_path:
+                        return "", ""
+                    try:
+                        skill_filename = os.path.basename(skill_path)
+                    except Exception:
+                        skill_filename = "skill.md"
+                    try:
+                        with open(skill_path, "r", encoding="utf-8") as f:
+                            for line in f:
+                                stripped = line.strip()
+                                if stripped:
+                                    # Found the first non-empty line. Strip headers/bullets.
+                                    desc = stripped.lstrip("#").lstrip("-").lstrip("*").strip()
+                                    return skill_filename, desc
+                            return skill_filename, "No description available"
+                    except Exception:
+                        return skill_filename, "No description available"
+
+                # Recursive agent prompt formatter
+                def format_agent(a_id: str, a_node: dict, depth: int) -> str:
+                    lines = []
+                    
+                    # 1. Agent Header
+                    if depth == 0:
+                        lines.append(f"# Agent `{a_id}`")
+                    elif depth == 1:
+                        lines.append(f"### `{a_id}`")
+                    else:
+                        lines.append(f"##### `{a_id}`")
+                    lines.append("")
+
+                    # 2. Skills
+                    skill_path = a_node.get("skillPath")
+                    if skill_path and is_file_non_empty(skill_path):
+                        if depth == 0:
+                            content = get_skill_content(skill_path)
+                            if content:
+                                lines.append("## Skills")
+                                lines.append(content)
+                                lines.append("")
+                        else:
+                            header = "#### Skills" if depth == 1 else "**Skills**"
+                            fname, fdesc = get_skill_info(skill_path)
+                            if fname and fdesc:
+                                lines.append(header)
+                                fdesc = fdesc.strip().rstrip('.')
+                                lines.append(f"- `{fname}` — {fdesc}.")
+                                lines.append("")
+
+                    # 3. Tools
+                    allowed_tools_list = a_node.get("tools", [])
+                    a_children = a_node.get("children", {})
+                    has_tools = bool(allowed_tools_list) or bool(a_children)
+                    if has_tools:
+                        if depth == 0:
+                            lines.append("## Tools")
+                        elif depth == 1:
+                            lines.append("#### Tools")
+                        else:
+                            lines.append("**Tools**")
+
+                        for t_name in allowed_tools_list:
+                            t_desc = "No description available"
+                            for t in all_tools:
+                                if isinstance(t, dict) and t.get("function", {}).get("name") == t_name:
+                                    t_desc = t.get("function", {}).get("description") or "No description available"
+                                    break
+                            t_desc = t_desc.strip().rstrip('.')
+                            lines.append(f"- `{t_name}` — {t_desc}.")
+
+                        # Handle agent_query if children exist
+                        if a_children:
+                            if depth == 0:
+                                lines.append("- `agent_query` — Delegate a task to a sub-agent.")
+                            else:
+                                lines.append("- `agent_query` — Delegate a task to a sub-agent (see below).")
+                        lines.append("")
+
+                    # 4. Sub-Agents
+                    if a_children and depth < 2:
+                        if depth == 0:
+                            lines.append("## Sub-Agents")
+                        elif depth == 1:
+                            lines.append("#### Sub-Agents")
+                        else:
+                            lines.append("**Sub-Agents**")
+                        lines.append("")
+
+                        for child_id, child_node in a_children.items():
+                            child_str = format_agent(child_id, child_node, depth + 1)
+                            if child_str:
+                                lines.append(child_str)
+                                lines.append("")
+
+                    return "\n".join(lines).strip()
+
+                # Generate raw prompt and clean up consecutive newlines
+                raw_prompt = format_agent(current_agent_id, agent_node, 0)
+                context = re.sub(r'\n{3,}', '\n\n', raw_prompt).strip()
+
+                # Ensure agent_query is allowed if children exist
+                allowed_tools = set(agent_node.get("tools", []))
+                if children:
+                    allowed_tools.add("agent_query")
+
+                # Filter tools for the root agent
+                tools = [
+                    t for t in tools
+                    if t.get("function", {}).get("name") in allowed_tools
+                ]
 
         if tools:
             chat_kwargs["tools"] = tools
@@ -106,9 +303,7 @@ class PipelineBase:
                 ] if not agent else [
                     {
                         "role": "system",
-                        "content": (
-                            "",
-                        ),
+                        "content": context,
                     },
                     {"role": "user", "content": query},
                 ]
