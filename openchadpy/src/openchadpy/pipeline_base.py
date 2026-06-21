@@ -60,11 +60,38 @@ class PipelineBase:
         self,
         query: str,
         tool_registry: Optional[Dict[str, ToolRegistry]] = None,
+        history_id: Optional[str] = None,
     ) -> Any:
         chat_kwargs: Dict[str, Any] = {}
         mid_ctx = model_id_ctx.get()
         tools: list = []
         context = ""
+
+        # --- History loading ---
+        history_messages: List[Dict[str, Any]] = []
+        if history_id and self.db:
+            try:
+                stored = await self.db.get("llm_tool_history", history_id)
+                if isinstance(stored, list):
+                    history_messages = stored[-8:]
+                    logger.info(f"[llm_tool] loaded {len(history_messages)} history messages for id={history_id}")
+            except Exception as e:
+                logger.warning(f"[llm_tool] could not load history for id={history_id}: {e}")
+
+        async def _save_history(user_query: str, assistant_content: str) -> None:
+            """Persist the new turn and keep a rolling window of 8 messages."""
+            if not history_id or not self.db:
+                return
+            try:
+                stored = await self.db.get("llm_tool_history", history_id)
+                turns: List[Dict[str, Any]] = stored if isinstance(stored, list) else []
+                turns.append({"role": "user", "content": user_query})
+                turns.append({"role": "assistant", "content": assistant_content})
+                turns = turns[-8:]
+                await self.db.set("llm_tool_history", history_id, turns)
+                logger.info(f"[llm_tool] saved history for id={history_id} ({len(turns)} messages)")
+            except Exception as e:
+                logger.warning(f"[llm_tool] could not save history for id={history_id}: {e}")
         
         if tool_registry:
             for reg in tool_registry.values():
@@ -270,6 +297,15 @@ class PipelineBase:
                 # Generate raw prompt and clean up consecutive newlines
                 raw_prompt = format_agent(current_agent_id, agent_node, 0)
                 context = re.sub(r'\n{3,}', '\n\n', raw_prompt).strip()
+                import platform
+                from datetime import datetime
+                os_info = f"{platform.system()} {platform.release()}"
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                context += (
+                    f"\n\n## Environment\n"
+                    f"- OS Information: {os_info}\n"
+                    f"- Current Date & Time: {now_str}"
+                )
 
                 # Ensure agent_query is allowed if children exist
                 allowed_tools = set(agent_node.get("tools", []))
@@ -299,12 +335,14 @@ class PipelineBase:
                             "3. Match the user's intent to the correct tool. Do not guess or improvise.\n"
                         ),
                     },
+                    *history_messages,
                     {"role": "user", "content": query},
                 ] if not agent else [
                     {
                         "role": "system",
                         "content": context,
                     },
+                    *history_messages,
                     {"role": "user", "content": query},
                 ]
                 
@@ -332,7 +370,9 @@ class PipelineBase:
                     if not tool_calls:
                         logger.info("[llm_tool] no tool_calls")
                         if multi_step:
-                            return message.get("content") or ""
+                            final_content = message.get("content") or ""
+                            await _save_history(query, final_content)
+                            return final_content
                         else:
                             return {}
                     if tool_calls and (self.tool_manager or tool_registry):
