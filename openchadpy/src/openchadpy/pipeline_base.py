@@ -321,111 +321,148 @@ class PipelineBase:
         if tools:
             chat_kwargs["tools"] = tools
                 
-        if self.model_manager:
-            model_id = mid_ctx if mid_ctx else self.model_manager.get_default_id("llm")
-            if model_id:
-                messages = [
-                    {
-                        "role": "system",
-                        "content": (
-                            "You are a tool-calling assistant. You MUST call a tool for every single response"
-                            "RULES:\n"
-                            "1. Every response must be a tool call.\n"
-                            "2. Read each tool's description fully and follow it exactly.\n"
-                            "3. Match the user's intent to the correct tool. Do not guess or improvise.\n"
-                        ),
-                    },
-                    *history_messages,
-                    {"role": "user", "content": query},
-                ] if not agent else [
-                    {
-                        "role": "system",
-                        "content": context,
-                    },
-                    *history_messages,
-                    {"role": "user", "content": query},
-                ]
-                
-                multi_step = (agent_ctx.get() is not None)
-                
-                while True:
-                    response = await self.model_manager.text_chat(
-                        messages=messages,
-                        model_id=model_id,
-                        stream=False,
-                        **chat_kwargs,
-                    )
+        current_agent_id = next(iter(agent)) if (agent and isinstance(agent, dict)) else None
+        
+        heartbeat_task = None
+        if current_agent_id and self.event_emitter:
+            import time
+            # Emit immediate heartbeat
+            await self.event_emitter.emit("agent_heartbeat", {
+                "agent_id": current_agent_id,
+                "timestamp": time.time()
+            })
+            
+            async def send_heartbeats():
+                try:
+                    while True:
+                        await asyncio.sleep(1.0)
+                        if self.event_emitter:
+                            await self.event_emitter.emit("agent_heartbeat", {
+                                "agent_id": current_agent_id,
+                                "timestamp": time.time()
+                            })
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.error(f"Error in agent heartbeat task: {e}")
+            
+            heartbeat_task = asyncio.create_task(send_heartbeats())
+
+        try:
+            if self.model_manager:
+                model_id = mid_ctx if mid_ctx else self.model_manager.get_default_id("llm")
+                if model_id:
+                    messages = [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a tool-calling assistant. You MUST call a tool for every single response"
+                                "RULES:\n"
+                                "1. Every response must be a tool call.\n"
+                                "2. Read each tool's description fully and follow it exactly.\n"
+                                "3. Match the user's intent to the correct tool. Do not guess or improvise.\n"
+                            ),
+                        },
+                        *history_messages,
+                        {"role": "user", "content": query},
+                    ] if not agent else [
+                        {
+                            "role": "system",
+                            "content": context,
+                        },
+                        *history_messages,
+                        {"role": "user", "content": query},
+                    ]
                     
-                    assert isinstance(response, dict), f"Expected dict, got {type(response)}"
-                    logger.info(f"[llm_tool] query {query}")
-                    logger.info(f"[llm_tool] response {type(response)}, {json.dumps(response)}")
-                    logger.info(f"[llm_tool] tools available {type(tools)}, {json.dumps(tools)}")
-                    try:
-                        message = response["choices"][0]["message"]
-                        tool_calls = message.get("tool_calls")
-                    except (KeyError, IndexError, TypeError):
-                        logger.error(f"[llm_tool] error when try to get tool calls")
-                        tool_calls = None
-                        return {}
-                    if not tool_calls:
-                        logger.info("[llm_tool] no tool_calls")
-                        if multi_step:
-                            final_content = message.get("content") or ""
-                            await _save_history(query, final_content)
-                            return final_content
+                    multi_step = (agent_ctx.get() is not None)
+                    
+                    while True:
+                        response = await self.model_manager.text_chat(
+                            messages=messages,
+                            model_id=model_id,
+                            stream=False,
+                            **chat_kwargs,
+                        )
+                        
+                        assert isinstance(response, dict), f"Expected dict, got {type(response)}"
+                        logger.info(f"[llm_tool] query {query}")
+                        logger.info(f"[llm_tool] response {type(response)}, {json.dumps(response)}")
+                        logger.info(f"[llm_tool] tools available {type(tools)}, {json.dumps(tools)}")
+                        try:
+                            message = response["choices"][0]["message"]
+                            tool_calls = message.get("tool_calls")
+                        except (KeyError, IndexError, TypeError):
+                            logger.error(f"[llm_tool] error when try to get tool calls")
+                            tool_calls = None
+                            return {}
+                        if not tool_calls:
+                            logger.info("[llm_tool] no tool_calls")
+                            if multi_step:
+                                final_content = message.get("content") or ""
+                                await _save_history(query, final_content)
+                                return final_content
+                            else:
+                                return {}
+                        if tool_calls and (self.tool_manager or tool_registry):
+                            results = {}
+                            for call in tool_calls:
+                                fn_name: str = call["function"]["name"]
+                                raw_args: str = call["function"].get("arguments", "{}")
+                                call_id: str = call.get("id", fn_name)
+                                try:
+                                    kwargs = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+                                except json.JSONDecodeError:
+                                    logger.warning(f"[llm_tool] Failed to parse arguments for {fn_name}: {raw_args}")
+                                    kwargs = {}
+                                    return {}
+                                logger.info(f"[llm_tool] Executing tool '{fn_name}' with kwargs={kwargs}")
+                                if tool_registry and fn_name in tool_registry:
+                                    result = await tool_registry[fn_name].execute(**kwargs)
+                                else:
+                                    if self.tool_manager:
+                                        result = await self.tool_manager.execute_tool(
+                                            fn_name,
+                                            caller="direct",
+                                            workspace=self.workspace,
+                                            tab_id=self.tab_id,
+                                            **kwargs,
+                                        )
+                                    else:
+                                        return {}
+                                results[call_id] = result
+                            
+                            if not multi_step:
+                                return results[next(iter(results))] if len(results) == 1 else results
+                            
+                            messages.append(message)
+                            for call_id, result in results.items():
+                                if isinstance(result, dict):
+                                    content_str = json.dumps(result)
+                                else:
+                                    content_str = str(result)
+                                    
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": call_id,
+                                    "name": next((c["function"]["name"] for c in tool_calls if c.get("id", c["function"]["name"]) == call_id), ""),
+                                    "content": content_str
+                                })
                         else:
                             return {}
-                    if tool_calls and (self.tool_manager or tool_registry):
-                        results = {}
-                        for call in tool_calls:
-                            fn_name: str = call["function"]["name"]
-                            raw_args: str = call["function"].get("arguments", "{}")
-                            call_id: str = call.get("id", fn_name)
-                            try:
-                                kwargs = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-                            except json.JSONDecodeError:
-                                logger.warning(f"[llm_tool] Failed to parse arguments for {fn_name}: {raw_args}")
-                                kwargs = {}
-                                return {}
-                            logger.info(f"[llm_tool] Executing tool '{fn_name}' with kwargs={kwargs}")
-                            if tool_registry and fn_name in tool_registry:
-                                result = await tool_registry[fn_name].execute(**kwargs)
-                            else:
-                                if self.tool_manager:
-                                    result = await self.tool_manager.execute_tool(
-                                        fn_name,
-                                        caller="direct",
-                                        workspace=self.workspace,
-                                        tab_id=self.tab_id,
-                                        **kwargs,
-                                    )
-                                else:
-                                    return {}
-                            results[call_id] = result
-                        
-                        if not multi_step:
-                            return results[next(iter(results))] if len(results) == 1 else results
-                        
-                        messages.append(message)
-                        for call_id, result in results.items():
-                            if isinstance(result, dict):
-                                content_str = json.dumps(result)
-                            else:
-                                content_str = str(result)
-                                
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": call_id,
-                                "name": next((c["function"]["name"] for c in tool_calls if c.get("id", c["function"]["name"]) == call_id), ""),
-                                "content": content_str
-                            })
-                    else:
-                        return {}
+                else:
+                    logger.error("Model ID not found")
+                    return {}
             else:
-                logger.error("Model ID not found")
+                logger.error("Model manager not found")
                 return {}
-        logger.error("Model manager not found")
-        return {}
+        finally:
+            if heartbeat_task:
+                heartbeat_task.cancel()
+                try:
+                    await heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+
 
     
     def __init__(self, **kwargs):
