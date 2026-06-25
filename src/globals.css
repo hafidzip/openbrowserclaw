@@ -725,13 +725,13 @@ body {
 .markdown-body tt,
 .markdown-body code,
 .markdown-body samp {
-  font-family: var(--fontStack-monospace, ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace);
+  font-family: "Geist", sans-serif;
   font-size: 12px;
 }
 .markdown-body pre {
   margin-top: 0;
   margin-bottom: 0;
-  font-family: var(--fontStack-monospace, ui-monospace, SFMono-Regular, SF Mono, Menlo, Consolas, Liberation Mono, monospace);
+  font-family: "Geist", sans-serif;
   font-size: 12px;
   word-wrap: normal;
 }
@@ -1250,7 +1250,7 @@ body {
 .markdown-body g-emoji {
   display: inline-block;
   min-width: 1ch;
-  font-family: "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";
+  font-family: "Geist", sans-serif;
   font-size: 1em;
   font-style: normal !important;
   font-weight: var(--base-text-weight-normal, 400);
@@ -1359,6 +1359,7 @@ body {
 .markdown-body h4,
 .markdown-body h5,
 .markdown-body h6 {
+  font-family: "Funnel Display", sans-serif;
   scroll-margin-top: 5rem;             /* scroll-m-20 */
   margin-top: var(--base-size-24);
   margin-bottom: var(--base-size-16);
@@ -1369,12 +1370,18 @@ body {
  
 /* ── h1 · scroll-m-20 text-4xl font-extrabold tracking-tight text-balance ── */
 .markdown-body h1 {
-  max-width: 350px;
+  max-width: 500px;
   font-size: 2.4em;                  /* text-4xl */
   font-weight: 800;                    /* font-extrabold */
   text-wrap: balance;                  /* text-balance */
   padding-bottom: 0;                   /* no border-bottom on h1 in shadcn */
   border-bottom: none;
+}
+
+@media (max-width: 1280px) {
+  .markdown-body h1 {
+    max-width: 425px;
+  }
 }
  
 /* ── h2 · scroll-m-20 border-b pb-2 text-3xl font-semibold tracking-tight ── */

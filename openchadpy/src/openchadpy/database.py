@@ -237,12 +237,13 @@ class Database:
         logger.error(f"Database.sync error: {result.get('error')}")
         return False
     
-    async def query(self, table: str, sql: str) -> Any:
+    async def query(self, table: str, sql: str, params: Optional[list] = None) -> Any:
         """
         Execute raw SQL query on a table.
         Args:
             table: Table name (for hashing)
             sql: SQL query (use {table} placeholder for table name)
+            params: Query parameters
         Returns:
             Query result
         """
@@ -253,6 +254,32 @@ class Database:
             "db": self.workspace,
             "table": hashed,
             "command": "query",
-            "sql": sql
+            "sql": sql,
+            "params": params or []
         })
         return result.get("data", [])
+
+    async def execute(self, table: str, sql: str, params: Optional[list] = None) -> Any:
+        """
+        Execute raw SQL modifying query (INSERT, UPDATE, DELETE, CREATE) on a table.
+        Args:
+            table: Table name (for hashing)
+            sql: SQL statement (use {table} placeholder for table name)
+            params: Parameters for placeholders
+        Returns:
+            Result dict with changes and lastrowid
+        """
+        hashed = self._get_hashed_table(table)
+        # Replace {table} placeholder
+        sql = sql.replace("{table}", hashed)
+        result = await sqlite({
+            "db": self.workspace,
+            "table": hashed,
+            "command": "execute",
+            "sql": sql,
+            "params": params or []
+        })
+        if not result.get("error"):
+            await trigger_table_update(self.workspace, hashed)
+        return result.get("data", {})
+

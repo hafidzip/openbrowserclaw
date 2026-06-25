@@ -1,4 +1,4 @@
-import { useRef, useState, useEffect, useCallback } from "react";
+import { useRef, useState, useEffect, useCallback, memo } from "react";
 import type React from "react";
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { UseDatabaseReturn } from "./useDatabase/useDatabase";
@@ -159,7 +159,7 @@ function buildQueryHTML(query: string): string {
     }).join('')
 }
 
-function QueryContent({ query }: { query: string }) {
+export function QueryContent({ query }: { query: string }) {
     const blocks = parseQueryBlocks(query)
     return (
         <>
@@ -220,33 +220,45 @@ function getIsStreaming(response: ModelOutput | string | undefined | null): bool
     return false;
 }
 
-export default function MessageContainer({ request, tabId, activeId, branch, index, useDatabase, isStreaming, workspace, scrollToBottom }: {
+function MessageContainer({
+    request,
+    tabId,
+    activeId,
+    childBranchId,
+    parentBranchId,
+    query,
+    responses,
+    responseBranch,
+    siblingIndex,
+    totalSiblings,
+    index,
+    isStreaming,
+    workspace,
+    scrollToBottom,
+    onSiblingChange,
+    onResponseBranchChange,
+    onEditSubmit,
+    onRegenerate
+}: {
     request: (payload: any, tb: string, branchId: string, index: number | string, response_branch: number) => Promise<any>,
-    tabId: string, activeId: string | null, branch: string, index: number,
-    useDatabase: <T>(
-        tb: string,
-        options?: { initialValue?: T }
-    ) => UseDatabaseReturn<T>,
+    tabId: string,
+    activeId: string | null,
+    childBranchId: string,
+    parentBranchId: string,
+    query: string,
+    responses: (ModelOutput | string)[],
+    responseBranch: number,
+    siblingIndex: number,
+    totalSiblings: number,
+    index: number,
     isStreaming: boolean,
     workspace: string,
-    scrollToBottom: () => void
+    scrollToBottom: () => void,
+    onSiblingChange: (parentBranchId: string, msgIndex: number, newSiblingIndex: number) => void,
+    onResponseBranchChange: (childBranchId: string, newResponseBranch: number) => void,
+    onEditSubmit: (query: string, siblingIndex: number, parentBranchId: string, msgIndex: number) => void,
+    onRegenerate: (query: string, parentBranchId: string, childBranchId: string, siblingIndex: number, responsesLength: number) => void
 }) {
-    const tb = "msg_" + branch + "_" + index;
-    const [message, setMessage, {ready}] = useDatabase<{
-        branch: number, content: Record<string, {
-            query: string,
-            responses: (ModelOutput | string)[],
-            response_branch: number
-        }>
-    }>(
-        tb,
-        {
-            initialValue: {
-                branch: 0,
-                content: {}
-            }
-        });
-    const b = sha256(message.branch > 0 ? message.branch.toString() + branch : branch).slice(0, 32)
     const [isCopied, setIsCopied] = useState(false);
     const [isEditing, setIsEditing] = useState(false);
     const [isExpanded, setIsExpanded] = useState(false);
@@ -254,25 +266,18 @@ export default function MessageContainer({ request, tabId, activeId, branch, ind
     const queryRef = useRef<HTMLDivElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
     const escaping = useRef(false);
-    const savedRange = useRef<Range | null>(null)
-
-    useEffect(()=>{
-        if(ready){
-            scrollToBottom();
-        }
-    },[ready])
+    const savedRange = useRef<Range | null>(null);
 
     const syncState = useCallback(() => {
-        const div = queryRef.current
-        if (!div) return
-        const chips = div.querySelectorAll<HTMLElement>('[data-img]')
+        const div = queryRef.current;
+        if (!div) return;
+        const chips = div.querySelectorAll<HTMLElement>('[data-img]');
         chips.forEach(chip => {
-            ensureTextBefore(chip)
-            ensureTextAfter(chip)
-        })
-    }, [])
+            ensureTextBefore(chip);
+            ensureTextAfter(chip);
+        });
+    }, []);
 
-    // Hook to observe container changes and identify if scroll height clips container dimensions
     useEffect(() => {
         const checkOverflow = () => {
             if (containerRef.current) {
@@ -288,351 +293,352 @@ export default function MessageContainer({ request, tabId, activeId, branch, ind
         observer.observe(containerRef.current);
 
         return () => observer.disconnect();
-    }, [message.content, b, isExpanded, isEditing]);
+    }, [query, isExpanded, isEditing]);
 
     useEffect(() => {
-        const div = queryRef.current
-        if (!div) return
+        const div = queryRef.current;
+        if (!div) return;
         const observer = new MutationObserver(() => {
-            const children = Array.from(div.childNodes)
-            let dirty = false
+            const children = Array.from(div.childNodes);
+            let dirty = false;
             for (const node of children) {
                 if (node.nodeName === 'BR') {
-                    div.removeChild(node); dirty = true; continue
+                    div.removeChild(node); dirty = true; continue;
                 }
                 if (node.nodeName === 'DIV') {
-                    const el = node as HTMLElement
-                    if (el.dataset.img) continue
+                    const el = node as HTMLElement;
+                    if (el.dataset.img) continue;
                     if (el.innerHTML === '<br>' || el.innerHTML === '' || el.innerHTML === '&nbsp;') {
-                        div.removeChild(el)
+                        div.removeChild(el);
                     } else {
-                        const frag = document.createDocumentFragment()
-                        if (el.previousSibling) frag.appendChild(document.createTextNode('\n'))
-                        while (el.firstChild) frag.appendChild(el.firstChild)
-                        div.replaceChild(frag, el)
+                        const frag = document.createDocumentFragment();
+                        if (el.previousSibling) frag.appendChild(document.createTextNode('\n'));
+                        while (el.firstChild) frag.appendChild(el.firstChild);
+                        div.replaceChild(frag, el);
                     }
-                    dirty = true
+                    dirty = true;
                 }
             }
-            if (dirty) syncState()
-        })
-        observer.observe(div, { childList: true })
-        return () => observer.disconnect()
-    }, [syncState, isEditing])
+            if (dirty) syncState();
+        });
+        observer.observe(div, { childList: true });
+        return () => observer.disconnect();
+    }, [syncState, isEditing]);
+
     useEffect(() => {
         const onSelectionChange = () => {
-            if (escaping.current) return
-            const div = queryRef.current
-            if (!div || !isEditing) return
-            if (!div.querySelector('[data-img]')) return
-            const sel = window.getSelection()
-            if (!sel?.rangeCount || !sel.isCollapsed) return
-            const { focusNode } = sel
-            if (!focusNode || (!div.contains(focusNode) && focusNode !== div)) return
-            const { startContainer, startOffset } = sel.getRangeAt(0)
-            let target: Text | null = null
-            let offset = 0
-            let chip: HTMLElement | null = null
+            if (escaping.current) return;
+            const div = queryRef.current;
+            if (!div || !isEditing) return;
+            if (!div.querySelector('[data-img]')) return;
+            const sel = window.getSelection();
+            if (!sel?.rangeCount || !sel.isCollapsed) return;
+            const { focusNode } = sel;
+            if (!focusNode || (!div.contains(focusNode) && focusNode !== div)) return;
+            const { startContainer, startOffset } = sel.getRangeAt(0);
+            let target: Text | null = null;
+            let offset = 0;
+            let chip: HTMLElement | null = null;
             if (startContainer instanceof HTMLElement && startContainer.dataset.img) {
-                chip = startContainer
+                chip = startContainer;
             } else if (startContainer.nodeType === Node.TEXT_NODE && startContainer.parentElement?.closest('[data-img="true"]')) {
-                chip = startContainer.parentElement.closest('[data-img="true"]') as HTMLElement
+                chip = startContainer.parentElement.closest('[data-img="true"]') as HTMLElement;
             } else if (startContainer instanceof HTMLElement && startContainer.closest('[data-img="true"]')) {
-                chip = startContainer.closest('[data-img="true"]') as HTMLElement
+                chip = startContainer.closest('[data-img="true"]') as HTMLElement;
             }
             if (chip) {
-                if (startOffset === 0) { target = ensureTextBefore(chip); offset = target.length }
-                else { target = ensureTextAfter(chip); offset = 0 }
+                if (startOffset === 0) { target = ensureTextBefore(chip); offset = target.length; }
+                else { target = ensureTextAfter(chip); offset = 0; }
             } else if (startContainer === div) {
                 if (startOffset < div.childNodes.length) {
-                    const child = div.childNodes[startOffset]
+                    const child = div.childNodes[startOffset];
                     if (child instanceof HTMLElement && child.dataset.img) {
-                        target = ensureTextBefore(child); offset = target.length
+                        target = ensureTextBefore(child); offset = target.length;
                     }
                 }
                 if (!target && startOffset > 0) {
-                    const prev = div.childNodes[startOffset - 1]
+                    const prev = div.childNodes[startOffset - 1];
                     if (prev instanceof HTMLElement && prev.dataset.img) {
-                        target = ensureTextAfter(prev); offset = 0
+                        target = ensureTextAfter(prev); offset = 0;
                     }
                 }
             }
             if (target) {
-                escaping.current = true
-                placeCaret(target, offset)
-                requestAnimationFrame(() => { escaping.current = false })
+                escaping.current = true;
+                placeCaret(target, offset);
+                requestAnimationFrame(() => { escaping.current = false; });
             }
-        }
-        document.addEventListener('selectionchange', onSelectionChange)
-        return () => document.removeEventListener('selectionchange', onSelectionChange)
-    }, [isEditing])
+        };
+        document.addEventListener('selectionchange', onSelectionChange);
+        return () => document.removeEventListener('selectionchange', onSelectionChange);
+    }, [isEditing]);
+
     const insertChipAtCursor = useCallback((url: string, name: string, fileType: string) => {
-        const el = queryRef.current
-        if (!el) return
-        el.focus()
-        const sel = window.getSelection()
-        // Restore saved range if available and still inside the editor
+        const el = queryRef.current;
+        if (!el) return;
+        el.focus();
+        const sel = window.getSelection();
         if (savedRange.current) {
-            const anc = savedRange.current.commonAncestorContainer
+            const anc = savedRange.current.commonAncestorContainer;
             if (el === anc || el.contains(anc)) {
-                sel?.removeAllRanges()
-                sel?.addRange(savedRange.current)
+                sel?.removeAllRanges();
+                sel?.addRange(savedRange.current);
             }
         }
         if (sel?.rangeCount && !sel.isCollapsed) {
-            document.execCommand('delete', false)
+            document.execCommand('delete', false);
         }
-        document.execCommand('insertHTML', false, buildChipHTML_msg(url, name, fileType) + '&nbsp;')
-        // Move caret after the inserted chip
-        const chips = el.querySelectorAll('[data-img]')
+        document.execCommand('insertHTML', false, buildChipHTML_msg(url, name, fileType) + '&nbsp;');
+        const chips = el.querySelectorAll('[data-img]');
         if (chips.length > 0) {
-            const lastChip = chips[chips.length - 1] as HTMLElement
-            placeCaret(ensureTextAfter(lastChip), 0)
+            const lastChip = chips[chips.length - 1] as HTMLElement;
+            placeCaret(ensureTextAfter(lastChip), 0);
         }
-        savedRange.current = null
-        syncState()
-    }, [syncState])
+        savedRange.current = null;
+        syncState();
+    }, [syncState]);
+
     const handlePlusClick = useCallback(async () => {
-        const el = queryRef.current
-        if (!el) return
-        // Save current caret position before dialog steals focus
-        const sel = window.getSelection()
+        const el = queryRef.current;
+        if (!el) return;
+        const sel = window.getSelection();
         if (sel?.rangeCount) {
-            const r = sel.getRangeAt(0)
-            const anc = r.commonAncestorContainer
-            savedRange.current = (el === anc || el.contains(anc)) ? r.cloneRange() : null
+            const r = sel.getRangeAt(0);
+            const anc = r.commonAncestorContainer;
+            savedRange.current = (el === anc || el.contains(anc)) ? r.cloneRange() : null;
         } else {
-            savedRange.current = null
+            savedRange.current = null;
         }
-        const result = await open({ multiple: true })
-        if (!result) return
-        const paths = Array.isArray(result) ? result : [result]
+        const result = await open({ multiple: true });
+        if (!result) return;
+        const paths = Array.isArray(result) ? result : [result];
         for (const filePath of paths) {
-            const name = filePath.split(/[\\/]/).pop() ?? filePath
-            const ext = name.split('.').pop()?.toLowerCase() ?? ''
-            insertChipAtCursor(`/file/${filePath}`, name, _getMimeType(ext))
+            const name = filePath.split(/[\\/]/).pop() ?? filePath;
+            const ext = name.split('.').pop()?.toLowerCase() ?? '';
+            insertChipAtCursor(`/file/${filePath}`, name, _getMimeType(ext));
         }
-    }, [insertChipAtCursor])
-    //  Chip removal via pointer 
+    }, [insertChipAtCursor]);
+
     const handleEditorPointerDown = useCallback((e: React.PointerEvent<HTMLSpanElement>) => {
-        const target = e.target as HTMLElement
-        if (!target.closest('[data-rm-chip="true"]')) return
-        e.preventDefault()
-        e.stopPropagation()
-        const chip = target.closest('[data-img="true"]')
-        if (!chip) return
-        queryRef.current?.focus()
-        const sel = window.getSelection()
-        const range = document.createRange()
-        range.selectNode(chip)
-        sel?.removeAllRanges()
-        sel?.addRange(range)
-        document.execCommand('delete', false)
-    }, [])
-    //  Copy 
+        const target = e.target as HTMLElement;
+        if (!target.closest('[data-rm-chip="true"]')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const chip = target.closest('[data-img="true"]');
+        if (!chip) return;
+        queryRef.current?.focus();
+        const sel = window.getSelection();
+        const range = document.createRange();
+        range.selectNode(chip);
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+        document.execCommand('delete', false);
+    }, []);
+
     const handleCopy = useCallback((e: React.ClipboardEvent) => {
-        const sel = window.getSelection()
-        if (!sel || sel.isCollapsed || !sel.rangeCount) return
-        const blocks = serializeMsgNode(sel.getRangeAt(0).cloneContents())
-        if (!blocks.length) return
-        e.preventDefault()
-        navigator.clipboard.writeText(blocksToPlain(blocks)).catch(() => { })
-    }, [])
-    //  Cut 
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+        const blocks = serializeMsgNode(sel.getRangeAt(0).cloneContents());
+        if (!blocks.length) return;
+        e.preventDefault();
+        navigator.clipboard.writeText(blocksToPlain(blocks)).catch(() => { });
+    }, []);
+
     const handleCut = useCallback((e: React.ClipboardEvent) => {
-        const sel = window.getSelection()
-        if (!sel || sel.isCollapsed || !sel.rangeCount) return
-        handleCopy(e)
-        document.execCommand('delete', false)
-    }, [handleCopy])
+        const sel = window.getSelection();
+        if (!sel || sel.isCollapsed || !sel.rangeCount) return;
+        handleCopy(e);
+        document.execCommand('delete', false);
+    }, [handleCopy]);
+
     const insertBlocks = useCallback((blocks: ContentBlock[]) => {
-        const div = queryRef.current
-        if (!div) return
-        div.focus()
-        const sel = window.getSelection()
+        const div = queryRef.current;
+        if (!div) return;
+        div.focus();
+        const sel = window.getSelection();
         if (sel?.rangeCount && !sel.isCollapsed) {
-            document.execCommand('delete', false)
+            document.execCommand('delete', false);
         }
         for (const block of blocks) {
             if (block.type === 'text' && block.value) {
-                document.execCommand('insertText', false, block.value)
+                document.execCommand('insertText', false, block.value);
             } else if ((block.type === 'image' || block.type === 'file') && block.url) {
-                document.execCommand('insertHTML', false, buildChipHTML_msg(block.url, block.name ?? '', block.fileType))
-                const chips = div.querySelectorAll('[data-img]')
+                document.execCommand('insertHTML', false, buildChipHTML_msg(block.url, block.name ?? '', block.fileType));
+                const chips = div.querySelectorAll('[data-img]');
                 if (chips.length > 0) {
-                    const lastChip = chips[chips.length - 1] as HTMLElement
-                    placeCaret(ensureTextAfter(lastChip), 0)
+                    const lastChip = chips[chips.length - 1] as HTMLElement;
+                    placeCaret(ensureTextAfter(lastChip), 0);
                 }
             }
         }
-        syncState()
-    }, [syncState])
-    //  Paste 
+        syncState();
+    }, [syncState]);
+
     const handlePaste = useCallback(async (e: React.ClipboardEvent) => {
-        e.preventDefault()
+        e.preventDefault();
         if (e.clipboardData?.files?.length) {
             Array.from(e.clipboardData.files).forEach(file => {
-                insertChipAtCursor(URL.createObjectURL(file), file.name, file.type)
-            })
-            return
+                insertChipAtCursor(URL.createObjectURL(file), file.name, file.type);
+            });
+            return;
         }
-        let plain = ''
+        let plain = '';
         try {
-            plain = await navigator.clipboard.readText()
+            plain = await navigator.clipboard.readText();
         } catch {
-            plain = e.clipboardData?.getData('text/plain') ?? ''
+            plain = e.clipboardData?.getData('text/plain') ?? '';
         }
-        if (!plain) return
-        const blocks = plainToBlocks(plain)
+        if (!plain) return;
+        const blocks = plainToBlocks(plain);
         if (blocks.some(b => b.type !== 'text')) {
-            insertBlocks(blocks)
+            insertBlocks(blocks);
         } else {
-            document.execCommand('insertText', false, plain)
+            document.execCommand('insertText', false, plain);
         }
-    }, [insertBlocks, insertChipAtCursor])
+    }, [insertBlocks, insertChipAtCursor]);
+
     const handleEditorKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
         if (e.key === 'Enter') {
             if (!e.shiftKey) {
-                e.preventDefault()
-                handleSubmit()
-                return
+                e.preventDefault();
+                handleSubmit();
+                return;
             }
-            e.preventDefault()
+            e.preventDefault();
             {
-                const div = queryRef.current!
-                const sel2 = window.getSelection()
-                if (!sel2?.rangeCount) { syncState(); return }
-                const range2 = sel2.getRangeAt(0)
-                if (!range2.collapsed) range2.deleteContents()
-                const endRange = document.createRange()
-                endRange.selectNodeContents(div)
-                endRange.collapse(false)
-                let atEnd = range2.compareBoundaryPoints(Range.END_TO_END, endRange) === 0
+                const div = queryRef.current!;
+                const sel2 = window.getSelection();
+                if (!sel2?.rangeCount) { syncState(); return; }
+                const range2 = sel2.getRangeAt(0);
+                if (!range2.collapsed) range2.deleteContents();
+                const endRange = document.createRange();
+                endRange.selectNodeContents(div);
+                endRange.collapse(false);
+                let atEnd = range2.compareBoundaryPoints(Range.END_TO_END, endRange) === 0;
                 if (!atEnd) {
-                    const r = range2.cloneRange()
-                    r.setEnd(endRange.endContainer, endRange.endOffset)
-                    atEnd = r.toString().replace(/\u200B/g, '').length === 0
+                    const r = range2.cloneRange();
+                    r.setEnd(endRange.endContainer, endRange.endOffset);
+                    atEnd = r.toString().replace(/\u200B/g, '').length === 0;
                 }
-                const nlNode = document.createTextNode(atEnd ? '\n\u200B' : '\n')
-                range2.insertNode(nlNode)
-                placeCaret(nlNode, 1)
+                const nlNode = document.createTextNode(atEnd ? '\n\u200B' : '\n');
+                range2.insertNode(nlNode);
+                placeCaret(nlNode, 1);
             }
-            syncState()
-            return
+            syncState();
+            return;
         }
-        const sel = window.getSelection()
-        if (!sel?.rangeCount) return
-        const range = sel.getRangeAt(0)
+        const sel = window.getSelection();
+        if (!sel?.rangeCount) return;
+        const range = sel.getRangeAt(0);
         if (!range.collapsed) {
             if (e.key === 'Backspace' || e.key === 'Delete') {
-                e.preventDefault()
-                document.execCommand('delete', false)
-                syncState()
+                e.preventDefault();
+                document.execCommand('delete', false);
+                syncState();
             }
-            return
+            return;
         }
-        const { startContainer, startOffset } = range
+        const { startContainer, startOffset } = range;
         if (e.key === 'Backspace') {
             if (startContainer.nodeType === Node.TEXT_NODE) {
                 if (startOffset === 0 || (e.ctrlKey && (startContainer.textContent?.slice(0, startOffset) ?? '').trim() === '')) {
-                    const prev = startContainer.previousSibling
+                    const prev = startContainer.previousSibling;
                     if (prev instanceof HTMLElement && prev.dataset.img) {
-                        e.preventDefault()
-                        const dr = document.createRange()
-                        dr.setStartBefore(prev)
-                        dr.setEnd(startContainer, startOffset)
-                        sel.removeAllRanges(); sel.addRange(dr)
-                        document.execCommand('delete', false)
-                        syncState(); return
+                        e.preventDefault();
+                        const dr = document.createRange();
+                        dr.setStartBefore(prev);
+                        dr.setEnd(startContainer, startOffset);
+                        sel.removeAllRanges(); sel.addRange(dr);
+                        document.execCommand('delete', false);
+                        syncState(); return;
                     }
                 }
             }
             if (startContainer === queryRef.current && startOffset > 0) {
-                const prev = queryRef.current.childNodes[startOffset - 1]
+                const prev = queryRef.current.childNodes[startOffset - 1];
                 if (prev instanceof HTMLElement && prev.dataset.img) {
-                    e.preventDefault()
-                    const dr = document.createRange()
-                    dr.selectNode(prev)
-                    sel.removeAllRanges(); sel.addRange(dr)
-                    document.execCommand('delete', false)
-                    syncState(); return
+                    e.preventDefault();
+                    const dr = document.createRange();
+                    dr.selectNode(prev);
+                    sel.removeAllRanges(); sel.addRange(dr);
+                    document.execCommand('delete', false);
+                    syncState(); return;
                 }
             }
         }
         if (e.key === 'ArrowRight') {
             if (startContainer.nodeType === Node.TEXT_NODE && startOffset === (startContainer as Text).length) {
-                const next = startContainer.nextSibling
+                const next = startContainer.nextSibling;
                 if (next instanceof HTMLElement && next.dataset.img) {
-                    e.preventDefault()
-                    const afterText = ensureTextAfter(next)
+                    e.preventDefault();
+                    const afterText = ensureTextAfter(next);
                     e.shiftKey
                         ? sel.setBaseAndExtent(range.startContainer, range.startOffset, afterText, 0)
-                        : placeCaret(afterText, 0)
-                    return
+                        : placeCaret(afterText, 0);
+                    return;
                 }
             }
-            const editor = queryRef.current
+            const editor = queryRef.current;
             if (editor && startContainer === editor && startOffset < editor.childNodes.length) {
-                const next = editor.childNodes[startOffset]
+                const next = editor.childNodes[startOffset];
                 if (next instanceof HTMLElement && next.dataset.img) {
-                    e.preventDefault()
-                    const afterText = ensureTextAfter(next)
+                    e.preventDefault();
+                    const afterText = ensureTextAfter(next);
                     e.shiftKey
                         ? sel.setBaseAndExtent(range.startContainer, range.startOffset, afterText, 0)
-                        : placeCaret(afterText, 0)
-                    return
+                        : placeCaret(afterText, 0);
+                    return;
                 }
             }
         }
         if (e.key === 'ArrowLeft') {
             if (startContainer.nodeType === Node.TEXT_NODE && startOffset === 0) {
-                const prev = startContainer.previousSibling
+                const prev = startContainer.previousSibling;
                 if (prev instanceof HTMLElement && prev.dataset.img) {
-                    e.preventDefault()
-                    const beforeText = ensureTextBefore(prev)
+                    e.preventDefault();
+                    const beforeText = ensureTextBefore(prev);
                     e.shiftKey
                         ? sel.setBaseAndExtent(range.endContainer, range.endOffset, beforeText, beforeText.length)
-                        : placeCaret(beforeText, beforeText.length)
-                    return
+                        : placeCaret(beforeText, beforeText.length);
+                    return;
                 }
             }
-            const editor = queryRef.current
+            const editor = queryRef.current;
             if (editor && startContainer === editor && startOffset > 0) {
-                const prev = editor.childNodes[startOffset - 1]
+                const prev = editor.childNodes[startOffset - 1];
                 if (prev instanceof HTMLElement && prev.dataset.img) {
-                    e.preventDefault()
-                    const beforeText = ensureTextBefore(prev)
+                    e.preventDefault();
+                    const beforeText = ensureTextBefore(prev);
                     e.shiftKey
                         ? sel.setBaseAndExtent(range.endContainer, range.endOffset, beforeText, beforeText.length)
-                        : placeCaret(beforeText, beforeText.length)
-                    return
+                        : placeCaret(beforeText, beforeText.length);
+                    return;
                 }
             }
         }
-    }, [syncState, handleSubmit])
-    //  Submit 
+    }, [syncState, handleSubmit]);
+
     async function handleSubmit() {
         setIsEditing(false);
-        const query = queryRef.current ? blocksToPlain(serializeMsgNode(queryRef.current)) : "";
-        const newBranch = sha256((message.branch + 1).toString() + branch).slice(0, 32);
-        await request(query, tb, newBranch, message.branch + 1, 0);
+        const newQuery = queryRef.current ? blocksToPlain(serializeMsgNode(queryRef.current)) : "";
+        onEditSubmit(newQuery, siblingIndex, parentBranchId, index);
         const sel = window.getSelection();
         sel?.removeAllRanges();
     }
-    // Populate contentEditable with chip HTML when editing starts
+
     useEffect(() => {
-        if (!isEditing || !queryRef.current) return
-        const el = queryRef.current
-        el.innerHTML = buildQueryHTML(message.content[b]?.query ?? '')
-        el.focus()
-        const range = document.createRange()
-        range.selectNodeContents(el)
-        range.collapse(false)
-        const sel = window.getSelection()
-        sel?.removeAllRanges()
-        sel?.addRange(range)
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isEditing])
+        if (!isEditing || !queryRef.current) return;
+        const el = queryRef.current;
+        el.innerHTML = buildQueryHTML(query ?? '');
+        el.focus();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        range.collapse(false);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+    }, [isEditing]);
+
     useEffect(() => {
         if (!isEditing) return;
         function handleClickOutside(event: MouseEvent) {
@@ -647,10 +653,9 @@ export default function MessageContainer({ request, tabId, activeId, branch, ind
             document.removeEventListener("mousedown", handleClickOutside);
         };
     }, [isEditing]);
-    //  Editing toolbar (shared between both render paths) 
+
     const EditingToolbar = (
         <div className="absolute bottom-3 left-0 right-0 px-3 flex items-center justify-between">
-            {/* Left: file picker + record */}
             <div className="flex items-center gap-1">
                 <button
                     type="button"
@@ -661,14 +666,15 @@ export default function MessageContainer({ request, tabId, activeId, branch, ind
                     <Plus className="w-4 h-4" />
                 </button>
                 <Record
+                    name={`record-${childBranchId}`}
                     workspace={workspace}
                     onFileSaved={(filePath) => {
-                        const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
-                        const fileName = filePath.split(/[\\/]+/).pop() ?? filePath
-                        insertChipAtCursor(`/file/${filePath}`, fileName, _getMimeType(ext))
+                        const ext = filePath.split('.').pop()?.toLowerCase() ?? '';
+                        const fileName = filePath.split(/[\\/]+/).pop() ?? filePath;
+                        insertChipAtCursor(`/file/${filePath}`, fileName, _getMimeType(ext));
                     }}
                 >
-                    {({ isRecording, startRecording, stopRecording }: { isRecording: boolean; startRecording: () => void; stopRecording: () => void }) => (
+                    {({ isRecording, startRecording, stopRecording }) => (
                         <button
                             type="button"
                             onClick={isRecording ? stopRecording : startRecording}
@@ -685,7 +691,6 @@ export default function MessageContainer({ request, tabId, activeId, branch, ind
                     )}
                 </Record>
             </div>
-            {/* Right: Cancel + Send */}
             <div className="flex items-center gap-2">
                 <Button
                     onClick={() => {
@@ -698,286 +703,254 @@ export default function MessageContainer({ request, tabId, activeId, branch, ind
                 >
                     Cancel
                 </Button>
-                <Button onClick={handleSubmit} className="rounded-3xl">Send</Button>
+                <Button
+                    onClick={handleSubmit}
+                    className="rounded-3xl bg-accent text-accent-foreground hover:bg-accent/90"
+                >
+                    Save & Submit
+                </Button>
             </div>
         </div>
-    )
-    //  Shared editing container classes 
+    );
+
     const editingContainerCls = clsx(
+        "rounded-4xl bg-accent/5 border border-[hsl(var(--chat-border))] px-4 w-fit h-fit select-text relative",
         isEditing
-            ? "w-full rounded-lg min-h-[80px] bg-[hsl(var(--float))] pb-14 pt-4 shadow-lg border border-[hsl(var(--chat-border))] dark:border-transparent"
-            : "py-2 rounded-xl ml-auto bg-accent/5 max-w-[70%] overflow-hidden",
-        "px-4  relative",
-        isEditing ? "" : isExpanded ? "pb-5" : "max-h-50",
-    )
+            ? "pb-17 pt-4 w-full max-w-none"
+            : clsx((isExpanded
+                ? "py-2 pb-8"
+                : "py-2 max-h-[148px] overflow-hidden"), "w-fit 2xl:max-w-[500px] lg:max-w-[350px]")
+    );
+
+    const hasResponse = responses && responses.length > 0 && getResponseContent(responses[responseBranch]);
+
     return (
-        <>
-            {/* <div>
-            {JSON.stringify(message)}
-        </div> */}
-            {(message.content?.[b]?.query &&
-                ((message.content?.[b]?.response_branch ?? 0) === 0) &&
-                (getResponseContent(message.content?.[b]?.responses?.[message.content?.[b]?.response_branch]) === "<div></div>" || getResponseContent(message.content?.[b]?.responses?.[message.content?.[b]?.response_branch]).length === 0)) ?
-                <div id={"container_" + index} className="pt-4">
-                    <div className="w-full">
-                        <div
-                            style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word' }}
-                            className="flex flex-col gap-2 group">
-                            <div ref={containerRef} className={editingContainerCls}>
-                                {(isEditing && !isStreaming) ? (
-                                    <div
-                                        key="editing"
-                                        ref={queryRef}
-                                        className="w-full min-h-[80px]"
-                                        spellCheck={false}
-                                        contentEditable
-                                        suppressContentEditableWarning
-                                        onPointerDown={handleEditorPointerDown}
-                                        onCopy={handleCopy}
-                                        onCut={handleCut}
-                                        onPaste={handlePaste}
-                                        onKeyDown={handleEditorKeyDown}
-                                    />
-                                ) : (
-                                    <span key="display">
-                                        <QueryContent query={message.content[b].query} />
-                                    </span>
+        <div id={"container_" + index} className="pt-4 w-full">
+            <div className="w-full">
+                <div    
+                    style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word' }}
+                    className="flex flex-col gap-2 group w-full items-end"
+                >
+                    <div ref={containerRef} className={editingContainerCls}>
+                        {(isEditing && !isStreaming) ? (
+                            <div
+                                key="editing"
+                                ref={queryRef}
+                                className="w-full min-h-[80px]"
+                                spellCheck={false}
+                                contentEditable
+                                suppressContentEditableWarning
+                                onPointerDown={handleEditorPointerDown}
+                                onCopy={handleCopy}
+                                onCut={handleCut}
+                                onPaste={handlePaste}
+                                onKeyDown={handleEditorKeyDown}
+                            />
+                        ) : (
+                            <span key="display">
+                                <QueryContent query={query} />
+                            </span>
+                        )}
+                        {isEditing && EditingToolbar}
+                        {!isEditing && isOverflowing && (
+                            <div
+                                onClick={(e) => {
+                                    e.preventDefault();
+                                    setIsExpanded(!isExpanded);
+                                }}
+                                className={clsx(
+                                    "w-full h-5 bottom-0 absolute left-0 cursor-pointer flex items-center justify-center",
+                                    isExpanded ? "bg-accent/5 border-t border-accent/5" : "bg-gradient-to-b from-transparent to-neutral-800"
                                 )}
-                                {isEditing && EditingToolbar}
-                                {!isEditing && isOverflowing && (
-                                    <div
-                                        onClick={(e) => {
-                                            e.preventDefault()
-                                            setIsExpanded(!isExpanded)
-                                        }}
-                                        className={clsx(
-                                            "w-full h-5 bottom-0 absolute left-0 cursor-pointer flex items-center justify-center",
-                                            isExpanded ? "bg-accent/5 border-t border-accent/5" : "bg-gradient-to-b from-transparent to-neutral-800"
-                                        )}
-                                    >
-                                        {isExpanded && <ChevronUp size={12} />}
-                                    </div>
-                                )}
+                            >
+                                {isExpanded && <ChevronUp size={12} />}
                             </div>
-                            <div className="ml-auto flex gap-2 items-center pr-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-                                {!isEditing && !isStreaming &&
-                                    <>
-                                        {!isCopied ? <Copy className="w-4 h-4 transform translate-y-[2px] cursor-pointer" onClick={() => {
-                                            navigator.clipboard.writeText(message.content[b].query);
+                        )}
+                    </div>
+                    <div className="ml-auto flex gap-2 items-center pr-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+                        {!isEditing && !isStreaming && (
+                            <>
+                                {!isCopied ? (
+                                    <Copy
+                                        className="w-4 h-4 transform translate-y-[2px] cursor-pointer"
+                                        onClick={() => {
+                                            navigator.clipboard.writeText(query);
                                             setIsCopied(true);
                                             setTimeout(() => { setIsCopied(false); }, 500);
-                                        }} /> : <Check className="w-4 h-4 transform translate-y-[2px]" />}
-                                        <Pencil className="w-4 h-4 transform translate-y-[2px] cursor-pointer" onClick={() => { setIsEditing(true); }} />
-                                        {Object.keys(message.content).length > 1 && <>
-                                            <ChevronLeft className={clsx(
-                                                message.branch === 0 ? "opacity-50" : "opacity-100 cursor-pointer",
-                                                "w-4 h-4"
-                                            )} onClick={() => {
-                                                setMessage(prev => ({ ...prev, branch: Math.max(0, prev.branch - 1) }))
-                                            }} />
-                                            <span>{message.branch + 1} / {Object.keys(message.content).length}</span>
-                                            <ChevronRight className={clsx(
-                                                message.branch === Object.keys(message.content).length - 1 ? "opacity-50" : "opacity-100 cursor-pointer",
-                                                "w-4 h-4"
-                                            )} onClick={() => {
-                                                setMessage(prev => ({ ...prev, branch: Math.min(Object.keys(prev.content).length - 1, prev.branch + 1) }))
-                                            }} />
-                                        </>}
-                                    </>
-                                }
-                            </div>
-                        </div>
-                    </div>
-                    {
-                        isStreaming
-                        && activeId === tabId + "_response_" + b + "_" + (message.content?.[b]?.response_branch ?? 0) + "_" + message.branch
-                        && (
-                            <div className="w-4 h-4 rounded-full bg-card flex items-center justify-center">
-                                <div className="w-2 h-2 rounded-full bg-accent relative animate-scale" />
-                            </div>
-                        )
-                    }
-                    <>
-                        <div id={tabId + "_empty_message_container"} data-branch-id={b} data-branch-index={message.branch} data-last-valid-index={index - 1} data-tb={tb} />
-                    </>
-                </div> :
-                message.content?.[b]?.query &&
-                    getResponseContent(message.content?.[b]?.responses?.[message.content?.[b]?.response_branch]) ? <>
-                    <div id={"container_" + index} className="pt-4">
-                        <div className="w-full">
-                            <div
-                                style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word' }}
-                                className="flex flex-col gap-2 group">
-                                <div ref={containerRef} className={editingContainerCls}>
-                                    {(isEditing && !isStreaming) ? (
-                                        <div
-                                            key="editing"
-                                            ref={queryRef}
-                                            className="w-full min-h-[80px]"
-                                            spellCheck={false}
-                                            contentEditable
-                                            suppressContentEditableWarning
-                                            onPointerDown={handleEditorPointerDown}
-                                            onCopy={handleCopy}
-                                            onCut={handleCut}
-                                            onPaste={handlePaste}
-                                            onKeyDown={handleEditorKeyDown}
-                                        />
-                                    ) : (
-                                        <span key="display">
-                                            <QueryContent query={message.content[b].query} />
-                                        </span>
-                                    )}
-                                    {isEditing && EditingToolbar}
-                                    {!isEditing && isOverflowing && (
-                                        <div
-                                            onClick={(e) => {
-                                                e.preventDefault()
-                                                setIsExpanded(!isExpanded)
-                                            }}
+                                        }}
+                                    />
+                                ) : (
+                                    <Check className="w-4 h-4 transform translate-y-[2px]" />
+                                )}
+                                <Pencil
+                                    className="w-4 h-4 transform translate-y-[2px] cursor-pointer"
+                                    onClick={() => { setIsEditing(true); }}
+                                />
+                                {totalSiblings > 1 && (
+                                    <>
+                                        <ChevronLeft
                                             className={clsx(
-                                                "w-full h-5 bottom-0 absolute left-0 cursor-pointer flex items-center justify-center",
-                                                isExpanded ? "bg-accent/5 border-t border-accent/5" : "bg-gradient-to-b from-transparent to-neutral-800"
+                                                siblingIndex === 0 ? "opacity-50" : "opacity-100 cursor-pointer",
+                                                "w-4 h-4"
                                             )}
-                                        >
-                                            {isExpanded && <ChevronUp size={12} />}
-                                        </div>
-                                    )}
-                                </div>
-                                <div className="ml-auto flex gap-2 items-center pr-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-                                    {!isEditing && !isStreaming &&
-                                        <>
-                                            {!isCopied ? <Copy className="w-4 h-4 transform translate-y-[2px] cursor-pointer" onClick={() => {
-                                                navigator.clipboard.writeText(message.content[b].query);
-                                                setIsCopied(true);
-                                                setTimeout(() => { setIsCopied(false); }, 500);
-                                            }} /> : <Check className="w-4 h-4 transform translate-y-[2px]" />}
-                                            <Pencil className="w-4 h-4 transform translate-y-[2px] cursor-pointer" onClick={() => { setIsEditing(true); }} />
-                                            {Object.keys(message.content).length > 1 && <>
-                                                <ChevronLeft className={clsx(
-                                                    message.branch === 0 ? "opacity-50" : "opacity-100 cursor-pointer",
-                                                    "w-4 h-4"
-                                                )} onClick={() => {
-                                                    setMessage(prev => ({ ...prev, branch: Math.max(0, prev.branch - 1) }))
-                                                }} />
-                                                <span>{message.branch + 1} / {Object.keys(message.content).length}</span>
-                                                <ChevronRight className={clsx(
-                                                    message.branch === Object.keys(message.content).length - 1 ? "opacity-50" : "opacity-100 cursor-pointer",
-                                                    "w-4 h-4"
-                                                )} onClick={() => {
-                                                    setMessage(prev => ({ ...prev, branch: Math.min(Object.keys(prev.content).length - 1, prev.branch + 1) }))
-                                                }} />
-                                            </>}
-                                        </>
-                                    }
-                                </div>
-                            </div>
+                                            onClick={() => {
+                                                if (siblingIndex > 0) {
+                                                    onSiblingChange(parentBranchId, index, siblingIndex - 1);
+                                                }
+                                            }}
+                                        />
+                                        <span>{siblingIndex + 1} / {totalSiblings}</span>
+                                        <ChevronRight
+                                            className={clsx(
+                                                siblingIndex === totalSiblings - 1 ? "opacity-50" : "opacity-100 cursor-pointer",
+                                                "w-4 h-4"
+                                            )}
+                                            onClick={() => {
+                                                if (siblingIndex < totalSiblings - 1) {
+                                                    onSiblingChange(parentBranchId, index, siblingIndex + 1);
+                                                }
+                                            }}
+                                        />
+                                    </>
+                                )}
+                            </>
+                        )}
+                    </div>
+                </div>
+            </div>
+            {hasResponse && (
+                <div className="group relative w-full">
+                    <Message
+                        response={getResponseContent(responses[responseBranch])}
+                        id={tabId + "_response_" + childBranchId + "_" + responseBranch + "_" + siblingIndex}
+                        activeId={activeId}
+                    />
+                    {isStreaming && (
+                        <div className="w-full flex justify-start pl-2 pt-2 pb-2">
+                            <div className="w-2.5 h-2.5 rounded-full bg-accent animate-scale" />
                         </div>
-                        <div className="group relative">
-                            <Message
-                                response={getResponseContent(message.content[b].responses[message.content[b].response_branch])}
-                                id={tabId + "_response_" + b + "_" + message.content[b].response_branch + "_" + message.branch}
-                                activeId={activeId}
-                            />
-                            {!isStreaming && (
-                                <div className="flex items-center gap-2 py-3">
-                                    {!isEditing &&
+                    )}
+                    {!isStreaming && (
+                        <div className="flex items-center gap-2 py-3">
+                            {!isEditing && (
+                                <>
+                                    {responses.length > 1 && (
                                         <>
-                                            {Object.keys(message.content[b].responses).length > 1 && <>
-                                                <ChevronLeft className={clsx(
-                                                    message.content[b].response_branch === 0 ? "opacity-50" : "opacity-100 cursor-pointer",
+                                            <ChevronLeft
+                                                className={clsx(
+                                                    responseBranch === 0 ? "opacity-50" : "opacity-100 cursor-pointer",
                                                     "w-4 h-4"
-                                                )} onClick={() => {
-                                                    setMessage(prev => ({
-                                                        ...prev,
-                                                        content: {
-                                                            ...prev.content,
-                                                            [b]: { ...prev.content[b], response_branch: Math.max(0, prev.content[b].response_branch - 1) }
-                                                        }
-                                                    }))
-                                                }} />
-                                                <span>{message.content[b].response_branch + 1} / {Object.keys(message.content[b].responses).length}</span>
-                                                <ChevronRight className={clsx(
-                                                    message.content[b].response_branch === Object.keys(message.content[b].responses).length - 1 ? "opacity-50" : "opacity-100 cursor-pointer",
-                                                    "w-4 h-4"
-                                                )} onClick={() => {
-                                                    setMessage(prev => ({
-                                                        ...prev,
-                                                        content: {
-                                                            ...prev.content,
-                                                            [b]: { ...prev.content[b], response_branch: Math.min(Object.keys(prev.content[b].responses).length - 1, prev.content[b].response_branch + 1) }
-                                                        }
-                                                    }))
-                                                }} />
-                                            </>}
-                                            {!isCopied ? <Copy className="w-4 h-4 transform translate-y-[2px] cursor-pointer" onClick={() => {
-                                                navigator.clipboard.writeText(getResponseContent(message.content[b].responses[message.content[b].response_branch]));
-                                                setIsCopied(true);
-                                                setTimeout(() => { setIsCopied(false); }, 500);
-                                            }} /> : <Check className="w-4 h-4 transform translate-y-[2px]" />}
-                                            <RefreshCcw
-                                                className="w-4 h-4 transform translate-y-[2px] cursor-pointer"
-                                                onClick={async () => {
-                                                    const rb = message.content[b].responses.length;
-                                                    await request(message.content[b].query, tb, b, message.branch, rb);
+                                                )}
+                                                onClick={() => {
+                                                    if (responseBranch > 0) {
+                                                        onResponseBranchChange(childBranchId, responseBranch - 1);
+                                                    }
                                                 }}
                                             />
-                                            <TooltipProvider>
-                                                <Tooltip disableHoverableContent={true}>
-                                                    <TooltipTrigger>
-                                                        <Info className="w-4 h-4 transform translate-y-[3px]" />
-                                                    </TooltipTrigger>
-                                                    <TooltipContent>
-                                                        {(() => {
-                                                            const currentResponse = message.content[b].responses[message.content[b].response_branch];
-                                                            const isModelOutput = typeof currentResponse === "object" && currentResponse !== null && "content" in currentResponse;
-                                                            if (!isModelOutput) return null;
-                                                            const mo = currentResponse as ModelOutput;
-                                                            const hasMetadata = mo.model || mo.token_per_second || (mo.costs && mo.costs.length > 0);
-                                                            if (!hasMetadata) return null;
-                                                            const totalCost = mo.costs?.reduce((sum, c) => sum + c.cost, 0) ?? 0;
-                                                            return (
-                                                                <div className="flex items-center gap-3">
-                                                                    {mo.model && <span className="font-mono">{mo.model} - </span>}
-                                                                    {mo.token_per_second != null && <span>{mo.token_per_second} tokens / s</span>}
-                                                                    {totalCost > 0 && <span>${totalCost.toFixed(6)}</span>}
-                                                                </div>
-                                                            );
-                                                        })()}
-                                                    </TooltipContent>
-                                                </Tooltip>
-                                            </TooltipProvider>
+                                            <span>{responseBranch + 1} / {responses.length}</span>
+                                            <ChevronRight
+                                                className={clsx(
+                                                    responseBranch === responses.length - 1 ? "opacity-50" : "opacity-100 cursor-pointer",
+                                                    "w-4 h-4"
+                                                )}
+                                                onClick={() => {
+                                                    if (responseBranch < responses.length - 1) {
+                                                        onResponseBranchChange(childBranchId, responseBranch + 1);
+                                                    }
+                                                }}
+                                            />
                                         </>
-                                    }
-                                </div>
+                                    )}
+                                    {!isCopied ? (
+                                        <Copy
+                                            className="w-4 h-4 transform translate-y-[2px] cursor-pointer"
+                                            onClick={() => {
+                                                navigator.clipboard.writeText(getResponseContent(responses[responseBranch]));
+                                                setIsCopied(true);
+                                                setTimeout(() => { setIsCopied(false); }, 500);
+                                            }}
+                                        />
+                                    ) : (
+                                        <Check className="w-4 h-4 transform translate-y-[2px]" />
+                                    )}
+                                    <RefreshCcw
+                                        className="w-4 h-4 transform translate-y-[2px] cursor-pointer"
+                                        onClick={() => {
+                                            onRegenerate(query, parentBranchId, childBranchId, siblingIndex, responses.length);
+                                        }}
+                                    />
+                                    <TooltipProvider>
+                                        <Tooltip disableHoverableContent={true}>
+                                            <TooltipTrigger>
+                                                <Info className="w-4 h-4 transform translate-y-[3px]" />
+                                            </TooltipTrigger>
+                                            <TooltipContent>
+                                                {(() => {
+                                                    const currentResponse = responses[responseBranch];
+                                                    const isModelOutput = typeof currentResponse === "object" && currentResponse !== null && "content" in currentResponse;
+                                                    if (!isModelOutput) return null;
+                                                    const mo = currentResponse as ModelOutput;
+                                                    const hasMetadata = mo.model || mo.token_per_second || (mo.costs && mo.costs.length > 0);
+                                                    if (!hasMetadata) return null;
+                                                    const totalCost = mo.costs?.reduce((sum, c) => sum + c.cost, 0) ?? 0;
+                                                    return (
+                                                        <div className="flex items-center gap-3">
+                                                            {mo.model && <span className="font-mono">{mo.model} - </span>}
+                                                            {mo.token_per_second != null && <span>{mo.token_per_second} tokens / s</span>}
+                                                            {totalCost > 0 && <span>${totalCost.toFixed(6)}</span>}
+                                                        </div>
+                                                    );
+                                                })()}
+                                            </TooltipContent>
+                                        </Tooltip>
+                                    </TooltipProvider>
+                                </>
                             )}
                         </div>
-                    </div>
-                    {
-                        isStreaming
-                        && activeId === tabId + "_response_" + b + "_" + (message.content?.[b]?.response_branch ?? 0) + "_" + message.branch
-                        && (
-                            <div className="w-4 h-4 rounded-full bg-card flex items-center justify-center">
-                                <div className="w-2 h-2 rounded-full bg-accent relative animate-scale" />
-                            </div>
-                        )
-                    }
-                    <MessageContainer scrollToBottom={scrollToBottom} request={request} tabId={tabId} activeId={activeId} useDatabase={useDatabase} index={index + 1} branch={b} isStreaming={isStreaming} workspace={workspace} />
-                </>
-                    :
-                    <>
-                        <div id={tabId + "_empty_message_container"} data-branch-id={b} data-branch-index={message.branch}  data-last-valid-index={index - 1} data-tb={tb} />
-                        {
-                            isStreaming
-                            && activeId === tabId + "_response_" + b + "_" + (message.content?.[b]?.response_branch ?? 0) + "_" + message.branch
-                            && (
-                                <div className="w-4 h-4 rounded-full bg-card flex items-center justify-center">
-                                    <div className="w-2 h-2 rounded-full bg-accent relative animate-scale" />
-                                </div>
-                            )
-                        }
-                    </>
-            }
-        </>
-    )
+                    )}
+                </div>
+            )}
+            {!hasResponse && isStreaming && (
+                <div className="w-full flex justify-start pl-2 pt-2 pb-2">
+                    <div className="w-2.5 h-2.5 rounded-full bg-accent animate-scale" />
+                </div>
+            )}
+        </div>
+    );
 }
+
+const MessageContainerMemoized = memo(MessageContainer, (prevProps, nextProps) => {
+    if (prevProps.isStreaming !== nextProps.isStreaming) return false;
+    if (prevProps.activeId !== nextProps.activeId) return false;
+    if (prevProps.query !== nextProps.query) return false;
+    if (prevProps.siblingIndex !== nextProps.siblingIndex) return false;
+    if (prevProps.totalSiblings !== nextProps.totalSiblings) return false;
+    if (prevProps.responseBranch !== nextProps.responseBranch) return false;
+    if (prevProps.index !== nextProps.index) return false;
+    if (prevProps.childBranchId !== nextProps.childBranchId) return false;
+    if (prevProps.parentBranchId !== nextProps.parentBranchId) return false;
+    if (prevProps.workspace !== nextProps.workspace) return false;
+    if (prevProps.tabId !== nextProps.tabId) return false;
+
+    if (prevProps.responses?.length !== nextProps.responses?.length) return false;
+
+    if (nextProps.isStreaming) {
+        const prevActive = prevProps.responses?.[prevProps.responseBranch];
+        const nextActive = nextProps.responses?.[nextProps.responseBranch];
+        if (typeof prevActive !== typeof nextActive) return false;
+        if (typeof nextActive === "string") {
+            if (prevActive !== nextActive) return false;
+        } else if (nextActive && typeof nextActive === "object") {
+            const p = prevActive as any;
+            const n = nextActive as any;
+            if (p.content !== n.content) return false;
+            if (p.isStreaming !== n.isStreaming) return false;
+            if (p.token_per_second !== n.token_per_second) return false;
+            if (p.model !== n.model) return false;
+            if (JSON.stringify(p.costs) !== JSON.stringify(n.costs)) return false;
+        }
+    }
+    return true;
+});
+
+export default MessageContainerMemoized;

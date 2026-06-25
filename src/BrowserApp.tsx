@@ -191,7 +191,7 @@ export function CommandPalette({
                   </div>
 
                   <div className="flex items-baseline gap-2 min-w-0 text-[14px]">
-                    <span style={{ color: 'var(--fgColor-default)' }} className="font-medium flex-shrink-0">
+                    <span style={{ color: 'var(--fgColor-default)' }} className="truncate">
                       {item.title}
                     </span>
                     {item.url && (

@@ -1,4 +1,4 @@
-import React, { type ReactNode, type FC, type HTMLAttributes, useState, useEffect, useMemo, memo, createContext, useContext } from "react";
+import React, { type ReactNode, type FC, type HTMLAttributes, useState, useEffect, useMemo, memo, createContext, useContext, useRef } from "react";
 import { evaluate } from '@mdx-js/mdx'
 import remarkGfm from 'remark-gfm'
 import * as runtime from 'react/jsx-runtime'
@@ -373,9 +373,15 @@ export default function Message({ response, id, activeId }: MessageProps) {
     cardbox: CardBox,
   }), [id]); // Stable components registry
 
+  // Refs for the throttle — must survive across renders, not be reset by cleanup
+  const lastMDXEvalRef = useRef(0);
+  const pendingMDXTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   useEffect(() => {
     let mounted = true;
+
     const processContent = async () => {
+      if (!mounted) return;
       try {
         // Use MessageParser to handle cleanup, custom tags like <think>, and tool calls
         const processedFile = MessageParser.process(response);
@@ -409,12 +415,49 @@ export default function Message({ response, id, activeId }: MessageProps) {
           }
         }
       }
+    };
+
+    const isStreaming = activeId === id;
+
+    if (!isStreaming) {
+      // Not streaming: cancel any pending trailing call and evaluate immediately
+      if (pendingMDXTimerRef.current) {
+        clearTimeout(pendingMDXTimerRef.current);
+        pendingMDXTimerRef.current = null;
+      }
+      lastMDXEvalRef.current = Date.now();
+      processContent();
+    } else {
+      const now = Date.now();
+      const elapsed = now - lastMDXEvalRef.current;
+
+      if (elapsed >= 150) {
+        // Enough time has passed — leading-edge fire, evaluate immediately
+        if (pendingMDXTimerRef.current) {
+          clearTimeout(pendingMDXTimerRef.current);
+          pendingMDXTimerRef.current = null;
+        }
+        lastMDXEvalRef.current = now;
+        processContent();
+      } else if (!pendingMDXTimerRef.current) {
+        // Too soon — schedule a single trailing-edge call
+        // This ensures the LAST token is always rendered
+        const remaining = 150 - elapsed;
+        pendingMDXTimerRef.current = setTimeout(() => {
+          pendingMDXTimerRef.current = null;
+          lastMDXEvalRef.current = Date.now();
+          processContent();
+        }, remaining);
+      }
+      // else: a trailing call is already scheduled — let it fire, skip this update
     }
-    processContent()
+
+    // Only mark unmounted — do NOT cancel the timer here,
+    // because the timer ref lives across renders and must not be reset by React's cleanup
     return () => {
-      mounted = false
-    }
-  }, [response, id])
+      mounted = false;
+    };
+  }, [response, id, activeId])
 
   const MemoizedMDX = useMemo(() => {
     if (!MDXContent) return null;

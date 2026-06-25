@@ -690,10 +690,10 @@ export default function Container({ Apps }: { Apps: Project }) {
         return useDatabaseImpl<T>(hashed, options);
       },
       useModel: () => {
-        return useDatabaseImpl<Model>("model", { initialValue: { name: null, id: null } });
+        return useDatabaseImpl<Model>("selected-model", { initialValue: { name: null, id: null } });
       },
       useAgent: () => {
-        return useDatabaseImpl<IAgent>("agent", { initialValue: { name: null, id: null } });
+        return useDatabaseImpl<IAgent>("selected-agent", { initialValue: { name: null, id: null } });
       },
       getAvailableModels: async () => {
         try {

@@ -1,16 +1,17 @@
 import Composer from "./composer";
-import { useRef, useLayoutEffect, useState, useEffect } from "react";
+import { useRef, useLayoutEffect, useState, useEffect, useCallback } from "react";
 import useElementSize from "./hooks/useElementSize";
 import clsx from "clsx";
 import type { AppInfo } from "../utils/utils";
-import { usePython, usePythonEvent } from "./usePython";
-import MessageContainer from "./message-container";
+import { sanitizeTauriEvent } from "../utils/utils";
+import { usePython } from "./usePython";
+import MessageContainer, { QueryContent } from "./message-container";
 import { sha256 } from "js-sha256";
 import ModelSelection from "./model-selection";
 import { ArrowDown } from "lucide-react";
 import { generateIdFromString, useAvailableAgents, useGlobal, type IAgent } from "../index";
 import type { SelectionMode } from "./composer";
-import { MenuBar, TabState } from "openchad-react/utils/state";
+import { MenuBar } from "openchad-react/utils/state";
 
 export interface MessageState {
     title: string | null;
@@ -22,16 +23,15 @@ export interface MessageState {
     context: string;
 }
 
-
 export default function DefaultPage(AppInfo: AppInfo) {
     const { layout } = AppInfo.useTheme();
     const { workspace } = AppInfo.useWorkspace();
-    const workspaceRef = useRef(workspace)
+    const workspaceRef = useRef(workspace);
     const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
     const msgBottomRef = useRef<HTMLDivElement>(null);
     const [scrollContainerRef] = useElementSize<HTMLDivElement>();
     const [model, setModel] = AppInfo.useModel();
-    const [selectedAgent, setSelectedAgent] = AppInfo.useAgent();;
+    const [selectedAgent, setSelectedAgent] = AppInfo.useAgent();
     const [selectionMode] = useState<SelectionMode>('agent');
     const { agents: availableAgents, isLoading: isAgentsLoading } = useAvailableAgents();
     const tabId = AppInfo.tabId;
@@ -59,13 +59,47 @@ export default function DefaultPage(AppInfo: AppInfo) {
     const wasNearBottomRef = useRef(true);
     const [justOpen, setJustOpen] = useState(true);
     const title = AppInfo.useTitle();
-    const currentTab = AppInfo.useTab()
+    const currentTab = AppInfo.useTab();
+
+    const [loadedMessages, setLoadedMessages] = useState<any[]>([]);
+    const [hasMore, setHasMore] = useState(false);
+    const [activeLeafId, setActiveLeafId] = useState<string | null>(null);
+    const [loading, setLoading] = useState(false);
+    const loadedMessagesLengthRef = useRef(0);
+    const hasMoreRef = useRef(false);
+    const loadingRef = useRef(false);
+    const loadMoreRef = useRef<(() => Promise<void>) | null>(null);
+
+    const isInitialized = messageState.initialized || loadedMessages.length > 0;
+
+    const [pendingMessage, setPendingMessage] = useState<{ query: string, childBranchId: string } | null>(null);
+
+    useEffect(() => {
+        if (pendingMessage) {
+            const exists = loadedMessages.some(m => m.childBranchId === pendingMessage.childBranchId);
+            if (exists) {
+                setPendingMessage(null);
+            }
+        }
+    }, [loadedMessages, pendingMessage]);
+
+    useEffect(() => {
+        loadedMessagesLengthRef.current = loadedMessages.length;
+    }, [loadedMessages.length]);
+
+    useEffect(() => {
+        hasMoreRef.current = hasMore;
+    }, [hasMore]);
+
+    useEffect(() => {
+        loadingRef.current = loading;
+    }, [loading]);
 
     useEffect(() => {
         if (activeId == tabId && currentTab && currentTab.children[0] == appId) {
-            MenuBar.current = null
+            MenuBar.current = null;
         }
-    }, [activeId])
+    }, [activeId]);
 
     useEffect(() => {
         if (title) return;
@@ -74,13 +108,14 @@ export default function DefaultPage(AppInfo: AppInfo) {
             AppInfo.setTitle(_t);
         }
     }, [messageState.title, title, mounted]);
+
     useEffect(() => {
         if (!ready) return;
         if (!messageStateRef.current.dontStop) {
             if (messageStateRef.current.activeId) {
                 (async () => {
                     await pyInvoke("v1/chat/stop", { id: messageStateRef.current.activeId });
-                })()
+                })();
             }
             if (messageStateRef.current.isStreaming) {
                 setMessageState(prev => ({
@@ -101,28 +136,31 @@ export default function DefaultPage(AppInfo: AppInfo) {
         }
     }, [activeId]);
 
-
     useEffect(() => {
         isStreamingRef.current = messageState.isStreaming;
     }, [messageState.isStreaming]);
+
     const checkScrollBottom = () => {
         if (!scrollAreaRef.current) return;
-        const { scrollTop, scrollHeight, clientHeight } = scrollAreaRef.current;
-        const isScrollable = scrollHeight > clientHeight + 1;
-        const isNearBottom = !isScrollable || scrollHeight - scrollTop - clientHeight < 150;
+        const { scrollTop } = scrollAreaRef.current;
+        // In column-reverse layout, scrollTop is 0 at the bottom (most recent messages)
+        const isNearBottom = Math.abs(scrollTop) < 150;
         setShowScrollBottom(!isNearBottom);
         wasNearBottomRef.current = isNearBottom;
     };
+
     const handleScroll = () => {
         checkScrollBottom();
     };
+
     const scrollToBottom = (behavior?: "smooth" | "instant" | "auto") => {
         if (!scrollAreaRef.current) return;
         scrollAreaRef.current.scrollTo({
-            top: scrollAreaRef.current.scrollHeight,
+            top: 0,
             behavior: behavior || "smooth"
         });
     };
+
     useEffect(() => {
         const tabUpdate = (event: Event) => {
             const { tabId: targetTabId, title: newTitle, icon: newIcon } = (event as CustomEvent).detail;
@@ -133,7 +171,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
                         command: "query",
                         sql: `SELECT * FROM tasks WHERE id = ?`,
                         params: [tabId],
-                    })
+                    });
                     console.log(oldData.data[0]);
                     if (oldData && oldData.data[0]) {
                         try {
@@ -149,32 +187,33 @@ export default function DefaultPage(AppInfo: AppInfo) {
                                     agent: data.agent,
                                     timestamp: Date.now(),
                                 })],
-                            })
+                            });
                         } catch (e) {
-                            console.error(e)
+                            console.error(e);
                         }
-
                     }
                 }
-            })()
+            })();
         };
         window.addEventListener('tab-update', tabUpdate);
         return () => {
             window.removeEventListener('tab-update', tabUpdate);
-        }
-    }, [])
+        };
+    }, []);
+
     useEffect(() => {
         if (messageState.isStreaming || messageState.initialized) {
             setTimeout(() => {
                 if (scrollAreaRef.current) {
                     scrollAreaRef.current.scrollTo({
-                        top: scrollAreaRef.current.scrollHeight,
+                        top: 0,
                         behavior: "smooth"
                     });
                 }
             }, 100);
         }
     }, [messageState.isStreaming, messageState.initialized]);
+
     async function request(query: string, targetTable: string, branchId: string, index: number | string, response_branch: number) {
         const activeId = AppInfo.tabId + "_response_" + branchId + "_" + response_branch + "_" + index;
         let errorlog: string | null = null;
@@ -221,9 +260,618 @@ export default function DefaultPage(AppInfo: AppInfo) {
             }));
         }
     }
+
+    // Keyset Recursive CTE Pagination
+    const refreshActiveMessages = useCallback(async (customLimit?: number) => {
+        if (!workspace || !tabId) {
+            console.log("[DefaultPage] refreshActiveMessages skipped: workspace or tabId missing", { workspace, tabId });
+            return;
+        }
+        const messagesTable = generateIdFromString(tabId + "/messages");
+        const branchesTable = generateIdFromString(tabId + "/conversation_branches");
+        const rootParent = sha256("0").slice(0, 32);
+
+        console.log("[DefaultPage] refreshActiveMessages starting", {
+            workspace,
+            tabId,
+            messagesTable,
+            branchesTable,
+            rootParent,
+            customLimit,
+            loadedMessagesLength: loadedMessagesLengthRef.current
+        });
+
+        const findLeafSql = `
+          WITH SiblingNumbered AS (
+              SELECT 
+                  parent_branch_id, 
+                  child_branch_id, 
+                  msg_index, 
+                  ROW_NUMBER() OVER (PARTITION BY parent_branch_id ORDER BY timestamp ASC) - 1 AS sibling_idx
+              FROM \`${messagesTable}\`
+          ),
+          ActiveChain AS (
+              SELECT 
+                  s.parent_branch_id, 
+                  s.child_branch_id, 
+                  s.msg_index,
+                  s.sibling_idx
+              FROM SiblingNumbered s
+              LEFT JOIN \`${branchesTable}\` b 
+                ON s.parent_branch_id = b.parent_branch_id AND s.msg_index = b.msg_index
+              WHERE (s.parent_branch_id = ? OR s.parent_branch_id = ? || '_0')
+                AND s.sibling_idx = COALESCE(b.selected_branch_index, 0)
+
+              UNION ALL
+
+              SELECT 
+                  s.parent_branch_id, 
+                  s.child_branch_id, 
+                  s.msg_index,
+                  s.sibling_idx
+              FROM SiblingNumbered s
+              JOIN ActiveChain a ON s.parent_branch_id = (a.child_branch_id || '_' || a.sibling_idx)
+              LEFT JOIN \`${branchesTable}\` b 
+                ON s.parent_branch_id = b.parent_branch_id AND s.msg_index = b.msg_index
+              WHERE s.sibling_idx = COALESCE(b.selected_branch_index, 0)
+          )
+          SELECT child_branch_id FROM ActiveChain ORDER BY msg_index DESC LIMIT 1;
+        `;
+
+        try {
+            console.log("[DefaultPage] Executing findLeafSql query with rootParent:", rootParent);
+            const leafRowsRaw: any = await pyInvoke('sqlite', {
+                db: workspace,
+                table: messagesTable,
+                command: 'query',
+                sql: findLeafSql,
+                params: [rootParent, rootParent]
+            });
+
+            console.log("[DefaultPage] leafRows raw response:", leafRowsRaw);
+            const leafRows = Array.isArray(leafRowsRaw) ? leafRowsRaw : (leafRowsRaw?.data || []);
+            console.log("[DefaultPage] leafRows parsed:", leafRows);
+
+            if (!leafRows || leafRows.length === 0) {
+                console.log("[DefaultPage] No active leaf found in conversation.");
+                setActiveLeafId(null);
+                setLoadedMessages([]);
+                setHasMore(false);
+                return;
+            }
+
+            const leafId = leafRows[0].child_branch_id;
+            console.log("[DefaultPage] Found leaf ID:", leafId);
+            setActiveLeafId(leafId);
+
+            const queryLimit = customLimit || Math.max(20, loadedMessagesLengthRef.current);
+            console.log("[DefaultPage] Fetching chat chain with queryLimit:", queryLimit);
+
+            const fetchChainSql = `
+              WITH RECURSIVE chat_chain AS (
+                  SELECT parent_branch_id, child_branch_id, msg_index, query, responses, response_branch, timestamp, 1 as depth
+                  FROM \`${messagesTable}\`
+                  WHERE child_branch_id = ?
+                  
+                  UNION ALL
+                  
+                  SELECT m.parent_branch_id, m.child_branch_id, m.msg_index, m.query, m.responses, m.response_branch, m.timestamp, c.depth + 1
+                  FROM \`${messagesTable}\` m
+                  JOIN chat_chain c ON m.child_branch_id = SUBSTR(c.parent_branch_id, 1, 32)
+                  WHERE c.depth < ?
+              )
+              SELECT parent_branch_id, child_branch_id, msg_index, query, responses, response_branch, timestamp FROM chat_chain;
+            `;
+
+            const chainRowsRaw: any = await pyInvoke('sqlite', {
+                db: workspace,
+                table: messagesTable,
+                command: 'query',
+                sql: fetchChainSql,
+                params: [leafId, queryLimit]
+            });
+
+            console.log("[DefaultPage] chainRows raw response:", chainRowsRaw);
+            const chainRows = Array.isArray(chainRowsRaw) ? chainRowsRaw : (chainRowsRaw?.data || []);
+            console.log("[DefaultPage] chainRows parsed length:", chainRows.length);
+
+            if (!chainRows || chainRows.length === 0) {
+                console.log("[DefaultPage] Chain rows query returned empty.");
+                setLoadedMessages([]);
+                setHasMore(false);
+                return;
+            }
+
+            const parentIds = chainRows.map((r: any) => r.parent_branch_id);
+            const uniqueParentIds = Array.from(new Set(parentIds)).filter(Boolean);
+            console.log("[DefaultPage] uniqueParentIds for siblings:", uniqueParentIds);
+
+            let siblingsGrouped: Record<string, string[]> = {};
+            if (uniqueParentIds.length > 0) {
+                const placeholders = uniqueParentIds.map(() => '?').join(',');
+                const fetchSiblingsSql = `
+                  SELECT parent_branch_id, child_branch_id, timestamp
+                  FROM \`${messagesTable}\`
+                  WHERE parent_branch_id IN (${placeholders})
+                  ORDER BY timestamp ASC;
+                `;
+
+                console.log("[DefaultPage] Fetching sibling branches...");
+                const siblingRowsRaw: any = await pyInvoke('sqlite', {
+                    db: workspace,
+                    table: messagesTable,
+                    command: 'query',
+                    sql: fetchSiblingsSql,
+                    params: uniqueParentIds
+                });
+
+                console.log("[DefaultPage] siblingRows raw response:", siblingRowsRaw);
+                const siblingRows = Array.isArray(siblingRowsRaw) ? siblingRowsRaw : (siblingRowsRaw?.data || []);
+                console.log("[DefaultPage] siblingRows parsed length:", siblingRows.length);
+
+                if (Array.isArray(siblingRows)) {
+                    siblingRows.forEach((sRow: any) => {
+                        const pid = sRow.parent_branch_id;
+                        if (!siblingsGrouped[pid]) {
+                            siblingsGrouped[pid] = [];
+                        }
+                        siblingsGrouped[pid].push(sRow.child_branch_id);
+                    });
+                }
+            }
+
+            const parsedMessages = chainRows.map((row: any) => {
+                const pBranchId = row.parent_branch_id;
+                const cBranchId = row.child_branch_id;
+                const siblings = siblingsGrouped[pBranchId] || [cBranchId];
+                const siblingIndex = siblings.indexOf(cBranchId);
+                const totalSiblings = siblings.length;
+
+                let parsedResp = [];
+                if (row.responses) {
+                    if (typeof row.responses === 'string') {
+                        try {
+                            parsedResp = JSON.parse(row.responses);
+                        } catch {
+                            parsedResp = [];
+                        }
+                    } else if (Array.isArray(row.responses)) {
+                        parsedResp = row.responses;
+                    }
+                }
+
+                return {
+                    parentBranchId: pBranchId,
+                    childBranchId: cBranchId,
+                    msg_index: row.msg_index,
+                    query: row.query || "",
+                    responses: parsedResp,
+                    responseBranch: row.response_branch ?? 0,
+                    siblingIndex: siblingIndex >= 0 ? siblingIndex : 0,
+                    totalSiblings: totalSiblings,
+                };
+            });
+
+            parsedMessages.sort((a: any, b: any) => b.msg_index - a.msg_index);
+            console.log("[DefaultPage] Final parsedMessages (sorted reverse):", parsedMessages);
+            setLoadedMessages(parsedMessages);
+
+            const oldestMsg = parsedMessages[parsedMessages.length - 1];
+            if (chainRows.length < queryLimit) {
+                console.log("[DefaultPage] Setting hasMore: false (chainRows count < queryLimit)");
+                setHasMore(false);
+            } else if (oldestMsg && oldestMsg.parentBranchId === rootParent) {
+                console.log("[DefaultPage] Setting hasMore: false (reached rootParent)");
+                setHasMore(false);
+            } else {
+                console.log("[DefaultPage] Setting hasMore: true");
+                setHasMore(true);
+            }
+
+        } catch (error) {
+            console.error("[DefaultPage] Failed to refresh active messages", error);
+        }
+    }, [workspace, tabId]);
+
+    const loadMoreMessages = useCallback(async () => {
+        if (loading || !hasMore || !workspace || !tabId || loadedMessages.length === 0) {
+            console.log("[DefaultPage] loadMoreMessages skipped", { loading, hasMore, workspace, tabId, loadedLength: loadedMessages.length });
+            return;
+        }
+        setLoading(true);
+
+        const messagesTable = generateIdFromString(tabId + "/messages");
+        const rootParent = sha256("0").slice(0, 32);
+        const oldestMsg = loadedMessages[loadedMessages.length - 1];
+        const anchorId = oldestMsg.parentBranchId.slice(0, 32);
+
+        console.log("[DefaultPage] loadMoreMessages starting", {
+            oldestMsg,
+            anchorId,
+            rootParent
+        });
+
+        const fetchChainSql = `
+          WITH RECURSIVE chat_chain AS (
+              SELECT parent_branch_id, child_branch_id, msg_index, query, responses, response_branch, timestamp, 1 as depth
+              FROM \`${messagesTable}\`
+              WHERE child_branch_id = ?
+              
+              UNION ALL
+              
+              SELECT m.parent_branch_id, m.child_branch_id, m.msg_index, m.query, m.responses, m.response_branch, m.timestamp, c.depth + 1
+              FROM \`${messagesTable}\` m
+              JOIN chat_chain c ON m.child_branch_id = SUBSTR(c.parent_branch_id, 1, 32)
+              WHERE c.depth < ?
+          )
+          SELECT parent_branch_id, child_branch_id, msg_index, query, responses, response_branch, timestamp FROM chat_chain;
+        `;
+
+        try {
+            const chainRowsRaw: any = await pyInvoke('sqlite', {
+                db: workspace,
+                table: messagesTable,
+                command: 'query',
+                sql: fetchChainSql,
+                params: [anchorId, 20]
+            });
+
+            console.log("[DefaultPage] loadMore chainRows raw response:", chainRowsRaw);
+            const chainRows = Array.isArray(chainRowsRaw) ? chainRowsRaw : (chainRowsRaw?.data || []);
+            console.log("[DefaultPage] loadMore chainRows parsed length:", chainRows.length);
+
+            if (!chainRows || chainRows.length === 0) {
+                setHasMore(false);
+                setLoading(false);
+                return;
+            }
+
+            const parentIds = chainRows.map((r: any) => r.parent_branch_id);
+            const uniqueParentIds = Array.from(new Set(parentIds)).filter(Boolean);
+
+            let siblingsGrouped: Record<string, string[]> = {};
+            if (uniqueParentIds.length > 0) {
+                const placeholders = uniqueParentIds.map(() => '?').join(',');
+                const fetchSiblingsSql = `
+                  SELECT parent_branch_id, child_branch_id, timestamp
+                  FROM \`${messagesTable}\`
+                  WHERE parent_branch_id IN (${placeholders})
+                  ORDER BY timestamp ASC;
+                `;
+
+                const siblingRowsRaw: any = await pyInvoke('sqlite', {
+                    db: workspace,
+                    table: messagesTable,
+                    command: 'query',
+                    sql: fetchSiblingsSql,
+                    params: uniqueParentIds
+                });
+
+                const siblingRows = Array.isArray(siblingRowsRaw) ? siblingRowsRaw : (siblingRowsRaw?.data || []);
+
+                if (Array.isArray(siblingRows)) {
+                    siblingRows.forEach((sRow: any) => {
+                        const pid = sRow.parent_branch_id;
+                        if (!siblingsGrouped[pid]) {
+                            siblingsGrouped[pid] = [];
+                        }
+                        siblingsGrouped[pid].push(sRow.child_branch_id);
+                    });
+                }
+            }
+
+            const parsedMessages = chainRows.map((row: any) => {
+                const pBranchId = row.parent_branch_id;
+                const cBranchId = row.child_branch_id;
+                const siblings = siblingsGrouped[pBranchId] || [cBranchId];
+                const siblingIndex = siblings.indexOf(cBranchId);
+                const totalSiblings = siblings.length;
+
+                let parsedResp = [];
+                if (row.responses) {
+                    if (typeof row.responses === 'string') {
+                        try {
+                            parsedResp = JSON.parse(row.responses);
+                        } catch {
+                            parsedResp = [];
+                        }
+                    } else if (Array.isArray(row.responses)) {
+                        parsedResp = row.responses;
+                    }
+                }
+
+                return {
+                    parentBranchId: pBranchId,
+                    childBranchId: cBranchId,
+                    msg_index: row.msg_index,
+                    query: row.query || "",
+                    responses: parsedResp,
+                    responseBranch: row.response_branch ?? 0,
+                    siblingIndex: siblingIndex >= 0 ? siblingIndex : 0,
+                    totalSiblings: totalSiblings,
+                };
+            });
+
+            parsedMessages.sort((a: any, b: any) => b.msg_index - a.msg_index);
+
+            setLoadedMessages(prev => {
+                const combined = [...prev, ...parsedMessages];
+                const seen = new Set();
+                const filtered = combined.filter(m => {
+                    if (seen.has(m.childBranchId)) return false;
+                    seen.add(m.childBranchId);
+                    return true;
+                });
+                console.log("[DefaultPage] loadMore merged messages count:", filtered.length);
+                return filtered;
+            });
+
+            const oldestNewMsg = parsedMessages[parsedMessages.length - 1];
+            if (chainRows.length < 20) {
+                console.log("[DefaultPage] loadMore Setting hasMore: false (chainRows count < 20)");
+                setHasMore(false);
+            } else if (oldestNewMsg && oldestNewMsg.parentBranchId === rootParent) {
+                console.log("[DefaultPage] loadMore Setting hasMore: false (reached rootParent)");
+                setHasMore(false);
+            } else {
+                console.log("[DefaultPage] loadMore Setting hasMore: true");
+                setHasMore(true);
+            }
+
+        } catch (error) {
+            console.error("[DefaultPage] Failed to load more messages", error);
+        } finally {
+            setLoading(false);
+        }
+    }, [loading, hasMore, workspace, tabId, loadedMessages]);
+
+    // Keep the loadMore ref in sync
+    useEffect(() => {
+        loadMoreRef.current = loadMoreMessages;
+    }, [loadMoreMessages]);
+
+    // IntersectionObserver-based pagination — robust, graceful, no scroll-math needed
+    useEffect(() => {
+        const scrollContainer = scrollAreaRef.current;
+        if (!scrollContainer) return;
+
+        const observer = new IntersectionObserver(
+            (entries) => {
+                const entry = entries[0];
+                if (entry.isIntersecting && hasMoreRef.current && !loadingRef.current) {
+                    console.log("[DefaultPage] IntersectionObserver triggered loadMoreMessages!", {
+                        isIntersecting: entry.isIntersecting,
+                        hasMore: hasMoreRef.current,
+                        loading: loadingRef.current,
+                    });
+                    loadMoreRef.current?.();
+                }
+            },
+            {
+                root: scrollContainer,
+                // Trigger 300px before the sentinel becomes visible
+                rootMargin: "300px 0px 300px 0px",
+                threshold: 0,
+            }
+        );
+
+        // Observe the sentinel once it appears in the DOM
+        const sentinel = document.getElementById("scroll-sentinel");
+        if (sentinel) {
+            observer.observe(sentinel);
+            console.log("[DefaultPage] IntersectionObserver attached to sentinel");
+        } else {
+            console.log("[DefaultPage] IntersectionObserver: sentinel not found, will retry via MutationObserver");
+        }
+
+        // Use a MutationObserver to catch sentinel mount/remount
+        const mutObs = new MutationObserver(() => {
+            const el = document.getElementById("scroll-sentinel");
+            if (el) {
+                observer.observe(el);
+            }
+        });
+        mutObs.observe(scrollContainer, { childList: true, subtree: true });
+
+        return () => {
+            observer.disconnect();
+            mutObs.disconnect();
+        };
+    }, [isInitialized]);
+
+    // Message branch & content change handlers
+    const handleSiblingChange = useCallback(async (parentBranchId: string, msgIndex: number, newSiblingIndex: number) => {
+        if (!workspace || !tabId) return;
+        const branchesTable = generateIdFromString(tabId + "/conversation_branches");
+        const sql = `INSERT OR REPLACE INTO \`${branchesTable}\` (parent_branch_id, msg_index, selected_branch_index) VALUES (?, ?, ?)`;
+        console.log("[DefaultPage] handleSiblingChange", { parentBranchId, msgIndex, newSiblingIndex });
+        try {
+            await pyInvoke('sqlite', {
+                db: workspace,
+                table: branchesTable,
+                command: 'execute',
+                sql: sql,
+                params: [parentBranchId, msgIndex, newSiblingIndex]
+            });
+        } catch (error) {
+            console.error("Failed to change sibling index", error);
+        }
+    }, [workspace, tabId]);
+
+    const handleResponseBranchChange = useCallback(async (childBranchId: string, newResponseBranch: number) => {
+        if (!workspace || !tabId) return;
+        const messagesTable = generateIdFromString(tabId + "/messages");
+        const sql = `UPDATE \`${messagesTable}\` SET response_branch = ? WHERE child_branch_id = ?`;
+        console.log("[DefaultPage] handleResponseBranchChange", { childBranchId, newResponseBranch });
+        try {
+            await pyInvoke('sqlite', {
+                db: workspace,
+                table: messagesTable,
+                command: 'execute',
+                sql: sql,
+                params: [newResponseBranch, childBranchId]
+            });
+        } catch (error) {
+            console.error("Failed to change response branch", error);
+        }
+    }, [workspace, tabId]);
+
+    const handleEditSubmit = useCallback(async (newQuery: string, siblingIndex: number, parentBranchId: string, msgIndex: number) => {
+        if (newQuery.trim().length === 0 || !workspace || !tabId) return;
+
+        const messagesTable = generateIdFromString(tabId + "/messages");
+        const branchesTable = generateIdFromString(tabId + "/conversation_branches");
+        console.log("[DefaultPage] handleEditSubmit", { newQuery, siblingIndex, parentBranchId, msgIndex });
+
+        try {
+            const countSql = `SELECT COUNT(*) as count FROM \`${messagesTable}\` WHERE parent_branch_id = ?`;
+            const countResRaw: any = await pyInvoke('sqlite', {
+                db: workspace,
+                table: messagesTable,
+                command: 'query',
+                sql: countSql,
+                params: [parentBranchId]
+            });
+            const countRes = Array.isArray(countResRaw) ? countResRaw : (countResRaw?.data || []);
+            const newSiblingIndex = countRes?.[0]?.count ?? 0;
+
+            const newChildBranchId = sha256(parentBranchId + "_" + newSiblingIndex).slice(0, 32);
+            console.log("[DefaultPage] handleEditSubmit: computed new sibling and child IDs", { newSiblingIndex, newChildBranchId });
+
+            const insertSql = `
+                INSERT INTO \`${messagesTable}\` (parent_branch_id, child_branch_id, msg_index, query, responses, response_branch, timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            `;
+            await pyInvoke('sqlite', {
+                db: workspace,
+                table: messagesTable,
+                command: 'execute',
+                sql: insertSql,
+                params: [parentBranchId, newChildBranchId, msgIndex, newQuery, '[]', 0, Date.now()]
+            });
+
+            const branchSql = `INSERT OR REPLACE INTO \`${branchesTable}\` (parent_branch_id, msg_index, selected_branch_index) VALUES (?, ?, ?)`;
+            await pyInvoke('sqlite', {
+                db: workspace,
+                table: branchesTable,
+                command: 'execute',
+                sql: branchSql,
+                params: [parentBranchId, msgIndex, newSiblingIndex]
+            });
+
+            setPendingMessage({ query: newQuery, childBranchId: newChildBranchId });
+            const targetTable = `tb_${parentBranchId}_${msgIndex}`;
+            await request(newQuery, targetTable, newChildBranchId, newSiblingIndex, 0);
+
+        } catch (error) {
+            console.error("Failed to edit and submit query", error);
+        }
+    }, [workspace, tabId, request]);
+
+    const handleRegenerate = useCallback(async (query: string, parentBranchId: string, childBranchId: string, siblingIndex: number, responsesLength: number) => {
+        if (!workspace || !tabId) return;
+        const msg = loadedMessages.find(m => m.childBranchId === childBranchId);
+        const msgIndex = msg ? msg.msg_index : 0;
+        const targetTable = `tb_${parentBranchId}_${msgIndex}`;
+        console.log("[DefaultPage] handleRegenerate", { query, parentBranchId, childBranchId, siblingIndex, msgIndex, targetTable });
+        await request(query, targetTable, childBranchId, siblingIndex, responsesLength);
+    }, [workspace, tabId, request, loadedMessages]);
+
+    // Database Change Listeners
+    useEffect(() => {
+        if (!ready || !workspace || !tabId) return;
+
+        console.log("[DefaultPage] Database change listeners setting up", { ready, workspace, tabId });
+        refreshActiveMessages(20);
+
+        const messagesTable = generateIdFromString(tabId + "/messages");
+        const branchesTable = generateIdFromString(tabId + "/conversation_branches");
+        
+        let tauriUnlistenMessages: (() => void) | undefined;
+        let tauriUnlistenBranches: (() => void) | undefined;
+
+        let lastRefresh = 0;
+        let pendingRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const handleDbChange = (eventInfo?: any) => {
+            console.log("[DefaultPage] DB changed triggered!", eventInfo);
+            if (!messageStateRef.current.isStreaming) {
+                if (pendingRefreshTimer) {
+                    clearTimeout(pendingRefreshTimer);
+                    pendingRefreshTimer = null;
+                }
+                refreshActiveMessages();
+                return;
+            }
+
+            const now = Date.now();
+            if (now - lastRefresh >= 100) {
+                if (pendingRefreshTimer) {
+                    clearTimeout(pendingRefreshTimer);
+                    pendingRefreshTimer = null;
+                }
+                lastRefresh = now;
+                refreshActiveMessages();
+            } else if (!pendingRefreshTimer) {
+                const remaining = 100 - (now - lastRefresh);
+                pendingRefreshTimer = setTimeout(() => {
+                    pendingRefreshTimer = null;
+                    lastRefresh = Date.now();
+                    refreshActiveMessages();
+                }, remaining);
+            }
+        };
+
+        const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
+        const msgEvent = `db_changed:${workspace}.${messagesTable}`;
+        const branchEvent = `db_changed:${workspace}.${branchesTable}`;
+
+        console.log("[DefaultPage] Listening for events", { msgEvent, branchEvent, isTauri });
+
+        // Subscribe to database changes in the backend
+        pyInvoke('db_subscribe', { db: workspace, table: messagesTable }).catch((err) => console.error("Subscribe messages failed", err));
+        pyInvoke('db_subscribe', { db: workspace, table: branchesTable }).catch((err) => console.error("Subscribe branches failed", err));
+
+        const wrapMsgChange = () => handleDbChange({ event: msgEvent });
+        const wrapBranchChange = () => handleDbChange({ event: branchEvent });
+
+        if (isTauri) {
+            import("@tauri-apps/api/event").then(({ listen }) => {
+                listen<{ timestamp: number }>(sanitizeTauriEvent(msgEvent), (e) => handleDbChange({ event: msgEvent, detail: e.payload }))
+                    .then((fn) => { tauriUnlistenMessages = fn; })
+                    .catch((err) => console.error("Tauri listen failed", err));
+
+                listen<{ timestamp: number }>(sanitizeTauriEvent(branchEvent), (e) => handleDbChange({ event: branchEvent, detail: e.payload }))
+                    .then((fn) => { tauriUnlistenBranches = fn; })
+                    .catch((err) => console.error("Tauri listen failed", err));
+            });
+        } else {
+            window.addEventListener(msgEvent, wrapMsgChange);
+            window.addEventListener(branchEvent, wrapBranchChange);
+        }
+
+        return () => {
+            if (pendingRefreshTimer) {
+                clearTimeout(pendingRefreshTimer);
+            }
+            // Unsubscribe in the backend
+            pyInvoke('db_unsubscribe', { db: workspace, table: messagesTable }).catch((err) => console.error("Unsubscribe messages failed", err));
+            pyInvoke('db_unsubscribe', { db: workspace, table: branchesTable }).catch((err) => console.error("Unsubscribe branches failed", err));
+
+            if (isTauri) {
+                tauriUnlistenMessages?.();
+                tauriUnlistenBranches?.();
+            } else {
+                window.removeEventListener(msgEvent, wrapMsgChange);
+                window.removeEventListener(branchEvent, wrapBranchChange);
+            }
+        };
+    }, [workspace, tabId, ready, refreshActiveMessages]);
+
     useEffect(() => {
         setMounted(true);
     }, []);
+
     useLayoutEffect(() => {
         if (!mounted) return;
         const updateHeight = () => {
@@ -235,7 +883,9 @@ export default function DefaultPage(AppInfo: AppInfo) {
             if (!messageElement) return;
             const messageHeight = messageElement.offsetHeight;
             if (messageHeight === 0) return;
-            const extraSpace = 150;
+            const composerEl = document.querySelector(".composer-container");
+            const composerHeight = composerEl ? (composerEl as HTMLElement).offsetHeight : 100;
+            const extraSpace = composerHeight + 80;
             const finalHeight = messageHeight + (messageState.isStreaming ? 15 : 0);
             const spacer = Math.max(0, height - finalHeight - extraSpace);
             msgBottomRef.current.style.height = `${spacer}px`;
@@ -244,7 +894,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
             const wasNearBottom = wasNearBottomRef.current;
             updateHeight();
             if (wasNearBottom && scrollAreaRef.current) {
-                scrollAreaRef.current.scrollTop = scrollAreaRef.current.scrollHeight;
+                scrollAreaRef.current.scrollTop = 0;
             }
             checkScrollBottom();
         };
@@ -303,7 +953,8 @@ export default function DefaultPage(AppInfo: AppInfo) {
             if (mutationObserver) mutationObserver.disconnect();
             lastMessageObserver?.disconnect();
         };
-    }, [mounted, height, messageState.initialized, messageState.isStreaming]);
+    }, [mounted, height, isInitialized, messageState.isStreaming]);
+
     async function waitForElement(elementId: string, timeout: number = 5000): Promise<HTMLElement | null> {
         const startTime = Date.now();
         return new Promise((resolve, reject) => {
@@ -322,6 +973,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
             checkElement();
         });
     }
+
     return (
         <div className='w-full h-full flex flex-col items-center absolute bg-card'>
             <div
@@ -340,63 +992,125 @@ export default function DefaultPage(AppInfo: AppInfo) {
                     setAgent={setSelectedAgent}
                 />
                 <div style={{
-                    height: width < 800 || height < 650 || messageState.initialized ? `${height}px` : `${height * 0.2}px`,
+                    height: width < 800 || height < 650 || isInitialized ? `${height}px` : `${height * 0.2}px`,
                 }} className={clsx(
                     "overflow-visible flex flex-col items-center absolute top-1/2 transform -translate-y-1/2",
-                    (width < 500 || height < 500) ? 'gap-1' : (width < 800 || height < 650 || messageState.initialized) ? 'gap-5' : 'gap-1',
-                    messageState.initialized ? "w-full h-full" : "w-full",
+                    (width < 500 || height < 500) ? 'gap-1' : (width < 800 || height < 650 || isInitialized) ? 'gap-5' : 'gap-1',
+                    isInitialized ? "w-full h-full" : "w-full",
                 )}>
                     <div
                         ref={scrollAreaRef}
                         onScroll={handleScroll}
                         className={clsx(
-                            (width < 800 || height < 650 || messageState.initialized) ? messageState.initialized ? 'h-full' : 'flex-1 relative' : '',
+                            (width < 800 || height < 650 || isInitialized) ? isInitialized ? 'h-full' : 'flex-1 relative' : '',
                             'w-full overflow-y-auto flex pt-5',
-                            messageState.initialized ? "items-start" : "text-center items-center justify-center",
+                            isInitialized ? "flex-col-reverse items-start" : "text-center items-center justify-center",
                         )}
                     >
                         {
-                            messageState.initialized ?
-                                <div className="relative w-full flex justify-center overflow-y-auto pb-25">
+                            isInitialized ?
+                                <div className="relative w-full flex justify-center pb-25">
                                     <div id="messages-container" className={clsx(
-                                        "flex flex-col relative overflow-x-hidden pt-5 w-full px-2",
+                                        "flex flex-col-reverse relative overflow-x-hidden pt-5 w-full px-2",
                                         width < 800 ? 'max-w-full small-content' : 'max-w-[40vw]',
                                     )}>
-                                        <MessageContainer
-                                            scrollToBottom={() => {
-                                                scrollToBottom('instant')
-                                            }}
-                                            workspace={workspace}
-                                            isStreaming={messageState.isStreaming}
-                                            request={request}
-                                            activeId={messageState.isStreaming ? messageState.activeId : null}
-                                            tabId={AppInfo.tabId}
-                                            useDatabase={(tb, options) => {
-                                                return AppInfo.useTabDatabase(tb, options);
-                                            }}
-                                            index={0}
-                                            branch={sha256("0").slice(0, 32)}
-                                        />
-                                        {messageState.errorMsg.length > 0 && (
-                                            <div className="bg-red-300 dark:bg-red-900 text-red-500 dark:text-red-300 p-2 rounded-md border border-red-500 mt-2 text-break break-all">
-                                                {messageState.errorMsg}
-                                            </div>
-                                        )}
+                                        {/* Empty message container for next turn */}
+                                        {(() => {
+                                            const rootParent = sha256("0").slice(0, 32);
+                                            const lastMsg = loadedMessages[0];
+                                            const nextParentId = lastMsg ? lastMsg.childBranchId : rootParent;
+                                            const nextMsgIndex = lastMsg ? lastMsg.msg_index + 1 : 0;
+                                            const targetTable = `tb_${nextParentId}_0_${nextMsgIndex}`;
+                                            return (
+                                                <div 
+                                                    key="empty-container"
+                                                    id={AppInfo.tabId + "_empty_message_container"}
+                                                    data-branch-id={sha256(nextParentId + "_0").slice(0, 32)}
+                                                    data-branch-index={0}
+                                                    data-tb={targetTable}
+                                                    data-last-valid-index={lastMsg ? lastMsg.msg_index : ""}
+                                                    className="h-0 w-0 opacity-0 pointer-events-none"
+                                                />
+                                            );
+                                        })()}
+
                                         <div
                                             ref={msgBottomRef}
                                             className="w-full flex-shrink-0"
                                             style={{ height: "0px" }}
                                             aria-hidden="true"
                                         />
+
+                                        {messageState.errorMsg.length > 0 && (
+                                            <div className="bg-red-300 dark:bg-red-900 text-red-500 dark:text-red-300 p-2 rounded-md border border-red-500 mt-2 text-break break-all">
+                                                {messageState.errorMsg}
+                                            </div>
+                                        )}
+
+                                        {pendingMessage && (
+                                            <div className="pt-4 w-full flex flex-col gap-2 items-end">
+                                                <div className={clsx(
+                                                    "rounded-4xl bg-accent/5 border border-[hsl(var(--chat-border))] px-4 select-text relative",
+                                                    "py-2 max-h-[148px] overflow-hidden",
+                                                    "w-fit 2xl:max-w-[500px] lg:max-w-[350px]"
+                                                    )}>
+                                                    <span key="display">
+                                                        <QueryContent query={pendingMessage.query} />
+                                                    </span>
+                                                </div>
+                                                <div className="w-full flex justify-start pl-2 pt-2 pb-2">
+                                                    <div className="w-2.5 h-2.5 rounded-full bg-accent animate-scale" />
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* Flat message list */}
+                                        {loadedMessages.map((msg) => (
+                                            <MessageContainer
+                                                key={msg.childBranchId}
+                                                request={request}
+                                                tabId={AppInfo.tabId}
+                                                activeId={messageState.isStreaming ? messageState.activeId : null}
+                                                childBranchId={msg.childBranchId}
+                                                parentBranchId={msg.parentBranchId}
+                                                query={msg.query}
+                                                responses={msg.responses}
+                                                responseBranch={msg.responseBranch}
+                                                siblingIndex={msg.siblingIndex}
+                                                totalSiblings={msg.totalSiblings}
+                                                index={msg.msg_index}
+                                                isStreaming={messageState.isStreaming}
+                                                workspace={workspace}
+                                                scrollToBottom={() => scrollToBottom('instant')}
+                                                onSiblingChange={handleSiblingChange}
+                                                onResponseBranchChange={handleResponseBranchChange}
+                                                onEditSubmit={handleEditSubmit}
+                                                onRegenerate={handleRegenerate}
+                                            />
+                                        ))}
+
+                                        {/* Sentinel for IntersectionObserver — always rendered for observer stability, visibility controlled by hasMore */}
+                                        <div
+                                            id="scroll-sentinel"
+                                            className="w-full flex-shrink-0"
+                                            style={{ height: hasMore ? '40px' : '0px', opacity: 0, pointerEvents: 'none' }}
+                                        >
+                                            {loading && hasMore && (
+                                                <div className="flex justify-center py-2">
+                                                    <div className="w-5 h-5 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+                                                </div>
+                                            )}
+                                        </div>
+
                                     </div>
-                                    <div className="fixed -top-1 w-[99%] h-17 bg-gradient-to-b from-card via-card via-70% to-transparent" />
-                                    <div className="fixed bottom-0 w-[99%] h-20 bg-gradient-to-t from-card via-card via-70% to-transparent" />
+                                    <div className="fixed -top-1 w-[99%] h-15 bg-gradient-to-b from-card via-card via-70% to-transparent pointer-events-none" />
+                                    <div className="fixed bottom-0 w-[99%] h-20 bg-gradient-to-t from-card via-card via-70% to-transparent pointer-events-none" />
                                 </div>
                                 :
                                 <h1 className={clsx("text-accent mb-4", (width < 500 || height < 500) ? 'text-lg' : (width < 800 || height < 650) ? 'text-3xl' : 'text-3xl absolute bottom-full')}>Hi, How can I help you?</h1>
                         }
                     </div>
-                    {messageState.initialized && showScrollBottom && (
+                    {isInitialized && showScrollBottom && (
                         <button
                             onClick={() => { scrollToBottom(); }}
                             className={clsx(
@@ -422,6 +1136,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
                                 setMessageState((prev) => ({
                                     ...prev,
                                     isStreaming: false,
+                                    activeId: "",
                                 }));
                             } else {
                                 scrollToBottom('instant');
@@ -437,6 +1152,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
                                     const targetTable = el?.getAttribute("data-tb");
                                     const branchIndex = Number(el?.getAttribute("data-branch-index") ?? 0);
                                     if (typeof branchId === "string" && typeof targetTable === "string" && !isNaN(branchIndex)) {
+                                        setPendingMessage({ query: value, childBranchId: branchId });
                                         await request(value, targetTable, branchId, branchIndex, 0);
                                     }
                                 } else {
@@ -444,6 +1160,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
                                         ...prev,
                                         errorMsg: selectionMode === 'model' ? "No Model Selected" : "No Agent Selected",
                                         initialized: true,
+                                        activeId: '',
                                     }));
                                 }
                             }
@@ -460,9 +1177,9 @@ export default function DefaultPage(AppInfo: AppInfo) {
                         style={{ maxWidth: `${width - 10}px` }}
                         ref={composerTextareaRef}
                         className={clsx(
-                            "w-[768px] mx-auto z-30",
-                            messageState.initialized ? 'absolute' : 'relative',
-                            messageState.initialized
+                            "w-[768px] mx-auto z-30 composer-container",
+                            isInitialized ? 'absolute' : 'relative',
+                            isInitialized
                                 ? ((width < 500 || height < 500) ? "overflow-visible bottom-2" : (width < 800 || height < 650) ? 'bottom-2' : 'bottom-5')
                                 : ((width < 500 || height < 500) ? "overflow-visible bottom-2" : (width < 800 || height < 650) ? 'bottom-2' : ''),
                         )}
@@ -473,7 +1190,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
                             className={clsx(
                                 `relative w-[768px] px-4 h-fit transition-opacity duration-200 `,
                                 'flex items-center justify-center',
-                                (width < 800 || height < 650 || messageState.initialized) && 'hidden pointer-events-none',
+                                (width < 800 || height < 650 || isInitialized) && 'hidden pointer-events-none',
                             )}
                         >
                         </div>

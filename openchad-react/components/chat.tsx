@@ -170,7 +170,9 @@ export default function Chat({ id, open }: { id: string, open: boolean }) {
             if (!messageElement) return;
             const messageHeight = messageElement.offsetHeight;
             if (messageHeight === 0) return;
-            const extraSpace = 150;
+            const composerEl = document.querySelector(".composer-container");
+            const composerHeight = composerEl ? (composerEl as HTMLElement).offsetHeight : 100;
+            const extraSpace = composerHeight + 80;
             const finalHeight = messageHeight + (messageState.isStreaming ? 15 : 0);
             const spacer = Math.max(0, height - finalHeight - extraSpace);
             msgBottomRef.current.style.height = `${spacer}px`;
@@ -397,7 +399,7 @@ export default function Chat({ id, open }: { id: string, open: boolean }) {
                     style={{ maxWidth: `${width - 10}px` }}
                     ref={composerTextareaRef}
                     className={clsx(
-                        "w-[768px] mx-auto z-30",
+                        "w-[768px] mx-auto z-30 composer-container",
                         messageState.initialized ? 'absolute' : 'relative',
                         messageState.initialized
                             ? ((width < 500 || height < 500) ? "overflow-visible bottom-2" : (width < 800 || height < 650) ? 'bottom-2' : 'bottom-5')

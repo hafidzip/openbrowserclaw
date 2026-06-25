@@ -557,13 +557,7 @@ export default function Composer({
     syncState()
   }, [isRecording])
 
-  useEffect(() => {
-    if (model && setModel && availableModels.findIndex(m => m.id === model.id) === -1) setModel({ name: null, id: null })
-  }, [availableModels])
 
-  useEffect(() => {
-    if (agent && setAgent && availableAgents.findIndex(a => a.id === agent.id) === -1) setAgent({ name: null, id: null })
-  }, [availableAgents])
 
   useEffect(() => {
     const div = editorRef.current

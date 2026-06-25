@@ -165,16 +165,47 @@ model_provider_manager = ModelProviderManager(
 )
 
 def build_tree(flat: dict) -> dict:
+    normalized_flat = {}
+    for node_id, raw_node in flat.items():
+        node = dict(raw_node)
+        for key in ["children", "tools"]:
+            val = node.get(key)
+            if isinstance(val, str):
+                try:
+                    node[key] = json.loads(val)
+                except Exception:
+                    pass
+            if node.get(key) is None:
+                node[key] = []
+        
+        # Handle allowMultiple boolean parsing if it is stored as a string or number
+        if "allowMultiple" in node:
+            val = node["allowMultiple"]
+            if isinstance(val, str):
+                if val.lower() == "true":
+                    node["allowMultiple"] = True
+                elif val.lower() == "false":
+                    node["allowMultiple"] = False
+                else:
+                    try:
+                        node["allowMultiple"] = bool(json.loads(val))
+                    except Exception:
+                        node["allowMultiple"] = False
+            elif isinstance(val, (int, float)):
+                node["allowMultiple"] = bool(val)
+
+        normalized_flat[node_id] = node
+
     all_child_ids = {
         cid
-        for node in flat.values()
+        for node in normalized_flat.values()
         for cid in node.get("children", [])
     }
 
-    root_ids = [id for id in flat if id not in all_child_ids]
+    root_ids = [id for id in normalized_flat if id not in all_child_ids]
 
     def build_node(id: str) -> dict:
-        node = flat[id]
+        node = normalized_flat[id]
         return {
             **{k: v for k, v in node.items() if k != "children"},
             "children": {cid: build_node(cid) for cid in node.get("children", [])},
@@ -511,7 +542,6 @@ async def handle_pytauri_chat(msg_id: str, body: Dict[str, Any], app_handle: App
     stream = body.get("stream", False)
     # Event name for this specific stream
     stream_event = f"chat_stream:{msg_id}"
-    requested_model = body.get("model", "")
     files = body.get("files", [])
     query = body.get("query", None)
     tab_id = body.get("tab_id", "global")
@@ -523,6 +553,23 @@ async def handle_pytauri_chat(msg_id: str, body: Dict[str, Any], app_handle: App
     app_name = body.get("app_name")
     db = Database(workspace=workspace, tab_id=tab_id)
     pipeline_name = body.get("pipeline", None)
+    
+    agent_tree = None   
+    agent_model_id = None
+    if agent:
+        agent_tree: Optional[Dict[str, Any]] = (await get_agent_tree_internal(agent_id=agent, workspace=workspace))
+        logger.info("!!!AGENT_TREE: %s", json.dumps(agent_tree))
+        agent_ctx.set(agent_tree)
+        if agent_tree:
+            current_agent_id = next(iter(agent_tree))
+            agent_node = agent_tree.get(current_agent_id)
+            if agent_node:
+                agent_model_id = agent_node.get("model", None)
+                logger.info("!!!AGENT_MODEL_ID: %s", agent_model_id)
+
+    requested_model = agent_model_id if agent_model_id else body.get("model", "")    
+    
+
     is_continue = [True]
     cancel_event = _register_cancel_event(msg_id)
     # Prepare kwargs
@@ -806,7 +853,7 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
                 return {'result': 'ok'}
             case "sqlite":
                 res = await sqlite(request)
-                if request.get("command") == "sync_table" and "error" not in res:
+                if request.get("command") in ("sync_table", "execute") and "error" not in res:
                     try:
                         db = request.get("db")
                         table = request.get("table")
@@ -1111,7 +1158,7 @@ async def sqlite_endpoint_api(request: dict):
     response = await sqlite(request)
     db = request.get("db")
     table = request.get("table")
-    if "error" not in response and db and table:
+    if request.get("command") in ("sync_table", "execute") and "error" not in response and db and table:
         try:
             await trigger_table_update(db, table)
         except Exception as e:
@@ -1360,8 +1407,21 @@ async def chat_endpoint_api(request: Request):
         if msg_id:
             register_stream(msg_id)
         cancel_event = _register_cancel_event(msg_id) if msg_id else asyncio.Event()
+        
         # Check for model parameter and load if needed
-        requested_model = data.get("model")       
+        agent_tree = None 
+        agent_model_id = None
+
+        if agent:
+            agent_tree: Optional[Dict[str, Any]] = (await get_agent_tree_internal(agent_id=agent, workspace=workspace))
+            agent_ctx.set(agent_tree)
+            if agent_tree:
+                current_agent_id = next(iter(agent_tree))
+                agent_node = agent_tree.get(current_agent_id)
+                if agent_node:
+                    agent_model_id = agent_node.get("model", None)
+
+        requested_model = agent_model_id if agent_model_id else data.get("model")       
         if not model_manager.is_loaded(requested_model):
             model_data = await model_manager.get_model_from_config(requested_model)
             if model_data:
@@ -1407,8 +1467,7 @@ async def chat_endpoint_api(request: Request):
         ]}
         pipeline_name = data.get("pipeline", None)
         is_continue = [True]
-        agent_tree: Optional[Dict[str, Any]] = (await get_agent_tree_internal(agent_id=agent, workspace=workspace))
-        agent_ctx.set(agent_tree)
+
         pipeline, chat_kwargs = await _setup_pipeline(
             requested_model=requested_model,
             files=files,
@@ -1646,7 +1705,7 @@ async def handle_ws_command(conn_id: str, data: dict, send_func: Callable[[dict]
                 return {"message": "OK"}
             case "sqlite":
                 res = await sqlite(body)
-                if body.get("command") == "sync_table" and "error" not in res:
+                if body.get("command") in ("sync_table", "execute") and "error" not in res:
                     try:
                         await trigger_table_update(body.get("db"), body.get("table"))
                     except Exception as e:
@@ -1784,8 +1843,20 @@ async def handle_ws_chat(msg_id: str, body: dict, send_func: Callable[[dict], Aw
     agent = body.get("agent", None)
     messages = body.get("messages", [])
     stream = body.get("stream", True)
+    workspace = body.get("workspace", "global")
     # Check for model parameter and load if needed
-    requested_model = body.get("model", "")
+    agent_tree = None 
+    agent_model_id = None
+    if agent:
+        agent_tree: Optional[Dict[str, Any]] = (await get_agent_tree_internal(agent_id=agent, workspace=workspace))
+        agent_ctx.set(agent_tree)
+        if agent_tree:
+            current_agent_id = next(iter(agent_tree))
+            agent_node = agent_tree.get(current_agent_id)
+            if agent_node:
+                agent_model_id = agent_node.get("model", None)
+
+    requested_model = agent_model_id if agent_model_id else body.get("model", "")     
     files = body.get("files", [])
     query = body.get("query", None)
     tab_id = body.get("tab_id", "global")
@@ -1793,7 +1864,6 @@ async def handle_ws_chat(msg_id: str, body: dict, send_func: Callable[[dict], Aw
     response_branch = body.get("response_branch", None)
     index = body.get("index", None)
     tb = body.get("tb", None)
-    workspace = body.get("workspace", "global")
     app_name = body.get("app_name", None)
     db = Database(workspace=workspace, tab_id=tab_id)
     # Prepare kwargs
@@ -1817,8 +1887,6 @@ async def handle_ws_chat(msg_id: str, body: dict, send_func: Callable[[dict], Aw
     pipeline_name = body.get("pipeline", None)
     is_continue = [True]
     cancel_event = _register_cancel_event(msg_id)
-    agent_tree: Optional[Dict[str, Any]] = (await get_agent_tree_internal(agent_id=agent, workspace=workspace))
-    agent_ctx.set(agent_tree)
     pipeline, chat_kwargs = await _setup_pipeline(
         requested_model=requested_model,
         files=files,

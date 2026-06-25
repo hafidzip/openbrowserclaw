@@ -44,7 +44,6 @@ export interface AgentNode {
   tools: string[]
   children: string[]
   toolValues: Record<string, Record<string, any>>
-  isRunning: boolean
   allowMultiple: boolean
   model: string | null
   warnings?: string[]
@@ -542,6 +541,7 @@ interface AgentCardProps {
   isHovered: boolean
   isPathHighlight: boolean
   isRunningPath: boolean
+  isRunning: boolean
   isDark: boolean
   isOverlap: boolean
   onSelect: (id: string) => void
@@ -551,14 +551,13 @@ interface AgentCardProps {
 }
 
 const AgentCard = React.memo(function AgentCard({
-  id, tabId, agent, posX, posY, isSelected, isHovered, isPathHighlight, isRunningPath, isDark, isOverlap,
+  id, tabId, agent, posX, posY, isSelected, isHovered, isPathHighlight, isRunningPath, isRunning, isDark, isOverlap,
   onSelect, onHover, onDelete, onAdd
 }: AgentCardProps) {
   const dotColor = 'hsl(var(--accent))'
   const mutedFg = isDark ? 'rgba(255,255,255,0.5)' : 'rgba(0,0,0,0.45)'
   const cardBg = 'hsl(var(--card))'
   const border = 'hsl(var(--border))'
-  const isRunning = !!agent.isRunning
   const runningColor = '#34d399'
   const hasError = agent.errors && agent.errors.length > 0
   const hasWarning = agent.warnings && agent.warnings.length > 0
@@ -1367,7 +1366,6 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
       name: initialName,
       tools: [],
       children: [],
-      isRunning: false,
       allowMultiple: false,
       toolValues: {},
       model: null
@@ -1378,7 +1376,38 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
   const [agents, setAgents, { ready }] = useTabDatabase<Record<string, AgentNode>>("agents", { initialValue: INITIAL_AGENTS })
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>('1')
   const [hoveredAgentId, setHoveredAgentId] = useState<string | null>(null)
-  const [isRunning, setIsRunning] = useState(false)
+  const [runningAgents, setRunningAgents] = useState<Record<string, boolean>>({})
+  const heartbeatTimers = useRef<Record<string, NodeJS.Timeout>>({})
+
+  usePythonEvent("agent_heartbeat", (data: { agent_id: string }) => {
+    const { agent_id } = data;
+    if (!agent_id) return;
+
+    setRunningAgents(prev => {
+      if (prev[agent_id]) return prev;
+      return { ...prev, [agent_id]: true };
+    });
+
+    if (heartbeatTimers.current[agent_id]) {
+      clearTimeout(heartbeatTimers.current[agent_id]);
+    }
+
+    heartbeatTimers.current[agent_id] = setTimeout(() => {
+      setRunningAgents(prev => {
+        if (!prev[agent_id]) return prev;
+        const updated = { ...prev };
+        delete updated[agent_id];
+        return updated;
+      });
+      delete heartbeatTimers.current[agent_id];
+    }, 3000);
+  });
+
+  useEffect(() => {
+    return () => {
+      Object.values(heartbeatTimers.current).forEach(clearTimeout);
+    };
+  }, []);
   const [availableTools, setAvailableTools] = useState<{ name: string; description: string; source: 'internal' | 'mcp' }[]>([])
   const [tools] = useFolder('Tools')
   const [toolFields, setToolFields] = useState<Record<string, any[]>>({})
@@ -1422,7 +1451,6 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
               id: String(agent.id),
               children: Array.isArray(agent.children) ? agent.children.map(String) : [],
               tools: Array.isArray(agent.tools) ? agent.tools.map(String) : [],
-              isRunning: false
             }
           }
         })
@@ -1612,7 +1640,6 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
           children: [],
           toolValues: {},
           allowMultiple: false,
-          isRunning: false,
           model: null
         }
       }
@@ -2138,7 +2165,6 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
       children: [],
       toolValues: {},
       allowMultiple: false,
-      isRunning: false,
       model: null
     }
     pendingFocusAgentIdRef.current = { id: newId, selectText: true }
@@ -2227,7 +2253,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
 
   const runningSubtreeAgentIds = useMemo(() => {
     const ids = new Set<string>()
-    const runningIds = Object.keys(agents).filter(id => agents[id]?.isRunning)
+    const runningIds = Object.keys(agents).filter(id => runningAgents[id])
     if (runningIds.length === 0) return ids
 
     const parentOf: Record<string, string> = {}
@@ -2245,7 +2271,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
       }
     }
     return ids
-  }, [agents])
+  }, [agents, runningAgents])
 
   //  Memoised theme styles 
   const themeStyles = useMemo(() => ({
@@ -2344,7 +2370,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
       totalLength: number
     }[] = []
 
-    const runningIds = Object.keys(agents).filter(id => agents[id]?.isRunning)
+    const runningIds = Object.keys(agents).filter(id => runningAgents[id])
     if (runningIds.length === 0) return segments
 
     const agentIds = Object.keys(agents)
@@ -2424,7 +2450,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
       }
     }
     return segments
-  }, [agents, agentPositions, runningSubtreeAgentIds])
+  }, [agents, agentPositions, runningSubtreeAgentIds, runningAgents])
 
   //  Render 
   return (
@@ -2565,6 +2591,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
                 isHovered={hoveredAgentId === id}
                 isPathHighlight={highlightedAgentSubtreeIds.has(id)}
                 isRunningPath={runningSubtreeAgentIds.has(id)}
+                isRunning={!!runningAgents[id]}
                 isDark={isDark}
                 isOverlap={pos.isOverlap}
                 onSelect={handleAgentSelect}

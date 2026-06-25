@@ -52,7 +52,6 @@ class ToolBase(ABC):
         self,
         query: str,
         tool_registry: Optional[Dict[str, ToolRegistry]] = None,
-        allowed_tools: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         chat_kwargs: Dict[str, Any] = {}
         mid_ctx = model_id_ctx.get()
@@ -60,16 +59,7 @@ class ToolBase(ABC):
         
         if tool_registry:
             for reg in tool_registry.values():
-                tools.append(reg.schema)
-        else: 
-            if self.tool_manager:
-                tools.extend(self.tool_manager.get_openai_schemas())
-            if self.mcp_manager:
-                tools.extend(self.mcp_manager.get_openai_schemas())
-            
-        if allowed_tools is not None:
-            allowed_set = set(allowed_tools)
-            tools = [t for t in tools if t.get("function", {}).get("name") in allowed_set]
+                tools.append(reg.schema)     
             
         if tools:
             chat_kwargs["tools"] = tools

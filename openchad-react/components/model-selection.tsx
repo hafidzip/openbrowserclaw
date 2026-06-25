@@ -137,14 +137,48 @@ export default function ModelSelection({
     const { agents, isLoading: isAgentsLoading } = useAvailableAgents()
 
     useEffect(() => {
-        if (availableModels.findIndex(m => m.id === model.id) === -1) setModel({ name: null, id: null })
-    }, [availableModels])
+        console.log("[ModelSelection] Model validation check:", {
+            isScanning,
+            modelId: model?.id,
+            modelName: model?.name,
+            availableCount: availableModels.length,
+            availableModels: availableModels.map(m => m.id)
+        });
+        if (isScanning) return;
+        if (!model?.id) return;
+        if (availableModels.length === 0) {
+            console.log("[ModelSelection] Available models list is empty, skipping validation.");
+            return;
+        }
+        const foundIndex = availableModels.findIndex(m => m.id === model.id);
+        console.log("[ModelSelection] Model validation index check:", { foundIndex });
+        if (foundIndex === -1) {
+            console.warn("[ModelSelection] Model NOT found in available models! Resetting model to null.");
+            setModel({ name: null, id: null });
+        }
+    }, [availableModels, isScanning, model, setModel]);
 
     useEffect(() => {
-        if (agent?.id && agents.findIndex(a => a.id === agent.id) === -1) {
-            setAgent?.({ name: null, id: null })
+        console.log("[ModelSelection] Agent validation check:", {
+            isAgentsLoading,
+            agentId: agent?.id,
+            agentName: agent?.name,
+            agentsCount: agents.length,
+            agents: agents.map(a => a.id)
+        });
+        if (isAgentsLoading) return;
+        if (!agent?.id) return;
+        if (agents.length === 0) {
+            console.log("[ModelSelection] Agents list is empty, skipping validation.");
+            return;
         }
-    }, [agents])
+        const foundIndex = agents.findIndex(a => a.id === agent.id);
+        console.log("[ModelSelection] Agent validation index check:", { foundIndex });
+        if (foundIndex === -1) {
+            console.warn("[ModelSelection] Agent NOT found in available agents! Resetting agent to null.");
+            setAgent?.({ name: null, id: null });
+        }
+    }, [agents, isAgentsLoading, agent, setAgent]);
 
     // Model dropdown state
     const [modelOpen, setModelOpen] = useState(false);

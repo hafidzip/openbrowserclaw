@@ -345,6 +345,15 @@ class Chat(PipelineBase):
                 # Generate raw prompt and clean up consecutive newlines
                 raw_prompt = format_agent(current_agent_id, agent_node, 0)
                 self.prompt = re.sub(r'\n{3,}', '\n\n', raw_prompt).strip()
+                import platform
+                from datetime import datetime
+                os_info = f"{platform.system()} {platform.release()}"
+                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self.prompt += (
+                    f"\n\n## Environment\n"
+                    f"- OS Information: {os_info}\n"
+                    f"- Current Date & Time: {now_str}"
+                )
 
                 # Ensure agent_query is allowed if children exist
                 allowed_tools = set(agent_node.get("tools", []))
@@ -881,120 +890,137 @@ class Chat(PipelineBase):
 
     # PipelineBase lifecycle
     
+    def _get_parent_branch_id(self) -> str:
+        if self.tb:
+            parts = self.tb.split("_")
+            if len(parts) >= 3:
+                return "_".join(parts[1:-1])
+        return _sha256_short("0")
+
+    async def _sync_message_to_db(self):
+        if not self.tab_db or not self.tb or not self.branch_id:
+            return
+        
+        branch_data = self.r.get("content", {}).get(self.branch_id)
+        if not branch_data:
+            return
+            
+        parent_branch_id = self._get_parent_branch_id()
+        try:
+            msg_index = int(self.tb.rsplit("_", 1)[-1])
+        except (ValueError, IndexError):
+            msg_index = 0
+            
+        query = branch_data.get("query")
+        responses = json.dumps(branch_data.get("responses", []))
+        response_branch = int(branch_data.get("response_branch", 0))
+        timestamp = int(time.time())
+        
+        await self.tab_db.execute(
+            "messages",
+            """
+            INSERT OR REPLACE INTO {table} (
+                parent_branch_id,
+                child_branch_id,
+                msg_index,
+                query,
+                responses,
+                response_branch,
+                timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            [parent_branch_id, self.branch_id, msg_index, query, responses, response_branch, timestamp]
+        )
+        
+        selected_branch_index = int(self.r.get("branch", 0))
+        await self.tab_db.execute(
+            "conversation_branches",
+            """
+            INSERT OR REPLACE INTO {table} (
+                parent_branch_id,
+                msg_index,
+                selected_branch_index
+            ) VALUES (?, ?, ?)
+            """,
+            [parent_branch_id, msg_index, selected_branch_index]
+        )
+
     async def get_history(self) -> List[Dict[str, Any]]:
-        """Walk the recursive message chain from the DB, mirroring frontend MessageContainer logic.
+        """Walk the recursive message chain from the DB using recursive CTE.
         Returns a list of {role, content} dicts in chronological order,
         up to (but not including) the current request being processed.
         Only the last MAX_HISTORY_TURNS exchanges are collected.
-        NOTE: The loop must always start from index=0 / branch=sha256("0") because
-        each branch hash depends on the previous one  there is no shortcut to jump
-        directly to turn N-8.  However, we derive the target index from self.tb
-        (format: msg_{branch}_{index}) and only append entries once we are within
-        MAX_HISTORY_TURNS steps of the end, so old turns are never stored in memory.
         """
         MAX_HISTORY_TURNS = 2
         result: List[Dict[str, str]] = []
-        # Starting values – same as the frontend:
-        #   index  = 0
-        #   branch = sha256("0").slice(0, 32)
         if not self.tb or not isinstance(self.tb, str):
             logger.error("[%s] get_history called without valid tb | self.tb=%s", self.__class__.__name__, self.tb)
             return []
-        # Derive the index of the current (target) message from self.tb so we
-        # know at which iteration to start collecting.
+        
+        parent_id = self._get_parent_branch_id()
+        logger.info("[%s] get_history starting | self.tb=%s parent_id=%s",
+                    self.__class__.__name__, self.tb, parent_id)
+        
+        if not self.tab_db:
+            logger.error("[%s] get_history called without valid tab_db | self.tab_db=%s", self.__class__.__name__, self.tab_db)
+            return []
+            
+        sql = """
+        WITH RECURSIVE chat_chain AS (
+            SELECT parent_branch_id, child_branch_id, msg_index, query, responses, response_branch, timestamp, 1 as depth
+            FROM {table}
+            WHERE child_branch_id = SUBSTR(?, 1, 32)
+            
+            UNION ALL
+            
+            SELECT m.parent_branch_id, m.child_branch_id, m.msg_index, m.query, m.responses, m.response_branch, m.timestamp, c.depth + 1
+            FROM {table} m
+            JOIN chat_chain c ON m.child_branch_id = SUBSTR(c.parent_branch_id, 1, 32)
+            WHERE c.depth < ?
+        )
+        SELECT parent_branch_id, child_branch_id, msg_index, query, responses, response_branch, timestamp 
+        FROM chat_chain 
+        ORDER BY msg_index ASC;
+        """
         try:
-            target_index = int(self.tb.rsplit("_", 1)[-1])
-        except (ValueError, IndexError):
-            target_index = None  # fallback: collect everything, slice later
-        collect_from = (target_index - MAX_HISTORY_TURNS) if target_index is not None else 0
-        current_index = 0
-        current_branch = _sha256_short("0")
-        logger.info("[%s] get_history starting | self.tb=%s target_index=%s collect_from=%s",
-                    self.__class__.__name__, self.tb, target_index, collect_from)
-        while True:
-            table_name = "msg_" + current_branch + "_" + str(current_index)
-            # CRITICAL: Stop once we reach the message currently being generated.
-            if table_name == self.tb:
-                logger.debug("[%s] get_history reached current table %s | stopping", self.__class__.__name__, table_name)
-                break
-            if self.tab_db:
-                msg = await self.tab_db.get(table_name)
-            else:
-                logger.error("[%s] get_history called without valid tab_db | self.tab_db=%s", self.__class__.__name__, self.tab_db)
-                break
-            if not msg or not isinstance(msg, dict):
-                logger.debug("[%s] get_history reached end at %s (no data)", self.__class__.__name__, table_name)
-                break
-            branch_num = msg.get("branch", 0)
-            if isinstance(branch_num, str):
-                try:
-                    branch_num = int(branch_num)
-                except ValueError:
-                    branch_num = 0
-            content = msg.get("content", {})
-            # SQLite stores JSON fields as strings  parse them just like setup() does.
-            if isinstance(content, str):
-                try:
-                    content = json.loads(content)
-                except Exception:
-                    content = {}
-            if not isinstance(content, dict):
-                logger.warning("[%s] get_history found invalid content at %s (type=%s)", self.__class__.__name__, table_name, type(content).__name__)
-                break
-            # Compute the active branch hash – mirrors frontend:
-            #   b = sha256(branch > 0 ? branch.toString() + currentBranch : currentBranch).slice(0, 32)
-            if branch_num > 0:
-                b = _sha256_short(str(branch_num) + current_branch)
-            else:
-                b = _sha256_short(current_branch)
-            branch_data = content.get(b)
-            if not branch_data or not isinstance(branch_data, dict):
-                logger.debug("[%s] get_history: active branch %s not found in %s", self.__class__.__name__, b, table_name)
-                break
-            query = branch_data.get("query")
-            if not query:
-                logger.debug("[%s] get_history: query missing in branch %s of %s", self.__class__.__name__, b, table_name)
-                break
-            responses = branch_data.get("responses", [])
-            response_branch = branch_data.get("response_branch", 0)
-            if isinstance(response_branch, str):
-                try:
-                    response_branch = int(response_branch)
-                except ValueError:
-                    response_branch = 0
-            response_text = None
-            candidate = None
-            if isinstance(responses, list) and 0 <= response_branch < len(responses):
-                candidate = responses[response_branch]
-            elif isinstance(responses, dict):
-                candidate = responses.get(str(response_branch))
-            if candidate is not None:
-                # Support both ModelOutput (dict) and legacy string
-                text = _extract_content_from_response(candidate)
-                if isinstance(candidate, str) and not text:
-                    text = candidate  # legacy plain-string response
-                if text and text.strip() and text.strip() != "<div></div>":
-                    response_text = text
-            if response_text is None:
-                logger.warning(
-                    "[%s] get_history: skipping index=%d branch=%s – no usable response "
-                    "(candidate type=%s, extracted=%r)",
-                    self.__class__.__name__, current_index, b,
-                    type(candidate).__name__, _extract_content_from_response(candidate) if candidate else None,
-                )
-                # Do NOT break  keep walking so older valid turns are not lost.
-                # Advance branch so the chain stays consistent.
-                current_index += 1
-                current_branch = b
-                continue
-            # Only collect entries within the last MAX_HISTORY_TURNS window.
-            # We still walk every index so the branch hash stays correct.
-            if current_index >= collect_from:
+            rows = await self.tab_db.query("messages", sql, [parent_id, MAX_HISTORY_TURNS])
+            for row in rows:
+                query = row.get("query")
+                if not query:
+                    continue
+                
+                # Add user query
                 result.append({"role": "user", "content": query})
-                result.append({"role": "assistant", "content": response_text})
-            # Advance to the next message in the chain
-            current_index += 1
-            current_branch = b
+                
+                # Add assistant response if exists
+                res_str = row.get("responses")
+                responses_list = []
+                if res_str:
+                    try:
+                        responses_list = json.loads(res_str)
+                    except Exception:
+                        responses_list = []
+                
+                resp_idx = row.get("response_branch", 0)
+                candidate = None
+                if isinstance(responses_list, list) and 0 <= resp_idx < len(responses_list):
+                    candidate = responses_list[resp_idx]
+                elif isinstance(responses_list, dict):
+                    candidate = responses_list.get(str(resp_idx))
+                    
+                response_text = None
+                if candidate is not None:
+                    text = _extract_content_from_response(candidate)
+                    if isinstance(candidate, str) and not text:
+                        text = candidate
+                    if text and text.strip() and text.strip() != "<div></div>":
+                        response_text = text
+                        
+                if response_text:
+                    result.append({"role": "assistant", "content": response_text})
+        except Exception as e:
+            logger.error("[%s] get_history SQL error: %s", self.__class__.__name__, e)
+            
         logger.info("[%s] get_history complete | collected %d messages (last %d turns)", self.__class__.__name__, len(result) // 2, MAX_HISTORY_TURNS)
         return result
     async def setup(self) -> None:
@@ -1032,13 +1058,69 @@ class Chat(PipelineBase):
         # --- End long-query guard -----------------------------------------------
         if not self.tab_db:
             raise RuntimeError("[setup] database (tab_db) is not configured or is None")
+        # Ensure database tables exist
         try:
-            if self.tb:
-                existing = await self.tab_db.get(self.tb)
-                if existing and isinstance(existing, dict):
-                    self.r = existing
+            await self.tab_db.execute(
+                "messages",
+                """
+                CREATE TABLE IF NOT EXISTS {table} (
+                    parent_branch_id TEXT NOT NULL,
+                    child_branch_id TEXT NOT NULL PRIMARY KEY,
+                    msg_index INTEGER NOT NULL,
+                    query TEXT,
+                    responses TEXT,
+                    response_branch INTEGER DEFAULT 0,
+                    timestamp INTEGER NOT NULL
+                );
+                """
+            )
+            await self.tab_db.execute(
+                "messages",
+                "CREATE INDEX IF NOT EXISTS idx_messages_parent ON {table} (parent_branch_id);"
+            )
+            await self.tab_db.execute(
+                "conversation_branches",
+                """
+                CREATE TABLE IF NOT EXISTS {table} (
+                    parent_branch_id TEXT NOT NULL,
+                    msg_index INTEGER NOT NULL,
+                    selected_branch_index INTEGER DEFAULT 0,
+                    PRIMARY KEY (parent_branch_id, msg_index)
+                );
+                """
+            )
         except Exception as e:
-            logger.error("[%s] Failed to load existing record for %s: %s", self.__class__.__name__, self.tb, e)
+            logger.error("[%s] Failed to create tables: %s", self.__class__.__name__, e)
+            
+        try:
+            if self.branch_id:
+                rows = await self.tab_db.query(
+                    "messages",
+                    "SELECT parent_branch_id, child_branch_id, msg_index, query, responses, response_branch, timestamp FROM {table} WHERE child_branch_id = ?",
+                    [self.branch_id]
+                )
+                if rows and len(rows) > 0:
+                    row = rows[0]
+                    res_str = row.get("responses")
+                    responses_list = []
+                    if res_str:
+                        try:
+                            responses_list = json.loads(res_str)
+                        except Exception:
+                            responses_list = []
+                    self.r = {
+                        "branch": row.get("msg_index", 0),
+                        "content": {
+                            self.branch_id: {
+                                "query": row.get("query"),
+                                "responses": responses_list,
+                                "response_branch": row.get("response_branch", 0),
+                            }
+                        }
+                    }
+        except Exception as e:
+            logger.error("[%s] Failed to load existing record for branch %s: %s", self.__class__.__name__, self.branch_id, e)
+            
         try:
             if not self.r or not isinstance(self.r, dict):
                 self.r = {"branch": 0, "content": {}}
@@ -1110,9 +1192,9 @@ class Chat(PipelineBase):
             ) from e
         try:
             if self.tab_db and self.tb:
-                await self.tab_db.sync(self.tb, self.r)
+                await self._sync_message_to_db()
         except Exception as e:
-            raise RuntimeError(f"[setup] STEP 8 - database.sync failed: {e}") from e
+            raise RuntimeError(f"[setup] STEP 8 - _sync_message_to_db failed: {e}") from e
         logger.info(
             "[%s] setup complete | branch_id=%s history_len=%d",
             self.__class__.__name__,
@@ -1264,7 +1346,7 @@ class Chat(PipelineBase):
         self.logs["content_segments_count"] = len(self._content_segments)
         self.logs["think_content_len"] = len(self._think_content)
         if self.tab_db and self.tb:
-            await self.tab_db.sync(self.tb, self.r)
+            await self._sync_message_to_db()
             if self.tab_id:
                 await self.tab_db.sync(self.tab_id + "_log", self.logs)
         return chunk
@@ -1350,7 +1432,7 @@ class Chat(PipelineBase):
         except (KeyError, IndexError, TypeError):
             pass
         if self.tab_db and self.tb:
-            await self.tab_db.sync(self.tb, self.r)
+            await self._sync_message_to_db()
         if remaining_raw or final_rendered:
             self.logs["final_content"] = final_rendered
             if self.tab_db and self.tab_id:
@@ -1398,7 +1480,7 @@ class Chat(PipelineBase):
                     except (KeyError, IndexError, TypeError):
                         pass
         if self.tab_db and self.tb:
-            await self.tab_db.sync(self.tb, self.r)
+            await self._sync_message_to_db()
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "[%s] response | branch_id=%s response_branch=%s | response=%s",
@@ -1411,6 +1493,28 @@ class Chat(PipelineBase):
     
     # start [reset state for a new attempt]
     async def start(self, **kwargs) -> None:
+        root_agent = getattr(self, "root_agent", None)
+        if root_agent and self.event_emitter and not hasattr(self, "_root_heartbeat_task"):
+            import time
+            await self.event_emitter.emit("agent_heartbeat", {
+                "agent_id": root_agent,
+                "timestamp": time.time()
+            })
+            async def send_root_heartbeats():
+                try:
+                    while True:
+                        await asyncio.sleep(1.0)
+                        if self.event_emitter:
+                            await self.event_emitter.emit("agent_heartbeat", {
+                                "agent_id": root_agent,
+                                "timestamp": time.time()
+                            })
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.error(f"Error in root agent heartbeat task: {e}")
+            self._root_heartbeat_task = asyncio.create_task(send_root_heartbeats())
+
         if not self.messages:
             # Build history context: clean think/tool tags from assistant turns
             await self._build_initial_messages()
@@ -1628,7 +1732,10 @@ class Chat(PipelineBase):
                                                                     for task in sub_tasks:
                                                                         if agent_query:
                                                                             try:
-                                                                                ans = await self.llm_tool(query=task, tool_registry={
+                                                                                ans = await self.llm_tool(
+                                                                                    history_id=sub_agent_id,
+                                                                                    query=task, 
+                                                                                    tool_registry={
                                                                                     'agent_query' : agent_query
                                                                                 })
                                                                                 agent_results.append({
@@ -1816,6 +1923,14 @@ class Chat(PipelineBase):
     
     # stop [end of response]
     async def stop(self, **kwargs) -> None:
+        if hasattr(self, "_root_heartbeat_task") and self._root_heartbeat_task:
+            self._root_heartbeat_task.cancel()
+            try:
+                await self._root_heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            delattr(self, "_root_heartbeat_task")
+
         idx = int(self.response_branch or 0)
         current_responses = self.r["content"][self.branch_id]["responses"]
         model_output = current_responses[idx]
@@ -1823,7 +1938,7 @@ class Chat(PipelineBase):
         if self.tab_db and self.tb:
             await self.tab_db.set("message_state", "isStreaming", False)
             await self.tab_db.set("message_state", "activeId", "")
-            await self.tab_db.sync(self.tb, self.r)
+            await self._sync_message_to_db()
             tab_info = await self.tab_db.get("message_state")
             if not isinstance(tab_info['title'], str):
                 async def tool_func(**kwargs):
