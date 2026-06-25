@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, Response
 from urllib.parse import unquote
 
 # Import processing modules
+from .code_sandbox import CodeSandbox
 from .process_image import process_image
 from .process_audio import process_audio
 from .process_video import process_video, generate_video_thumbnail
@@ -153,6 +154,7 @@ mcp_manager = MCPManager(
 model_manager = ModelManager(emitter=event_emitter, config_path=_CONFIG_PATH, backends_dir=BACKENDS_DIR, config_lock=config_lock)
 # Initialize Tool Manager
 tool_manager = ToolManager(TOOLS_DIR)
+code_sandbox = CodeSandbox(tool_manager)
 # Initialize Pipeline Manager
 pipeline_manager = PipelineManager(config_path=_CONFIG_PATH, pipelines_dir=PIPELINES_DIR, config_lock=config_lock)
 # Initialize Model Provider Manager
@@ -489,6 +491,7 @@ async def _setup_pipeline(
 ):
     """Helper to setup pipeline and prepare chat arguments."""
     pipeline = await pipeline_manager.create_instance(
+        code_sandbox = code_sandbox,
         model_id=requested_model,
         files=files,
         query=query,

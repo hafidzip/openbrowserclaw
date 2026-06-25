@@ -10,6 +10,7 @@ from pathlib import Path
 from .context import workspace_ctx, tab_id_ctx, model_id_ctx
 from .database import Database
 if TYPE_CHECKING:
+    from .code_sandbox import CodeSandbox
     from .model_manager import ModelManager
     from .tool_manager import ToolManager
     from .settings import Settings
@@ -26,6 +27,7 @@ class PipelineBase:
     _prompt_tokens: int
     _costs: List[Dict[str, Any]]
     # Managers
+    code_sandbox: Optional["CodeSandbox"]
     tool_manager: Optional["ToolManager"]
     model_manager: Optional["ModelManager"]
     settings_manager: Optional["Settings"]
@@ -396,11 +398,19 @@ class PipelineBase:
                         + f'    node = get_node("{current_agent_id}")\n'
                         "    data: ActionResult = await node.execute(initial_task)\n"
                         "    results.append(data.result)\n"
+                        "    # (parent_node, branch_id, task)\n"
+                        "    queue: deque[tuple] = deque()\n"
                         "    if data.next_branch and len(data.next_tasks) > 0:\n"
                         "        for task in data.next_tasks:\n"
-                        "            branch_node = get_children_node(node, data.next_branch)\n"
-                        "            branch_data: ActionResult = await branch_node.execute(task)\n"
-                        "            results.append(branch_data.result)\n"
+                        "            queue.append((node, data.next_branch, task))\n"
+                        "    while queue:\n"
+                        "        parent_node, branch_id, task = queue.popleft()\n"
+                        "        branch_node = get_children_node(parent_node, branch_id)\n"
+                        "        branch_data: ActionResult = await branch_node.execute(task)\n"
+                        "        results.append(branch_data.result)\n"
+                        "        if branch_data.next_branch and len(branch_data.next_tasks) > 0:\n"
+                        "            for t in branch_data.next_tasks:\n"
+                        "                queue.append((branch_node, branch_data.next_branch, t))\n"
                         "    return results\n"
                         "```\n"
                     )
@@ -745,11 +755,20 @@ class PipelineBase:
                 except asyncio.CancelledError:
                     pass
 
-
+    async def run_code(self, code: str) -> Dict[str, Any]:
+        try:
+            if self.code_sandbox and self.workspace and self.tab_id:
+                return await self.code_sandbox.execute(code, workspace=self.workspace, tab_id=self.tab_id)
+            else:
+                return {"error": "Setup code_sandbox failed"}
+        except Exception as e:
+            logger.error(f"Failed to run code: {e}")
+            return {"error": str(e)}    
     
     def __init__(self, **kwargs):
         self.attempt = 0
         # Initialize all attributes
+        self.code_sandbox = kwargs.get('code_sandbox', None)
         self.settings_manager = kwargs.get('settings_manager', None)
         self.event_emitter = kwargs.get('event_emitter', None)
         self.mcp_manager = kwargs.get('mcp_manager', None)
