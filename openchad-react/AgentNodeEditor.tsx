@@ -25,7 +25,8 @@ import {
   Copy,
   Check,
   AlertTriangle,
-  AlertCircle
+  AlertCircle,
+  Code2
 } from 'lucide-react'
 import { ref, useFolder, useTheme, type AppInfo, Dropdown, useAvailableModels, uuidv4, usePythonEvent, useGlobal } from 'openchad-react'
 import clsx from 'clsx'
@@ -45,6 +46,7 @@ export interface AgentNode {
   children: string[]
   toolValues: Record<string, Record<string, any>>
   allowMultiple: boolean
+  enableProgrammaticToolCalling: boolean
   model: string | null
   warnings?: string[]
   errors?: string[]
@@ -967,6 +969,50 @@ const AgentEditor = ({
         </div>
       )}
 
+    {/* Allow multiple toggle */}
+    <div className="flex flex-col gap-1.5">
+      <label className="text-xs font-semibold flex items-center gap-1" style={{ color: themeStyles.mutedFg }}>
+        <div className='flex items-center gap-1'>
+          <Code2 size={14}/>
+          <span>Programmatic Tool Calling</span>
+        </div>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger>
+              <InfoIcon size={12} />
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>Prefer using <b>frontier model</b> when enable this.</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      </label>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          id={`btn-allow-multiple-${selected}`}
+          onClick={() => handleUpdateAgentProperty(selected, { enableProgrammaticToolCalling: !agents[selected].enableProgrammaticToolCalling })}
+          className="relative w-9 h-5 rounded-full flex-shrink-0 transition-colors duration-200 focus:outline-none"
+          style={{
+            background: agents[selected].enableProgrammaticToolCalling ? '#34d399' : themeStyles.muted,
+            border: `1px solid ${agents[selected].enableProgrammaticToolCalling ? '#34d399' : themeStyles.border}`,
+          }}
+        >
+          <span
+            className="absolute top-0.5 w-4 h-4 rounded-full shadow transition-all duration-200"
+            style={{
+              background: agents[selected].enableProgrammaticToolCalling ? '#fff' : themeStyles.mutedFg,
+              left: agents[selected].enableProgrammaticToolCalling ? '17px' : '2px',
+            }}
+          />
+        </button>
+        <span className="text-xs" style={{ color: agents[selected].enableProgrammaticToolCalling ? '#34d399' : themeStyles.mutedFg }}>
+          {agents[selected].enableProgrammaticToolCalling ? 'Enable' : 'Disable'}
+        </span>
+      </div>
+    </div>
+
+
     {/* Model selection */}
     <div className="flex flex-col gap-1.5">
       <label className="text-xs font-semibold" style={{ color: themeStyles.mutedFg }}>
@@ -1366,6 +1412,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
       name: initialName,
       tools: [],
       children: [],
+      enableProgrammaticToolCalling: false,
       allowMultiple: false,
       toolValues: {},
       model: null
@@ -1639,6 +1686,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
           tools: [],
           children: [],
           toolValues: {},
+          enableProgrammaticToolCalling: false,
           allowMultiple: false,
           model: null
         }
@@ -2164,6 +2212,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
       tools: [],
       children: [],
       toolValues: {},
+      enableProgrammaticToolCalling: false,
       allowMultiple: false,
       model: null
     }

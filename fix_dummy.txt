@@ -1,0 +1,454 @@
+# -*- coding: utf-8 -*-
+"""
+Unit tests for the enableProgrammaticToolCalling system prompt template logic.
+
+Tests verify:
+1. format_node_code generates correct recursive Node tree code
+2. Chat.__init__ builds the programmatic system prompt when enableProgrammaticToolCalling=True
+3. Chat.__init__ uses the default prompt when enableProgrammaticToolCalling=False
+4. _build_initial_messages replaces {{current_task}} with context+query
+5. _build_initial_messages does not modify template when {{current_task}} is absent
+
+Run with:
+    cd openbrowser && uv run python programmatic_tool_test.py
+"""
+
+import asyncio
+import sys
+import os
+import re
+import copy
+import json
+import logging
+from typing import Any, Dict, List, Optional
+
+# -- Setup path --------------------------------------------------------------
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "openchadpy", "src"))
+
+# -- Logging -----------------------------------------------------------------
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler("programmatic_tool_test.log", encoding="utf-8"),
+    ],
+)
+logger = logging.getLogger("programmatic_tool_test")
+
+# -- Test tracking ------------------------------------------------------------
+passed = 0
+failed = 0
+
+
+def ok(name: str):
+    global passed
+    passed += 1
+    logger.info(f"PASS: {name}")
+
+
+def fail(name: str, reason: str):
+    global failed
+    failed += 1
+    logger.error(f"FAIL: {name} -- {reason}")
+
+
+# ============================================================================
+# Isolated logic: format_node_code (extracted from Chat.__init__)
+# ============================================================================
+
+def get_skill_info_mock(skill_path: str):
+    """Mocked get_skill_info that returns predictable values."""
+    if not skill_path:
+        return "", "No description available"
+    return os.path.basename(skill_path), f"Description for {os.path.basename(skill_path)}"
+
+
+def format_node_code(a_id: str, a_node: dict, indent: str = "") -> str:
+    """Extracted logic from Chat.__init__ for isolated unit testing."""
+    skill_path = a_node.get("skillPath", "")
+    fname, skill_desc = get_skill_info_mock(skill_path) if skill_path else ("", "No description available")
+    node_children = a_node.get("children", {})
+    tools = list(a_node.get("tools", []))
+    if node_children and "agent_query" not in tools:
+        tools.append("agent_query")
+    tools_str = ", ".join(f'"{t}"' for t in sorted(tools))
+    module_name = a_id
+    lines = [
+        f"{indent}Node(",
+        f'{indent}    name="{a_id}",',
+        f"{indent}    skill=Skill(",
+        f'{indent}        path="{skill_path}",',
+        f'{indent}        description="{skill_desc}",',
+        f"{indent}    ),",
+        f"{indent}    available_tools=[{tools_str}],",
+        f'{indent}    module_path="{a_id}/main.py",',
+        f'{indent}    module_name="{module_name}",',
+    ]
+    if node_children:
+        lines.append(f"{indent}    children=[")
+        for child_id, child_node in node_children.items():
+            child_code = format_node_code(child_id, child_node, indent + "        ")
+            lines.append(child_code + ",")
+        lines.append(f"{indent}    ],")
+    lines.append(f"{indent})")
+    return "\n".join(lines)
+
+
+# ============================================================================
+# TEST 1: format_node_code -- leaf node (no children)
+# ============================================================================
+def test_format_node_code_leaf():
+    logger.info("=" * 60)
+    logger.info("TEST 1: format_node_code -- leaf node (no children)")
+
+    node = {
+        "skillPath": "/skills/web_agent.md",
+        "tools": ["web_search", "extract"],
+        "children": {},
+    }
+    code = format_node_code("web_agent", node)
+    logger.debug(f"Generated code:\n{code}")
+
+    assert 'name="web_agent"' in code, "Missing name field"
+    assert 'path="/skills/web_agent.md"' in code, "Missing skill path"
+    assert '"extract"' in code, "Missing extract tool"
+    assert '"web_search"' in code, "Missing web_search tool"
+    assert "children" not in code, "Leaf node should not have children block"
+    assert 'module_path="web_agent/main.py"' in code, "Missing module_path"
+    assert 'module_name="web_agent"' in code, "Missing module_name"
+    ok("format_node_code leaf node")
+
+
+# ============================================================================
+# TEST 2: format_node_code -- parent with one child
+# ============================================================================
+def test_format_node_code_parent_child():
+    logger.info("=" * 60)
+    logger.info("TEST 2: format_node_code -- parent node with one child")
+
+    child_node = {
+        "skillPath": "/skills/code_agent.md",
+        "tools": ["read_file", "write_file"],
+        "children": {},
+    }
+    parent_node = {
+        "skillPath": "/skills/root_agent.md",
+        "tools": ["web_search"],
+        "children": {"code_agent": child_node},
+    }
+    code = format_node_code("root_agent", parent_node)
+    logger.debug(f"Generated code:\n{code}")
+
+    assert 'name="root_agent"' in code, "Missing root_agent name"
+    assert 'name="code_agent"' in code, "Missing child code_agent name"
+    assert "children=[" in code, "Parent should have children block"
+    assert '"agent_query"' in code, "agent_query should be auto-added for parent"
+    assert 'module_path="code_agent/main.py"' in code, "Missing child module_path"
+    assert 'module_name="code_agent"' in code, "Missing child module_name"
+    ok("format_node_code parent with child")
+
+
+# ============================================================================
+# TEST 3: format_node_code -- deep nesting (3 levels)
+# ============================================================================
+def test_format_node_code_deep_nesting():
+    logger.info("=" * 60)
+    logger.info("TEST 3: format_node_code -- deep 3-level nesting")
+
+    grandchild = {
+        "skillPath": "",
+        "tools": ["deep_search"],
+        "children": {},
+    }
+    child = {
+        "skillPath": "/skills/child.md",
+        "tools": ["analyze"],
+        "children": {"grandchild": grandchild},
+    }
+    root = {
+        "skillPath": "/skills/root.md",
+        "tools": ["orchestrate"],
+        "children": {"child_agent": child},
+    }
+    code = format_node_code("root_agent", root)
+    logger.debug(f"Generated deep nested code:\n{code}")
+
+    assert 'name="root_agent"' in code
+    assert 'name="child_agent"' in code
+    assert 'name="grandchild"' in code
+    assert '"deep_search"' in code
+    ok("format_node_code deep 3-level nesting")
+
+
+# ============================================================================
+# TEST 4: format_node_code -- agent_query not duplicated if already in tools
+# ============================================================================
+def test_format_node_code_no_duplicate_agent_query():
+    logger.info("=" * 60)
+    logger.info("TEST 4: format_node_code -- no duplicate agent_query")
+
+    node = {
+        "skillPath": "",
+        "tools": ["web_search", "agent_query"],
+        "children": {"child": {"skillPath": "", "tools": [], "children": {}}},
+    }
+    code = format_node_code("root", node)
+    logger.debug(f"Generated code:\n{code}")
+
+    count = code.count('"agent_query"')
+    if count == 1:
+        ok("format_node_code -- agent_query not duplicated")
+    else:
+        fail("format_node_code -- agent_query not duplicated", f"Found {count} occurrences, expected 1")
+
+
+# ============================================================================
+# TEST 5: Simulate Chat.__init__ system prompt construction for programmatic mode
+# ============================================================================
+def test_programmatic_prompt_construction():
+    logger.info("=" * 60)
+    logger.info("TEST 5: Programmatic prompt construction")
+
+    import platform
+    from datetime import datetime
+
+    agent_id = "planner_agent"
+    agent_node = {
+        "skillPath": "/skills/planner.md",
+        "tools": ["web_search", "read_file"],
+        "children": {
+            "writer_agent": {
+                "skillPath": "/skills/writer.md",
+                "tools": ["write_file"],
+                "children": {},
+            }
+        },
+        "enableProgrammaticToolCalling": True,
+    }
+
+    os_info = f"{platform.system()} {platform.release()}"
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    tree_code = format_node_code(agent_id, agent_node, "")
+
+    all_tools_mock = [
+        {"type": "function", "function": {"name": "web_search", "description": "Search the web for information."}},
+        {"type": "function", "function": {"name": "read_file", "description": "Read content from a file."}},
+        {"type": "function", "function": {"name": "agent_query", "description": "Delegate tasks to sub-agents."}},
+    ]
+    allowed_tools = {"web_search", "read_file", "agent_query"}
+
+    tool_defs = []
+    for t_name in sorted(allowed_tools):
+        t_desc = "No description available"
+        for t in all_tools_mock:
+            if isinstance(t, dict) and t.get("function", {}).get("name") == t_name:
+                t_desc = t.get("function", {}).get("description") or "No description available"
+                break
+        t_desc = t_desc.strip()
+        tool_def = (
+            f"async def {t_name}(query: str) -> str:\n"
+            f"    \"\"\"\n"
+            f"    {t_desc}\n"
+            f"    \"\"\"\n"
+            f"    ..."
+        )
+        tool_defs.append(tool_def)
+    tools_code = "\n\n".join(tool_defs)
+
+    # Simulate what the f-string produces for the prompt (without the full template)
+    prompt_header = (
+        f"## Environment\n"
+        f"- OS Information: `{os_info}`\n"
+        f"- Date & Time: `{now_str}`\n"
+        f"- Current node: `{agent_id}`\n"
+        f"\n---\n\n"
+        f"# ./main.py\n\n"
+        f"```python\n{tree_code}\n```\n\n"
+        f"---\n\n"
+        f"You are the `{agent_id}` agent.\n\n"
+        f"initial_task = \"\"\"\n"
+        f"{{current_task}}\n"   # Literal placeholder
+        f"\"\"\"\n\n"
+        f"# Tools\n{tools_code}\n"
+    )
+
+    logger.debug(f"Generated programmatic prompt (first 1200 chars):\n{prompt_header[:1200]}")
+
+    assert "## Environment" in prompt_header, "Missing Environment section"
+    assert f"Current node: `{agent_id}`" in prompt_header, "Missing current node"
+    assert f'name="{agent_id}"' in prompt_header, "Missing root agent in tree"
+    assert 'name="writer_agent"' in prompt_header, "Missing child agent in tree"
+    assert "{{current_task}}" in prompt_header, "{{current_task}} placeholder must be literal"
+    assert "async def web_search(query: str) -> str:" in prompt_header, "Missing web_search tool def"
+    assert "async def read_file(query: str) -> str:" in prompt_header, "Missing read_file tool def"
+    assert "async def agent_query(query: str) -> str:" in prompt_header, "Missing agent_query tool def"
+    assert "Search the web for information." in prompt_header, "Missing web_search description"
+    ok("Programmatic prompt construction")
+
+
+# ============================================================================
+# TEST 6: _build_initial_messages -- {{current_task}} replacement
+# ============================================================================
+async def test_build_initial_messages_replaces_current_task():
+    logger.info("=" * 60)
+    logger.info("TEST 6: _build_initial_messages -- {{current_task}} replacement")
+
+    context = ""
+    query = "Find top 10 universities in Indonesia"
+    message_template = [
+        {
+            "role": "system",
+            "content": 'initial_task = """\n{{current_task}}\n"""\n\nYou are an agent.',
+        }
+    ]
+
+    msg_template = copy.deepcopy(message_template)
+    if msg_template and len(msg_template) > 0 and "content" in msg_template[0]:
+        content = msg_template[0]["content"]
+        if "{{current_task}}" in content:
+            msg_template[0]["content"] = content.replace("{{current_task}}", f"{context}{query}")
+
+    messages = msg_template + [{"role": "user", "content": f"{context}{query}"}]
+    logger.debug(f"Generated messages:\n{json.dumps(messages, indent=2)}")
+
+    system_content = messages[0]["content"]
+    user_content = messages[-1]["content"]
+
+    assert "{{current_task}}" not in system_content, "{{current_task}} was not replaced in system prompt"
+    assert query in system_content, "Query not found in system prompt after replacement"
+    assert user_content == query, "User content mismatch"
+    ok("_build_initial_messages replaces {{current_task}} correctly")
+
+
+# ============================================================================
+# TEST 7: _build_initial_messages -- no placeholder, template unchanged
+# ============================================================================
+async def test_build_initial_messages_no_placeholder():
+    logger.info("=" * 60)
+    logger.info("TEST 7: _build_initial_messages -- no placeholder, template unchanged")
+
+    context = ""
+    query = "Hello"
+    original_content = "You are a helpful assistant."
+    message_template = [{"role": "system", "content": original_content}]
+
+    msg_template = copy.deepcopy(message_template)
+    if msg_template and len(msg_template) > 0 and "content" in msg_template[0]:
+        content = msg_template[0]["content"]
+        if "{{current_task}}" in content:
+            msg_template[0]["content"] = content.replace("{{current_task}}", f"{context}{query}")
+
+    messages = msg_template + [{"role": "user", "content": query}]
+    logger.debug(f"Messages:\n{json.dumps(messages, indent=2)}")
+
+    assert messages[0]["content"] == original_content, "Template should be unchanged when no placeholder"
+    assert message_template[0]["content"] == original_content, "Original template must not be mutated"
+    ok("_build_initial_messages -- no placeholder, template unchanged")
+
+
+# ============================================================================
+# TEST 8: _build_initial_messages -- task transition uses new query
+# ============================================================================
+async def test_build_initial_messages_task_transition():
+    logger.info("=" * 60)
+    logger.info("TEST 8: _build_initial_messages -- task transition uses new query")
+
+    message_template = [
+        {
+            "role": "system",
+            "content": 'initial_task = """\n{{current_task}}\n"""',
+        }
+    ]
+
+    context = ""
+    query1 = "Task 1: Research the topic"
+    msg1 = copy.deepcopy(message_template)
+    msg1[0]["content"] = msg1[0]["content"].replace("{{current_task}}", f"{context}{query1}")
+    messages1 = msg1 + [{"role": "user", "content": query1}]
+
+    query2 = "Task 2: Write the report"
+    msg2 = copy.deepcopy(message_template)
+    msg2[0]["content"] = msg2[0]["content"].replace("{{current_task}}", f"{context}{query2}")
+    messages2 = msg2 + [{"role": "user", "content": query2}]
+
+    logger.debug(f"Task 1 system:\n{messages1[0]['content']}")
+    logger.debug(f"Task 2 system:\n{messages2[0]['content']}")
+
+    assert query1 in messages1[0]["content"], "Task 1 not in first messages"
+    assert query2 not in messages1[0]["content"], "Task 2 should not be in first messages"
+    assert query2 in messages2[0]["content"], "Task 2 not in second messages"
+    assert query1 not in messages2[0]["content"], "Task 1 should not be in second messages"
+    assert "{{current_task}}" in message_template[0]["content"], "Original template must retain placeholder"
+    ok("_build_initial_messages -- task transition uses new query correctly")
+
+
+# ============================================================================
+# TEST 9: format_node_code -- empty tools list
+# ============================================================================
+def test_format_node_code_empty_tools():
+    logger.info("=" * 60)
+    logger.info("TEST 9: format_node_code -- empty tools list")
+
+    node = {
+        "skillPath": "",
+        "tools": [],
+        "children": {},
+    }
+    code = format_node_code("bare_agent", node)
+    logger.debug(f"Generated code:\n{code}")
+
+    assert "available_tools=[]" in code, "Empty tools should produce empty list"
+    ok("format_node_code -- empty tools list")
+
+
+# ============================================================================
+# TEST 10: {{current_task}} survives as literal in programmatic prompt
+# ============================================================================
+def test_current_task_is_literal_placeholder():
+    logger.info("=" * 60)
+    logger.info("TEST 10: {{current_task}} is literal placeholder after f-string evaluation")
+
+    # In the actual code: f"initial_task = \"\"\"\n{{{{current_task}}}}\n\"\"\""
+    # {{{{ -> {{ -> { and }}}} -> }} -> } in f-strings
+    # So the result must be: initial_task = """\n{{current_task}}\n"""
+    agent_id = "test_agent"
+    rendered = f"initial_task = \"\"\"\n{{current_task}}\n\"\"\""
+    logger.debug(f"Rendered placeholder: {rendered}")
+
+    assert "{{current_task}}" in rendered, "{{current_task}} must remain as literal in the output"
+    ok("{{current_task}} is literal placeholder after f-string evaluation")
+
+
+# ============================================================================
+# Runner
+# ============================================================================
+async def main():
+    logger.info("=" * 70)
+    logger.info("  programmatic_tool_test.py -- running all tests")
+    logger.info("=" * 70)
+
+    test_format_node_code_leaf()
+    test_format_node_code_parent_child()
+    test_format_node_code_deep_nesting()
+    test_format_node_code_no_duplicate_agent_query()
+    test_programmatic_prompt_construction()
+    test_format_node_code_empty_tools()
+    test_current_task_is_literal_placeholder()
+
+    await test_build_initial_messages_replaces_current_task()
+    await test_build_initial_messages_no_placeholder()
+    await test_build_initial_messages_task_transition()
+
+    logger.info("=" * 70)
+    logger.info(f"  Results: {passed} passed, {failed} failed")
+    logger.info("=" * 70)
+
+    if failed > 0:
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+

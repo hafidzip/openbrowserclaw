@@ -189,10 +189,10 @@ class PipelineBase:
                 def get_skill_content(skill_path: str) -> str:
                     if not skill_path:
                         return ""
-                    try: 
+                    try:
                         with open(skill_path, "r", encoding="utf-8") as f:
                             return f.read().strip()
-                    except Exception as e: 
+                    except Exception as e:
                         logger.error(f"[llm_tool] error when try to get skill path: {e}")
                         return ""
 
@@ -209,114 +209,396 @@ class PipelineBase:
                             for line in f:
                                 stripped = line.strip()
                                 if stripped:
-                                    # Found the first non-empty line. Strip headers/bullets.
                                     desc = stripped.lstrip("#").lstrip("-").lstrip("*").strip()
                                     return skill_filename, desc
                             return skill_filename, "No description available"
                     except Exception:
                         return skill_filename, "No description available"
 
-                # Recursive agent prompt formatter
-                def format_agent(a_id: str, a_node: dict, depth: int) -> str:
-                    lines = []
-                    
-                    # 1. Agent Header
-                    if depth == 0:
-                        lines.append(f"# Agent `{a_id}`")
-                    elif depth == 1:
-                        lines.append(f"### `{a_id}`")
-                    else:
-                        lines.append(f"##### `{a_id}`")
-                    lines.append("")
+                if agent_node.get("enableProgrammaticToolCalling"):
+                    # --- Programmatic prompt (same structure as Chat.__init__) ---
+                    def format_node_code(a_id: str, a_node: dict, indent: str = "") -> str:
+                        skill_path = a_node.get("skillPath", "")
+                        fname, skill_desc = get_skill_info(skill_path) if skill_path else ("", "No description available")
+                        node_children = a_node.get("children", {})
+                        node_tools = list(a_node.get("tools", []))
+                        if node_children and "agent_query" not in node_tools:
+                            node_tools.append("agent_query")
+                        tools_str = ", ".join(f'"{t}"' for t in sorted(node_tools))
+                        module_name = a_id.replace("-", "_")
+                        node_lines = [
+                            f"{indent}Node(",
+                            f'{indent}    name="{a_id}",',
+                            f"{indent}    skill=Skill(",
+                            f'{indent}        path="{skill_path}",',
+                            f'{indent}        description="{skill_desc}",',
+                            f"{indent}    ),",
+                            f"{indent}    available_tools=[{tools_str}],",
+                            f'{indent}    module_path="{a_id}/main.py",',
+                            f'{indent}    module_name="{module_name}",',
+                        ]
+                        if node_children:
+                            node_lines.append(f"{indent}    children=[")
+                            for child_id, child_node in node_children.items():
+                                child_code = format_node_code(child_id, child_node, indent + "        ")
+                                node_lines.append(child_code + ",")
+                            node_lines.append(f"{indent}    ],")
+                        node_lines.append(f"{indent})")
+                        return "\n".join(node_lines)
 
-                    # 2. Skills
-                    skill_path = a_node.get("skillPath")
-                    if skill_path and is_file_non_empty(skill_path):
-                        if depth == 0:
-                            content = get_skill_content(skill_path)
-                            if content:
-                                lines.append("## Skills")
-                                lines.append(content)
-                                lines.append("")
-                        else:
-                            header = "#### Skills" if depth == 1 else "**Skills**"
-                            fname, fdesc = get_skill_info(skill_path)
-                            if fname and fdesc:
-                                lines.append(header)
-                                fdesc = fdesc.strip().rstrip('.')
-                                lines.append(f"- `{fname}` — {fdesc}.")
-                                lines.append("")
+                    import platform
+                    from datetime import datetime as _datetime
+                    os_info = f"{platform.system()} {platform.release()}"
+                    now_str = _datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    tree_code = "tree = " + format_node_code(current_agent_id, agent_node, "")
 
-                    # 3. Tools
-                    allowed_tools_list = a_node.get("tools", [])
-                    a_children = a_node.get("children", {})
-                    has_tools = bool(allowed_tools_list) or bool(a_children)
-                    if has_tools:
+                    # Ensure agent_query is in allowed_tools if children exist
+                    allowed_tools = set(agent_node.get("tools", []))
+                    if children:
+                        allowed_tools.add("agent_query")
+
+                    # Filter tools list to match allowed set
+                    tools = [
+                        t for t in tools
+                        if t.get("function", {}).get("name") in allowed_tools
+                    ]
+
+                    tool_defs = []
+                    for t_name in sorted(allowed_tools):
+                        t_desc = "No description available"
+                        for t in all_tools:
+                            if isinstance(t, dict) and t.get("function", {}).get("name") == t_name:
+                                t_desc = t.get("function", {}).get("description") or "No description available"
+                                break
+                        t_desc = t_desc.strip()
+                        tool_def = (
+                            f"async def {t_name}(query: str) -> str:\n"
+                            f"    \"\"\"\n"
+                            f"    {t_desc}\n"
+                            f"    \"\"\"\n"
+                            f"    ..."
+                        )
+                        tool_defs.append(tool_def)
+                    tools_code = "\n\n".join(tool_defs)
+                    tools_list_str = ", ".join(sorted(allowed_tools))
+
+                    _env_header = (
+                        "## Environment\n"
+                        f"- OS Information: `{os_info}`\n"
+                        f"- Date & Time: `{now_str}`\n"
+                        f"- Current node: `{current_agent_id}`\n"
+                    )
+                    _main_py_block = (
+                        "# ./main.py\n\n"
+                        "```python\n"
+                        "import sys\n"
+                        "import importlib.util\n"
+                        "from collections import deque\n"
+                        "from dataclasses import dataclass, field\n"
+                        "from typing import Any, Awaitable, Callable, Dict, List, Optional\n"
+                        "\n\n"
+                        "class ToolRegistry:\n"
+                        "    call: Callable[..., Awaitable[Dict[str, Any]]]\n"
+                        "    schema: Dict[str, Any]\n"
+                        "\n"
+                        "    def __init__(\n"
+                        "        self,\n"
+                        "        call: Callable[..., Awaitable[Dict[str, Any]]],\n"
+                        "        schema: Dict[str, Any],\n"
+                        "    ):\n"
+                        "        self.call = call\n"
+                        "        self.schema = schema\n"
+                        "\n"
+                        "    async def execute(self, **kwargs) -> Dict[str, Any]:\n"
+                        "        return await self.call(**kwargs)\n"
+                        "\n\n"
+                        "def load(path: str, name: str) -> Any:\n"
+                        '    """Dynamically loads a Python module from `path`, registers it in sys.modules under `name`, and returns the loaded module object."""\n'
+                        "    ...\n"
+                        "\n"
+                        "@dataclass\n"
+                        "class ActionResult:\n"
+                        "    result: Dict[str, Any]\n"
+                        "    next_tasks: List[str] = field(default_factory=list)\n"
+                        "    next_branch: Optional[str] = None\n"
+                        "\n\n"
+                        "@dataclass\n"
+                        "class Skill:\n"
+                        "    path: str\n"
+                        "    description: str\n"
+                        "\n\n"
+                        "@dataclass\n"
+                        "class Node:\n"
+                        "    name: str\n"
+                        "    skill: Skill\n"
+                        "    available_tools: List[str]\n"
+                        "    module_path: str\n"
+                        "    module_name: str\n"
+                        '    children: List["Node"] = field(default_factory=list)\n'
+                        "    _module: Any = field(default=None, init=False, repr=False)\n"
+                        "\n"
+                        "    @property\n"
+                        "    def module(self) -> Any:\n"
+                        '        """Lazily load the node\'s module on first access."""\n'
+                        "        if self._module is None:\n"
+                        "            self._module = load(self.module_path, self.module_name)\n"
+                        "        return self._module\n"
+                        "\n"
+                        '    async def execute(self, task: str = "") -> "ActionResult":\n'
+                        "        return await self.module.execute(task)\n"
+                        "\n\n"
+                        'def get_node(name: str) -> "Node":\n'
+                        '    """BFS search for a node by name starting from the root tree."""\n'
+                        "    ...\n"
+                        "\n\n"
+                        'def get_children_node(node: Node, name: str) -> "Node":\n'
+                        '    """Search for a children node by name, only search in node->children, non-recursive."""\n'
+                        "    ...\n"
+                        "\n"                        
+                        + tree_code + "\n"
+                        "```\n"
+                    )
+                    _agent_section = (
+                        f"You are the `{current_agent_id}` agent. Implement the body of `execute(task: str)` inside `{current_agent_id}/main.py`.\n"
+                        "Return **only** the code inside the function body — no signature line, no imports, no markdown fences, no explanation.\n"
+                        "\n"
+                        "The following are already available at call time:\n"
+                        "\n"
+                        "```python\n"
+                        "from main import ToolRegistry, ActionResult, get_node, get_children_node\n"
+                        "from typing import Any, Dict, List, Optional\n"
+                        "\n"
+                        'initial_task = """\n'
+                        "{{current_task}}\n"
+                        '"""\n'
+                        "\n"
+                        "async def llm_tool(\n"
+                        "    query: str,\n"
+                        "    tool_registry: Optional[Dict[str, ToolRegistry]] = None,\n"
+                        ") -> Dict[str, Any]:\n"
+                        '    """\n'
+                        "    Sends `query` to the language model, optionally supplying callable tools from\n"
+                        "    `tool_registry`, and returns a dict containing the model's response text and\n"
+                        "    any tool-use results.\n"
+                        '    """\n'
+                        "    ...\n"
+                        "\n"
+                        "# Tools\n"
+                        + tools_code + "\n"
+                        "\n"
+                        "async def main() -> List[Dict[str, Any]]:\n"
+                        '    """\n'
+                        + f"    Entry-point coroutine: runs the {current_agent_id} node on `initial_task`, fans out\n"
+                        "    to any follow-up branch tasks declared in the returned ActionResult, and returns\n"
+                        "    the collected list of all result payloads.\n"
+                        '    """\n'
+                        "    results: List[Dict[str, Any]] = []\n"
+                        + f'    node = get_node("{current_agent_id}")\n'
+                        "    data: ActionResult = await node.execute(initial_task)\n"
+                        "    results.append(data.result)\n"
+                        "    if data.next_branch and len(data.next_tasks) > 0:\n"
+                        "        for task in data.next_tasks:\n"
+                        "            branch_node = get_children_node(node, data.next_branch)\n"
+                        "            branch_data: ActionResult = await branch_node.execute(task)\n"
+                        "            results.append(branch_data.result)\n"
+                        "    return results\n"
+                        "```\n"
+                    )
+                    _llm_tool_docs = (
+                        "## Using `llm_tool`\n"
+                        "\n"
+                        "`llm_tool` is a **structured-output-only** LLM call. Under the hood, the model is instructed to call a tool on every response — it never returns plain text. You supply one or more `ToolRegistry` objects; the model picks the right one, fills in the parameters, and your `call` function receives those arguments as `**kwargs`.\n"
+                        "\n"
+                        "Use `llm_tool` whenever you need to transform, condense, or structure raw data — after a `web_search`, before building `result`, or when populating `next_tasks`.\n"
+                        "\n---\n\n"
+                        "### Signature\n"
+                        "\n"
+                        "```python\n"
+                        "res: Dict[str, Any] = await llm_tool(\n"
+                        '    query="<prompt describing what the model should do>",\n'
+                        '    tool_registry={"tool_name": ToolRegistry(...)}\n'
+                        ")\n"
+                        "```\n"
+                        "\n"
+                        "| Parameter | Type | Description |\n"
+                        "|---|---|---|\n"
+                        "| `query` | `str` | The full prompt: include context, instructions, and any content to process. |\n"
+                        "| `tool_registry` | `Dict[str, ToolRegistry]` | Maps tool name -> `ToolRegistry`. The **key must exactly match** `function.name` in the schema. |\n"
+                        '| **Returns** | `Dict[str, Any]` | The `dict` returned by your `call` function (single tool call). Returns `{}` on any error. |\n'
+                        "\n"
+                        "> **`llm_tool` returns `{}` on every error** — no model, no tool calls produced, JSON parse failure, etc.\n"
+                        "> Always check `if not res:` before reading fields.\n"
+                        "\n---\n\n"
+                        "### Defining a `ToolRegistry`\n"
+                        "\n"
+                        "```python\n"
+                        '""""\n'
+                        "async def my_call(**kwargs) -> Dict[str, Any]:\n"
+                        '    value = kwargs.get("input_field", "") # Extract the input parameter sent by the LLM \n'
+                        "    # -- Process the value here (OPTIONAL) --\n"
+                        "    # Skip this entire block if the tool only needs to echo the LLM's input\n"
+                        "    # straight to the output (e.g. the tool's purpose is just to capture or\n"
+                        "    # store what the LLM provided, with no transformation needed).\n"
+                        "    #\n"
+                        "    # Only add processing if you need to:\n"
+                        "    #   - Transform the value (string manipulation, validation, computation)\n"
+                        "    #   - Run a sub-task via another `llm_tool` (e.g. classification, rewriting)\n"
+                        f"    #   - Fetch external data with `await` ({tools_list_str})\n"
+                        "    # --\n"
+                        '    return {"output_field": processed_value or value }  # return this dict is what llm_tool returns to you\n'
+                        '""""\n'
+                        "\n"
+                        "my_tool = ToolRegistry(\n"
+                        "    call=my_call,\n"
+                        "    schema={\n"
+                        '        "type": "function",\n'
+                        '        "function": {\n'
+                        '            "name": "my_tool",          # Must match the key in tool_registry dict\n'
+                        '            "description": "...",       # Be precise — the model reads this to decide when/how to call\n'
+                        '            "parameters": {\n'
+                        '                "type": "object",\n'
+                        '                "properties": {\n'
+                        '                    "output_field": {\n'
+                        '                        "type": "string",\n'
+                        '                        "description": "Description the model uses to fill this field"\n'
+                        "                    }\n"
+                        "                },\n"
+                        '                "required": ["output_field"]\n'
+                        "            }\n"
+                        "        }\n"
+                        "    }\n"
+                        ")\n"
+                        "```\n"
+                        "\n"
+                        "**Rules:**\n"
+                        "- The `call` function's return value is what `llm_tool` passes back to you — return only what you need.\n"
+                        "- The `description` at both the function level and parameter level directly influences model quality; be explicit.\n"
+                        "- Fields listed in `required` are always filled by the model; optional fields may be absent from `kwargs`.\n"
+                        "\n---\n\n"
+                        "### Error Handling\n"
+                        "\n"
+                        "`llm_tool` returns `{}` on every internal failure: missing model, no tool calls produced, JSON parse error.\n"
+                        "Always guard before reading any field:\n"
+                        "\n"
+                        "```python\n"
+                        'res = await llm_tool(query, tool_registry={"my_tool": my_tool})\n'
+                        "\n"
+                        "if not res:\n"
+                        '    raise RuntimeError("llm_tool returned empty — check model config and tool schema")\n'
+                        "\n"
+                        'value = res.get("field", default_value)\n'
+                        "```\n"
+                        "\n"
+                        "Inside `execute`, this is already covered by the top-level `try/except` (see Behavior Requirements below), but defensive `.get()` calls with defaults prevent silent data loss.\n"
+                        "\n---\n\n"
+                        "## Behavior Requirements\n"
+                        "\n"
+                        "- Use the available tools (`web_search`, `read_file`, `write_file`, `extract`) to research `task` and gather raw findings.\n"
+                        "- Use `llm_tool` to summarize, analyze, classify, or structure tool output before building `result`.\n"
+                        "- Build `result` as `{ task: findings }` where `findings` is a structured dict of your processed output.\n"
+                        "- Initialize `next_tasks: List[str] = []` and `next_branch: Optional[str] = None`; only populate them if research explicitly surfaces follow-up tasks for a child branch.\n"
+                        '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_tasks=[], next_branch=None)` — `execute()` must never raise.\n'
+                        "- Return `ActionResult(result=result, next_tasks=next_tasks, next_branch=next_branch)`.\n"
+                    )
+                    context = (
+                        _env_header + "\n---\n\n"
+                        + _main_py_block + "\n---\n\n"
+                        + _agent_section + "\n---\n\n"
+                        + _llm_tool_docs + "\n---\n\n"
+                        + get_skill_content(agent_node.get("skillPath", ""))
+                    )
+                else:
+                    # --- Legacy format_agent prompt (non-programmatic mode) ---
+                    def format_agent(a_id: str, a_node: dict, depth: int) -> str:
+                        lines = []
                         if depth == 0:
-                            lines.append("## Tools")
+                            lines.append(f"# Agent `{a_id}`")
                         elif depth == 1:
-                            lines.append("#### Tools")
+                            lines.append(f"### `{a_id}`")
                         else:
-                            lines.append("**Tools**")
+                            lines.append(f"##### `{a_id}`")
+                        lines.append("")
 
-                        for t_name in allowed_tools_list:
-                            t_desc = "No description available"
-                            for t in all_tools:
-                                if isinstance(t, dict) and t.get("function", {}).get("name") == t_name:
-                                    t_desc = t.get("function", {}).get("description") or "No description available"
-                                    break
-                            t_desc = t_desc.strip().rstrip('.')
-                            lines.append(f"- `{t_name}` — {t_desc}.")
-
-                        # Handle agent_query if children exist
-                        if a_children:
+                        skill_path = a_node.get("skillPath")
+                        if skill_path and is_file_non_empty(skill_path):
                             if depth == 0:
-                                lines.append("- `agent_query` — Delegate a task to a sub-agent.")
+                                content = get_skill_content(skill_path)
+                                if content:
+                                    lines.append("## Skills")
+                                    lines.append(content)
+                                    lines.append("")
                             else:
-                                lines.append("- `agent_query` — Delegate a task to a sub-agent (see below).")
-                        lines.append("")
+                                header = "#### Skills" if depth == 1 else "**Skills**"
+                                fname, fdesc = get_skill_info(skill_path)
+                                if fname and fdesc:
+                                    lines.append(header)
+                                    fdesc = fdesc.strip().rstrip('.')
+                                    lines.append(f"- `{fname}` — {fdesc}.")
+                                    lines.append("")
 
-                    # 4. Sub-Agents
-                    if a_children and depth < 2:
-                        if depth == 0:
-                            lines.append("## Sub-Agents")
-                        elif depth == 1:
-                            lines.append("#### Sub-Agents")
-                        else:
-                            lines.append("**Sub-Agents**")
-                        lines.append("")
+                        allowed_tools_list = a_node.get("tools", [])
+                        a_children = a_node.get("children", {})
+                        has_tools = bool(allowed_tools_list) or bool(a_children)
+                        if has_tools:
+                            if depth == 0:
+                                lines.append("## Tools")
+                            elif depth == 1:
+                                lines.append("#### Tools")
+                            else:
+                                lines.append("**Tools**")
+                            for t_name in allowed_tools_list:
+                                t_desc = "No description available"
+                                for t in all_tools:
+                                    if isinstance(t, dict) and t.get("function", {}).get("name") == t_name:
+                                        t_desc = t.get("function", {}).get("description") or "No description available"
+                                        break
+                                t_desc = t_desc.strip().rstrip('.')
+                                lines.append(f"- `{t_name}` — {t_desc}.")
+                            if a_children:
+                                if depth == 0:
+                                    lines.append("- `agent_query` — Delegate a task to a sub-agent.")
+                                else:
+                                    lines.append("- `agent_query` — Delegate a task to a sub-agent (see below).")
+                            lines.append("")
 
-                        for child_id, child_node in a_children.items():
-                            child_str = format_agent(child_id, child_node, depth + 1)
-                            if child_str:
-                                lines.append(child_str)
-                                lines.append("")
+                        if a_children and depth < 2:
+                            if depth == 0:
+                                lines.append("## Sub-Agents")
+                            elif depth == 1:
+                                lines.append("#### Sub-Agents")
+                            else:
+                                lines.append("**Sub-Agents**")
+                            lines.append("")
+                            for child_id, child_node in a_children.items():
+                                child_str = format_agent(child_id, child_node, depth + 1)
+                                if child_str:
+                                    lines.append(child_str)
+                                    lines.append("")
 
-                    return "\n".join(lines).strip()
+                        return "\n".join(lines).strip()
 
-                # Generate raw prompt and clean up consecutive newlines
-                raw_prompt = format_agent(current_agent_id, agent_node, 0)
-                context = re.sub(r'\n{3,}', '\n\n', raw_prompt).strip()
-                import platform
-                from datetime import datetime
-                os_info = f"{platform.system()} {platform.release()}"
-                now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                context += (
-                    f"\n\n## Environment\n"
-                    f"- OS Information: {os_info}\n"
-                    f"- Current Date & Time: {now_str}"
-                )
+                    # Ensure agent_query is allowed if children exist
+                    allowed_tools = set(agent_node.get("tools", []))
+                    if children:
+                        allowed_tools.add("agent_query")
 
-                # Ensure agent_query is allowed if children exist
-                allowed_tools = set(agent_node.get("tools", []))
-                if children:
-                    allowed_tools.add("agent_query")
+                    # Filter tools list to match allowed set
+                    tools = [
+                        t for t in tools
+                        if t.get("function", {}).get("name") in allowed_tools
+                    ]
 
-                # Filter tools for the root agent
-                tools = [
-                    t for t in tools
-                    if t.get("function", {}).get("name") in allowed_tools
-                ]
+                    raw_prompt = format_agent(current_agent_id, agent_node, 0)
+                    context = re.sub(r'\n{3,}', '\n\n', raw_prompt).strip()
+                    import platform
+                    from datetime import datetime as _datetime
+                    os_info = f"{platform.system()} {platform.release()}"
+                    now_str = _datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    context += (
+                        f"\n\n## Environment\n"
+                        f"- OS Information: {os_info}\n"
+                        f"- Current Date & Time: {now_str}"
+                    )
 
         if tools:
             chat_kwargs["tools"] = tools
