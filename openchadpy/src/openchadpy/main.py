@@ -110,7 +110,36 @@ logging.getLogger().addHandler(startup_tracker.get_handler())
 
 # Initialize Directories
 _PROJECT_ROOT = os.environ.get("OPENCHAD_PROJECT_DIR", os.path.abspath(__file__))
+if os.path.isfile(_PROJECT_ROOT):
+    _PROJECT_ROOT = os.path.dirname(_PROJECT_ROOT)
+
+# Add file logging to the root logger
+try:
+    _log_file = os.path.join(_PROJECT_ROOT, "openchad.log")
+    _file_handler = logging.FileHandler(_log_file, encoding="utf-8")
+    _file_handler.setFormatter(logging.Formatter(
+        "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        datefmt="%H:%M:%S"
+    ))
+    _file_handler.setLevel(logging.INFO)
+
+    class IgnoreSpecificLogsFilter(logging.Filter):
+        def filter(self, record: logging.LogRecord) -> bool:
+            msg = record.getMessage()
+            if "🔔 DB changed" in msg or "Broadcasting to client" in msg:
+                return False
+            if "change detected" in msg or "changes detected" in msg:
+                return False
+            return True
+
+    _file_handler.addFilter(IgnoreSpecificLogsFilter())
+    logging.getLogger().addHandler(_file_handler)
+    logger.info(f"File logging initialized. Logs are saved to: {_log_file}")
+except Exception as e:
+    logger.error(f"Failed to set up file handler for logging: {e}")
+
 _PYTHON_ROOT = os.path.dirname(os.path.join(_PROJECT_ROOT, 'python'))
+
 
 # If running as a package, config might be in the python root or package dir
 _CONFIG_PATH = os.environ.get("OPENCHAD_CONFIG_PATH")

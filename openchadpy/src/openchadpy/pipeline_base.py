@@ -42,6 +42,14 @@ def _extract_code(text: str) -> str:
     matches = _RE_BACKTICK_FENCE_PB.findall(text)
     return matches[0].strip() if matches else text 
 
+def _is_programmatic(val: Any) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower() == "true"
+    return False
+
+
 
 class PipelineBase:
     stream: bool
@@ -243,7 +251,7 @@ class PipelineBase:
                     except Exception:
                         return skill_filename, "No description available"
 
-                if agent_node.get("enableProgrammaticToolCalling"):
+                if _is_programmatic(agent_node.get("enableProgrammaticToolCalling")):
                     # --- Programmatic prompt (same structure as Chat.__init__) ---
                     def format_node_code(a_id: str, a_node: dict, indent: str = "") -> str:
                         skill_path = a_node.get("skillPath", "")
@@ -389,6 +397,13 @@ class PipelineBase:
                     _agent_section = (
                         f"You are the `{current_agent_id}` agent. Implement the body of `execute(task: str)` inside `{current_agent_id}/main.py`.\n"
                         "Return **only** the code inside the function body — no signature line, no imports, no markdown fences, no explanation.\n"
+                        "\n"
+                        "Example of a CORRECT response (your response should look EXACTLY like this - start directly with indented code, with NO markdown backticks/fences, NO import statements, and NO 'def execute' line):\n"
+                        "    try:\n"
+                        "        # your logic"
+                        "        return ActionResult(result=res)\n"
+                        "    except Exception as e:\n"
+                        "        return ActionResult(result={task: {\"error\": str(e)}})\n"
                         "\n"
                         "The following are already available at call time:\n"
                         "\n"
@@ -719,16 +734,16 @@ class PipelineBase:
 
                             # ── Programmatic mode: model returns code as text ──
                             _agent_prog = agent_ctx.get()
-                            _is_programmatic = (
+                            is_prog_mode = (
                                 _agent_prog
                                 and isinstance(_agent_prog, dict)
-                                and bool(
+                                and _is_programmatic(
                                     next(iter(_agent_prog.values()), {}).get(
                                         "enableProgrammaticToolCalling", False
                                     )
                                 )
                             )
-                            if _is_programmatic and final_content.strip():
+                            if is_prog_mode and final_content.strip():
                                 code = _extract_code(final_content)
                                 if code.strip():
                                     logger.info(

@@ -9452,3 +9452,765 @@ Task 2: Write the report
 2026-06-25 13:47:06,444 [INFO] programmatic_tool_test - ======================================================================
 2026-06-25 13:47:06,444 [INFO] programmatic_tool_test -   Results: 11 passed, 0 failed
 2026-06-25 13:47:06,445 [INFO] programmatic_tool_test - ======================================================================
+2026-06-26 08:54:20,581 [DEBUG] asyncio - Using proactor: IocpProactor
+2026-06-26 08:54:20,583 [INFO] programmatic_tool_test - ======================================================================
+2026-06-26 08:54:20,583 [INFO] programmatic_tool_test -   programmatic_tool_test.py -- running all tests
+2026-06-26 08:54:20,583 [INFO] programmatic_tool_test - ======================================================================
+2026-06-26 08:54:20,583 [INFO] programmatic_tool_test - ============================================================
+2026-06-26 08:54:20,583 [INFO] programmatic_tool_test - TEST 1: format_node_code -- leaf node (no children)
+2026-06-26 08:54:20,583 [DEBUG] programmatic_tool_test - Generated code:
+Node(
+    name="web_agent",
+    skill=Skill(
+        path="/skills/web_agent.md",
+        description="Description for web_agent.md",
+    ),
+    available_tools=["extract", "web_search"],
+    module_path="web_agent/main.py",
+    module_name="web_agent",
+)
+2026-06-26 08:54:20,583 [INFO] programmatic_tool_test - PASS: format_node_code leaf node
+2026-06-26 08:54:20,583 [INFO] programmatic_tool_test - ============================================================
+2026-06-26 08:54:20,583 [INFO] programmatic_tool_test - TEST 2: format_node_code -- parent node with one child
+2026-06-26 08:54:20,583 [DEBUG] programmatic_tool_test - Generated code:
+Node(
+    name="root_agent",
+    skill=Skill(
+        path="/skills/root_agent.md",
+        description="Description for root_agent.md",
+    ),
+    available_tools=["agent_query", "web_search"],
+    module_path="root_agent/main.py",
+    module_name="root_agent",
+    children=[
+        Node(
+            name="code_agent",
+            skill=Skill(
+                path="/skills/code_agent.md",
+                description="Description for code_agent.md",
+            ),
+            available_tools=["read_file", "write_file"],
+            module_path="code_agent/main.py",
+            module_name="code_agent",
+        ),
+    ],
+)
+2026-06-26 08:54:20,583 [INFO] programmatic_tool_test - PASS: format_node_code parent with child
+2026-06-26 08:54:20,583 [INFO] programmatic_tool_test - ============================================================
+2026-06-26 08:54:20,583 [INFO] programmatic_tool_test - TEST 3: format_node_code -- deep 3-level nesting
+2026-06-26 08:54:20,583 [DEBUG] programmatic_tool_test - Generated deep nested code:
+Node(
+    name="root_agent",
+    skill=Skill(
+        path="/skills/root.md",
+        description="Description for root.md",
+    ),
+    available_tools=["agent_query", "orchestrate"],
+    module_path="root_agent/main.py",
+    module_name="root_agent",
+    children=[
+        Node(
+            name="child_agent",
+            skill=Skill(
+                path="/skills/child.md",
+                description="Description for child.md",
+            ),
+            available_tools=["agent_query", "analyze"],
+            module_path="child_agent/main.py",
+            module_name="child_agent",
+            children=[
+                Node(
+                    name="grandchild",
+                    skill=Skill(
+                        path="",
+                        description="No description available",
+                    ),
+                    available_tools=["deep_search"],
+                    module_path="grandchild/main.py",
+                    module_name="grandchild",
+                ),
+            ],
+        ),
+    ],
+)
+2026-06-26 08:54:20,583 [INFO] programmatic_tool_test - PASS: format_node_code deep 3-level nesting
+2026-06-26 08:54:20,583 [INFO] programmatic_tool_test - ============================================================
+2026-06-26 08:54:20,584 [INFO] programmatic_tool_test - TEST 4: format_node_code -- no duplicate agent_query
+2026-06-26 08:54:20,584 [DEBUG] programmatic_tool_test - Generated code:
+Node(
+    name="root",
+    skill=Skill(
+        path="",
+        description="No description available",
+    ),
+    available_tools=["agent_query", "web_search"],
+    module_path="root/main.py",
+    module_name="root",
+    children=[
+        Node(
+            name="child",
+            skill=Skill(
+                path="",
+                description="No description available",
+            ),
+            available_tools=[],
+            module_path="child/main.py",
+            module_name="child",
+        ),
+    ],
+)
+2026-06-26 08:54:20,584 [INFO] programmatic_tool_test - PASS: format_node_code -- agent_query not duplicated
+2026-06-26 08:54:20,584 [INFO] programmatic_tool_test - ============================================================
+2026-06-26 08:54:20,584 [INFO] programmatic_tool_test - TEST 5: Programmatic prompt construction -- matches sys.md structure
+2026-06-26 08:54:20,623 [ERROR] programmatic_tool_test - [get_skill_content] error when try to get skill path: [Errno 2] No such file or directory: '/skills/planner.md'
+2026-06-26 08:54:20,623 [DEBUG] programmatic_tool_test - Generated programmatic prompt (FULL):
+## Environment
+- OS Information: `Windows 11`
+- Date & Time: `2026-06-26 08:54:20`
+- Current node: `planner_agent`
+
+---
+
+# ./main.py
+
+```python
+import sys
+import importlib.util
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, Dict, List, Optional
+
+
+class ToolRegistry:
+    call: Callable[..., Awaitable[Dict[str, Any]]]
+    schema: Dict[str, Any]
+
+    def __init__(
+        self,
+        call: Callable[..., Awaitable[Dict[str, Any]]],
+        schema: Dict[str, Any],
+    ):
+        self.call = call
+        self.schema = schema
+
+    async def execute(self, **kwargs) -> Dict[str, Any]:
+        return await self.call(**kwargs)
+
+
+def load(path: str, name: str) -> Any:
+    """Dynamically loads a Python module from `path`, registers it in sys.modules under `name`, and returns the loaded module object."""
+    ...
+
+@dataclass
+class ActionResult:
+    result: Dict[str, Any]
+    next_tasks: List[str] = field(default_factory=list)
+    next_branch: Optional[str] = None
+
+
+@dataclass
+class Skill:
+    path: str
+    description: str
+
+
+@dataclass
+class Node:
+    name: str
+    skill: Skill
+    available_tools: List[str]
+    module_path: str
+    module_name: str
+    children: List["Node"] = field(default_factory=list)
+    _module: Any = field(default=None, init=False, repr=False)
+
+    @property
+    def module(self) -> Any:
+        """Lazily load the node's module on first access."""
+        if self._module is None:
+            self._module = load(self.module_path, self.module_name)
+        return self._module
+
+    async def execute(self, task: str = "") -> "ActionResult":
+        return await self.module.execute(task)
+
+
+def get_node(name: str) -> "Node":
+    """BFS search for a node by name starting from the root tree."""
+    ...
+
+
+def get_children_node(node: Node, name: str) -> "Node":
+    """Search for a children node by name, only search in node->children, non-recursive."""
+    ...
+
+tree = Node(
+    name="planner_agent",
+    skill=Skill(
+        path="/skills/planner.md",
+        description="Description for planner.md",
+    ),
+    available_tools=["agent_query", "read_file", "web_search"],
+    module_path="planner_agent/main.py",
+    module_name="planner_agent",
+    children=[
+        Node(
+            name="writer_agent",
+            skill=Skill(
+                path="/skills/writer.md",
+                description="Description for writer.md",
+            ),
+            available_tools=["write_file"],
+            module_path="writer_agent/main.py",
+            module_name="writer_agent",
+        ),
+    ],
+)
+```
+
+---
+
+You are the `planner_agent` agent. Implement the body of `execute(task: str)` inside `planner_agent/main.py`.
+Return **only** the code inside the function body — no signature line, no imports, no markdown fences, no explanation.
+
+Example of a CORRECT response (your response should look EXACTLY like this - start directly with indented code, with NO markdown backticks/fences, NO import statements, and NO 'def execute' line):
+    try:
+        # your logic        return ActionResult(result=res)
+    except Exception as e:
+        return ActionResult(result={task: {"error": str(e)}})
+
+The following are already available at call time:
+
+```python
+from main import ToolRegistry, ActionResult, get_node, get_children_node
+from typing import Any, Dict, List, Optional
+
+initial_task = """
+{{current_task}}
+"""
+
+async def llm_tool(
+    query: str,
+    tool_registry: Optional[Dict[str, ToolRegistry]] = None,
+) -> Dict[str, Any]:
+    """
+    Sends `query` to the language model, optionally supplying callable tools from
+    `tool_registry`, and returns a dict containing the model's response text and
+    any tool-use results.
+    """
+    ...
+
+# Tools
+async def agent_query(query: str) -> str:
+    """
+    Delegate tasks to sub-agents.
+    """
+    ...
+
+async def read_file(query: str) -> str:
+    """
+    Read content from a file.
+    """
+    ...
+
+async def web_search(query: str) -> str:
+    """
+    Search the web for information.
+    """
+    ...
+
+async def main() -> List[Dict[str, Any]]:
+    """
+    Entry-point coroutine: runs the planner_agent node on `initial_task`, fans out
+    to any follow-up branch tasks declared in the returned ActionResult, and returns
+    the collected list of all result payloads.
+    """
+    results: List[Dict[str, Any]] = []
+    node = get_node("planner_agent")
+    data: ActionResult = await node.execute(initial_task)
+    results.append(data.result)
+    # (parent_node, branch_id, task)
+    queue: deque[tuple] = deque()
+    if data.next_branch and len(data.next_tasks) > 0:
+        for task in data.next_tasks:
+            queue.append((node, data.next_branch, task))
+    while queue:
+        parent_node, branch_id, task = queue.popleft()
+        branch_node = get_children_node(parent_node, branch_id)
+        branch_data: ActionResult = await branch_node.execute(task)
+        results.append(branch_data.result)
+        if branch_data.next_branch and len(branch_data.next_tasks) > 0:
+            for t in branch_data.next_tasks:
+                queue.append((branch_node, branch_data.next_branch, t))
+    return results
+```
+
+---
+
+## Using `llm_tool`
+
+`llm_tool` is a **structured-output-only** LLM call. Under the hood, the model is instructed to call a tool on every response — it never returns plain text. You supply one or more `ToolRegistry` objects; the model picks the right one, fills in the parameters, and your `call` function receives those arguments as `**kwargs`.
+
+Use `llm_tool` whenever you need to transform, condense, or structure raw data — after a `web_search`, before building `result`, or when populating `next_tasks`.
+
+---
+
+### Signature
+
+```python
+res: Dict[str, Any] = await llm_tool(
+    query="<prompt describing what the model should do>",
+    tool_registry={"tool_name": ToolRegistry(...)}
+)
+```
+
+| Parameter | Type | Description |
+|---|---|---|
+| `query` | `str` | The full prompt: include context, instructions, and any content to process. |
+| `tool_registry` | `Dict[str, ToolRegistry]` | Maps tool name -> `ToolRegistry`. The **key must exactly match** `function.name` in the schema. |
+| **Returns** | `Dict[str, Any]` | The `dict` returned by your `call` function (single tool call). Returns `{}` on any error. |
+
+> **`llm_tool` returns `{}` on every error** — no model, no tool calls produced, JSON parse failure, etc.
+> Always check `if not res:` before reading fields.
+
+---
+
+### Defining a `ToolRegistry`
+
+```python
+""""
+async def my_call(**kwargs) -> Dict[str, Any]:
+    value = kwargs.get("input_field", "") # Extract the input parameter sent by the LLM 
+    # -- Process the value here (OPTIONAL) --
+    # Skip this entire block if the tool only needs to echo the LLM's input
+    # straight to the output (e.g. the tool's purpose is just to capture or
+    # store what the LLM provided, with no transformation needed).
+    #
+    # Only add processing if you need to:
+    #   - Transform the value (string manipulation, validation, computation)
+    #   - Run a sub-task via another `llm_tool` (e.g. classification, rewriting)
+    #   - Fetch external data with `await` (agent_query, read_file, web_search)
+    # --
+    return {"output_field": processed_value or value }  # return this dict is what llm_tool returns to you
+""""
+
+my_tool = ToolRegistry(
+    call=my_call,
+    schema={
+        "type": "function",
+        "function": {
+            "name": "my_tool",          # Must match the key in tool_registry dict
+            "description": "...",       # Be precise — the model reads this to decide when/how to call
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "output_field": {
+                        "type": "string",
+                        "description": "Description the model uses to fill this field"
+                    }
+                },
+                "required": ["output_field"]
+            }
+        }
+    }
+)
+```
+
+**Rules:**
+- The `call` function's return value is what `llm_tool` passes back to you — return only what you need.
+- The `description` at both the function level and parameter level directly influences model quality; be explicit.
+- Fields listed in `required` are always filled by the model; optional fields may be absent from `kwargs`.
+
+---
+
+### Error Handling
+
+`llm_tool` returns `{}` on every internal failure: missing model, no tool calls produced, JSON parse error.
+Always guard before reading any field:
+
+```python
+res = await llm_tool(query, tool_registry={"my_tool": my_tool})
+
+if not res:
+    raise RuntimeError("llm_tool returned empty — check model config and tool schema")
+
+value = res.get("field", default_value)
+```
+
+Inside `execute`, this is already covered by the top-level `try/except` (see Behavior Requirements below), but defensive `.get()` calls with defaults prevent silent data loss.
+
+---
+
+## Behavior Requirements
+
+- Use the available tools (`web_search`, `read_file`, `write_file`, `extract`) to research `task` and gather raw findings.
+- Use `llm_tool` to summarize, analyze, classify, or structure tool output before building `result`.
+- Build `result` as `{ task: findings }` where `findings` is a structured dict of your processed output.
+- Initialize `next_tasks: List[str] = []` and `next_branch: Optional[str] = None`; only populate them if research explicitly surfaces follow-up tasks for a child branch.
+- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_tasks=[], next_branch=None)` — `execute()` must never raise.
+- Return `ActionResult(result=result, next_tasks=next_tasks, next_branch=next_branch).
+
+---
+
+# Placeholder Skill
+2026-06-26 08:54:20,623 [INFO] programmatic_tool_test - PASS: Programmatic prompt construction -- matches sys.md structure
+2026-06-26 08:54:20,623 [INFO] programmatic_tool_test - ============================================================
+2026-06-26 08:54:20,623 [INFO] programmatic_tool_test - TEST 9: format_node_code -- empty tools list
+2026-06-26 08:54:20,623 [DEBUG] programmatic_tool_test - Generated code:
+Node(
+    name="bare_agent",
+    skill=Skill(
+        path="",
+        description="No description available",
+    ),
+    available_tools=[],
+    module_path="bare_agent/main.py",
+    module_name="bare_agent",
+)
+2026-06-26 08:54:20,623 [INFO] programmatic_tool_test - PASS: format_node_code -- empty tools list
+2026-06-26 08:54:20,624 [INFO] programmatic_tool_test - ============================================================
+2026-06-26 08:54:20,624 [INFO] programmatic_tool_test - TEST 10: {{current_task}} is literal placeholder after f-string evaluation
+2026-06-26 08:54:20,624 [DEBUG] programmatic_tool_test - Rendered placeholder: initial_task = """
+{{current_task}}
+"""
+2026-06-26 08:54:20,624 [INFO] programmatic_tool_test - PASS: {{current_task}} is literal placeholder after f-string evaluation
+2026-06-26 08:54:20,624 [INFO] programmatic_tool_test - ============================================================
+2026-06-26 08:54:20,624 [INFO] programmatic_tool_test - TEST 11: pipeline_base.llm_tool -- programmatic prompt matches TEST 5 structure
+2026-06-26 08:54:20,624 [ERROR] programmatic_tool_test - [get_skill_content] error when try to get skill path: [Errno 2] No such file or directory: '/skills/planner.md'
+2026-06-26 08:54:20,624 [DEBUG] programmatic_tool_test - TEST 11 -- llm_tool programmatic prompt (FULL):
+## Environment
+- OS Information: `Windows 11`
+- Date & Time: `2026-06-26 08:54:20`
+- Current node: `planner_agent`
+
+---
+
+# ./main.py
+
+```python
+import sys
+import importlib.util
+from collections import deque
+from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable, Dict, List, Optional
+
+
+class ToolRegistry:
+    call: Callable[..., Awaitable[Dict[str, Any]]]
+    schema: Dict[str, Any]
+
+    def __init__(
+        self,
+        call: Callable[..., Awaitable[Dict[str, Any]]],
+        schema: Dict[str, Any],
+    ):
+        self.call = call
+        self.schema = schema
+
+    async def execute(self, **kwargs) -> Dict[str, Any]:
+        return await self.call(**kwargs)
+
+
+def load(path: str, name: str) -> Any:
+    """Dynamically loads a Python module from `path`, registers it in sys.modules under `name`, and returns the loaded module object."""
+    ...
+
+@dataclass
+class ActionResult:
+    result: Dict[str, Any]
+    next_tasks: List[str] = field(default_factory=list)
+    next_branch: Optional[str] = None
+
+
+@dataclass
+class Skill:
+    path: str
+    description: str
+
+
+@dataclass
+class Node:
+    name: str
+    skill: Skill
+    available_tools: List[str]
+    module_path: str
+    module_name: str
+    children: List["Node"] = field(default_factory=list)
+    _module: Any = field(default=None, init=False, repr=False)
+
+    @property
+    def module(self) -> Any:
+        """Lazily load the node's module on first access."""
+        if self._module is None:
+            self._module = load(self.module_path, self.module_name)
+        return self._module
+
+    async def execute(self, task: str = "") -> "ActionResult":
+        return await self.module.execute(task)
+
+
+def get_node(name: str) -> "Node":
+    """BFS search for a node by name starting from the root tree."""
+    ...
+
+
+def get_children_node(node: Node, name: str) -> "Node":
+    """Search for a children node by name, only search in node->children, non-recursive."""
+    ...
+
+tree = Node(
+    name="planner_agent",
+    skill=Skill(
+        path="/skills/planner.md",
+        description="Description for planner.md",
+    ),
+    available_tools=["agent_query", "read_file", "web_search"],
+    module_path="planner_agent/main.py",
+    module_name="planner_agent",
+    children=[
+        Node(
+            name="writer_agent",
+            skill=Skill(
+                path="/skills/writer.md",
+                description="Description for writer.md",
+            ),
+            available_tools=["write_file"],
+            module_path="writer_agent/main.py",
+            module_name="writer_agent",
+        ),
+    ],
+)
+```
+
+---
+
+You are the `planner_agent` agent. Implement the body of `execute(task: str)` inside `planner_agent/main.py`.
+Return **only** the code inside the function body — no signature line, no imports, no markdown fences, no explanation.
+
+Example of a CORRECT response (your response should look EXACTLY like this - start directly with indented code, with NO markdown backticks/fences, NO import statements, and NO 'def execute' line):
+    try:
+        res = await llm_tool("Find information about Tauri")
+        return ActionResult(result=res)
+    except Exception as e:
+        return ActionResult(result={task: {"error": str(e)}})
+
+The following are already available at call time:
+
+```python
+from main import ToolRegistry, ActionResult, get_node, get_children_node
+from typing import Any, Dict, List, Optional
+
+initial_task = """
+{{current_task}}
+"""
+
+async def llm_tool(
+    query: str,
+    tool_registry: Optional[Dict[str, ToolRegistry]] = None,
+) -> Dict[str, Any]:
+    """
+    Sends `query` to the language model, optionally supplying callable tools from
+    `tool_registry`, and returns a dict containing the model's response text and
+    any tool-use results.
+    """
+    ...
+
+# Tools
+async def agent_query(query: str) -> str:
+    """
+    Delegate tasks to sub-agents.
+    """
+    ...
+
+async def read_file(query: str) -> str:
+    """
+    Read content from a file.
+    """
+    ...
+
+async def web_search(query: str) -> str:
+    """
+    Search the web for information.
+    """
+    ...
+
+async def main() -> List[Dict[str, Any]]:
+    """
+    Entry-point coroutine: runs the planner_agent node on `initial_task`, fans out
+    to any follow-up branch tasks declared in the returned ActionResult, and returns
+    the collected list of all result payloads.
+    """
+    results: List[Dict[str, Any]] = []
+    node = get_node("planner_agent")
+    data: ActionResult = await node.execute(initial_task)
+    results.append(data.result)
+    # (parent_node, branch_id, task)
+    queue: deque[tuple] = deque()
+    if data.next_branch and len(data.next_tasks) > 0:
+        for task in data.next_tasks:
+            queue.append((node, data.next_branch, task))
+    while queue:
+        parent_node, branch_id, task = queue.popleft()
+        branch_node = get_children_node(parent_node, branch_id)
+        branch_data: ActionResult = await branch_node.execute(task)
+        results.append(branch_data.result)
+        if branch_data.next_branch and len(branch_data.next_tasks) > 0:
+            for t in branch_data.next_tasks:
+                queue.append((branch_node, branch_data.next_branch, t))
+    return results
+```
+
+---
+
+## Using `llm_tool`
+
+`llm_tool` is a **structured-output-only** LLM call. Under the hood, the model is instructed to call a tool on every response — it never returns plain text. You supply one or more `ToolRegistry` objects; the model picks the right one, fills in the parameters, and your `call` function receives those arguments as `**kwargs`.
+
+Use `llm_tool` whenever you need to transform, condense, or structure raw data — after a `web_search`, before building `result`, or when populating `next_tasks`.
+
+---
+
+### Signature
+
+```python
+res: Dict[str, Any] = await llm_tool(
+    query="<prompt describing what the model should do>",
+    tool_registry={"tool_name": ToolRegistry(...)}
+)
+```
+
+| Parameter | Type | Description |
+|---|---|---|
+| `query` | `str` | The full prompt: include context, instructions, and any content to process. |
+| `tool_registry` | `Dict[str, ToolRegistry]` | Maps tool name -> `ToolRegistry`. The **key must exactly match** `function.name` in the schema. |
+| **Returns** | `Dict[str, Any]` | The `dict` returned by your `call` function (single tool call). Returns `{}` on any error. |
+
+> **`llm_tool` returns `{}` on every error** — no model, no tool calls produced, JSON parse failure, etc.
+> Always check `if not res:` before reading fields.
+
+---
+
+### Defining a `ToolRegistry`
+
+```python
+""""
+async def my_call(**kwargs) -> Dict[str, Any]:
+    value = kwargs.get("input_field", "") # Extract the input parameter sent by the LLM 
+    # -- Process the value here (OPTIONAL) --
+    # Skip this entire block if the tool only needs to echo the LLM's input
+    # straight to the output (e.g. the tool's purpose is just to capture or
+    # store what the LLM provided, with no transformation needed).
+    #
+    # Only add processing if you need to:
+    #   - Transform the value (string manipulation, validation, computation)
+    #   - Run a sub-task via another `llm_tool` (e.g. classification, rewriting)
+    #   - Fetch external data with `await` (agent_query, read_file, web_search)
+    # --
+    return {"output_field": processed_value or value }  # return this dict is what llm_tool returns to you
+""""
+
+my_tool = ToolRegistry(
+    call=my_call,
+    schema={
+        "type": "function",
+        "function": {
+            "name": "my_tool",          # Must match the key in tool_registry dict
+            "description": "...",       # Be precise — the model reads this to decide when/how to call
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "output_field": {
+                        "type": "string",
+                        "description": "Description the model uses to fill this field"
+                    }
+                },
+                "required": ["output_field"]
+            }
+        }
+    }
+)
+```
+
+**Rules:**
+- The `call` function's return value is what `llm_tool` passes back to you — return only what you need.
+- The `description` at both the function level and parameter level directly influences model quality; be explicit.
+- Fields listed in `required` are always filled by the model; optional fields may be absent from `kwargs`.
+
+---
+
+### Error Handling
+
+`llm_tool` returns `{}` on every internal failure: missing model, no tool calls produced, JSON parse error.
+Always guard before reading any field:
+
+```python
+res = await llm_tool(query, tool_registry={"my_tool": my_tool})
+
+if not res:
+    raise RuntimeError("llm_tool returned empty — check model config and tool schema")
+
+value = res.get("field", default_value)
+```
+
+Inside `execute`, this is already covered by the top-level `try/except` (see Behavior Requirements below), but defensive `.get()` calls with defaults prevent silent data loss.
+
+---
+
+## Behavior Requirements
+
+- Use the available tools (`web_search`, `read_file`, `write_file`, `extract`) to research `task` and gather raw findings.
+- Use `llm_tool` to summarize, analyze, classify, or structure tool output before building `result`.
+- Build `result` as `{ task: findings }` where `findings` is a structured dict of your processed output.
+- Initialize `next_tasks: List[str] = []` and `next_branch: Optional[str] = None`; only populate them if research explicitly surfaces follow-up tasks for a child branch.
+- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_tasks=[], next_branch=None)` — `execute()` must never raise.
+- Return `ActionResult(result=result, next_tasks=next_tasks, next_branch=next_branch).
+
+---
+
+# Placeholder Skill
+2026-06-26 08:54:20,624 [INFO] programmatic_tool_test - PASS: pipeline_base.llm_tool -- programmatic prompt matches TEST 5 structure (11/11 properties)
+2026-06-26 08:54:20,624 [INFO] programmatic_tool_test - ============================================================
+2026-06-26 08:54:20,625 [INFO] programmatic_tool_test - TEST 12: _is_programmatic helper handles bool and string values
+2026-06-26 08:54:20,974 [INFO] programmatic_tool_test - PASS: _is_programmatic helper handles bool and string values
+2026-06-26 08:54:20,974 [INFO] programmatic_tool_test - ============================================================
+2026-06-26 08:54:20,974 [INFO] programmatic_tool_test - TEST 6: _build_initial_messages -- {{current_task}} replacement
+2026-06-26 08:54:20,974 [DEBUG] programmatic_tool_test - Generated messages:
+[
+  {
+    "role": "system",
+    "content": "initial_task = \"\"\"\nFind top 10 universities in Indonesia\n\"\"\"\n\nYou are an agent."
+  },
+  {
+    "role": "user",
+    "content": "Find top 10 universities in Indonesia"
+  }
+]
+2026-06-26 08:54:20,974 [INFO] programmatic_tool_test - PASS: _build_initial_messages replaces {{current_task}} correctly
+2026-06-26 08:54:20,975 [INFO] programmatic_tool_test - ============================================================
+2026-06-26 08:54:20,975 [INFO] programmatic_tool_test - TEST 7: _build_initial_messages -- no placeholder, template unchanged
+2026-06-26 08:54:20,975 [DEBUG] programmatic_tool_test - Messages:
+[
+  {
+    "role": "system",
+    "content": "You are a helpful assistant."
+  },
+  {
+    "role": "user",
+    "content": "Hello"
+  }
+]
+2026-06-26 08:54:20,975 [INFO] programmatic_tool_test - PASS: _build_initial_messages -- no placeholder, template unchanged
+2026-06-26 08:54:20,975 [INFO] programmatic_tool_test - ============================================================
+2026-06-26 08:54:20,975 [INFO] programmatic_tool_test - TEST 8: _build_initial_messages -- task transition uses new query
+2026-06-26 08:54:20,975 [DEBUG] programmatic_tool_test - Task 1 system:
+initial_task = """
+Task 1: Research the topic
+"""
+2026-06-26 08:54:20,975 [DEBUG] programmatic_tool_test - Task 2 system:
+initial_task = """
+Task 2: Write the report
+"""
+2026-06-26 08:54:20,975 [INFO] programmatic_tool_test - PASS: _build_initial_messages -- task transition uses new query correctly
+2026-06-26 08:54:20,975 [INFO] programmatic_tool_test - ======================================================================
+2026-06-26 08:54:20,975 [INFO] programmatic_tool_test -   Results: 12 passed, 0 failed
+2026-06-26 08:54:20,975 [INFO] programmatic_tool_test - ======================================================================

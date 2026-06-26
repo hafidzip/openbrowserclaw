@@ -351,6 +351,13 @@ def test_programmatic_prompt_construction():
         f"You are the `{agent_id}` agent. Implement the body of `execute(task: str)` inside `{agent_id}/main.py`.\n"
         "Return **only** the code inside the function body — no signature line, no imports, no markdown fences, no explanation.\n"
         "\n"
+        "Example of a CORRECT response (your response should look EXACTLY like this - start directly with indented code, with NO markdown backticks/fences, NO import statements, and NO 'def execute' line):\n"
+        "    try:\n"
+        "        # your logic"
+        "        return ActionResult(result=res)\n"
+        "    except Exception as e:\n"
+        "        return ActionResult(result={task: {\"error\": str(e)}})\n"
+        "\n"
         "The following are already available at call time:\n"
         "\n"
         "```python\n"
@@ -922,6 +929,13 @@ def test_llm_tool_programmatic_prompt():
         f"You are the `{agent_id}` agent. Implement the body of `execute(task: str)` inside `{agent_id}/main.py`.\n"
         "Return **only** the code inside the function body — no signature line, no imports, no markdown fences, no explanation.\n"
         "\n"
+        "Example of a CORRECT response (your response should look EXACTLY like this - start directly with indented code, with NO markdown backticks/fences, NO import statements, and NO 'def execute' line):\n"
+        "    try:\n"
+        "        res = await llm_tool(\"Find information about Tauri\")\n"
+        "        return ActionResult(result=res)\n"
+        "    except Exception as e:\n"
+        "        return ActionResult(result={task: {\"error\": str(e)}})\n"
+        "\n"
         "The following are already available at call time:\n"
         "\n"
         "```python\n"
@@ -1143,6 +1157,29 @@ def test_llm_tool_programmatic_prompt():
 
 
 # ============================================================================
+# TEST 12: _is_programmatic helper
+# ============================================================================
+def test_is_programmatic_helper():
+    logger.info("=" * 60)
+    logger.info("TEST 12: _is_programmatic helper handles bool and string values")
+    from openchadpy.pipeline_base import _is_programmatic
+    
+    assert _is_programmatic(True) is True
+    assert _is_programmatic(False) is False
+    assert _is_programmatic("true") is True
+    assert _is_programmatic("True") is True
+    assert _is_programmatic("TRUE") is True
+    assert _is_programmatic("false") is False
+    assert _is_programmatic("False") is False
+    assert _is_programmatic("FALSE") is False
+    assert _is_programmatic(None) is False
+    assert _is_programmatic("") is False
+    assert _is_programmatic(1) is False
+    
+    ok("_is_programmatic helper handles bool and string values")
+
+
+# ============================================================================
 # Runner
 # ============================================================================
 async def main():
@@ -1158,6 +1195,7 @@ async def main():
     test_format_node_code_empty_tools()
     test_current_task_is_literal_placeholder()
     test_llm_tool_programmatic_prompt()
+    test_is_programmatic_helper()
 
     await test_build_initial_messages_replaces_current_task()
     await test_build_initial_messages_no_placeholder()

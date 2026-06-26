@@ -155,6 +155,7 @@ class CodeSandbox:
             "__builtins__": __builtins__,
             "asyncio": asyncio,
             "llm_tool": llm_tool,
+            "ToolRegistry": ToolRegistry,
         }
         
         # Add tool functions

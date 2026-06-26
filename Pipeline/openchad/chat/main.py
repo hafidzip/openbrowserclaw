@@ -83,6 +83,14 @@ def _escape_xml_attr(s: str) -> str:
          .replace("<", "&lt;")
          .replace(">", "&gt;")
     )
+
+def _is_programmatic(val: Any) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower() == "true"
+    return False
+
 _RE_THINK_BLOCK = re.compile(
     r"<Think>.*?</Think>",
     re.DOTALL,
@@ -272,6 +280,7 @@ class Chat(PipelineBase):
     message_template: List[Dict[str, Any]]
     content: str
     tool_logs: List[List[Dict[str, Any]]]
+    detect_tool_calls: bool
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         
@@ -289,10 +298,10 @@ class Chat(PipelineBase):
         if self.mcp_manager:
             self.tools.extend(self.mcp_manager.get_openai_schemas())
         agent = agent_ctx.get()
+        self.detect_tool_calls = True
         if agent and isinstance(agent, dict):
             # Backup all available tools before filtering
             all_tools = list(self.tools)
-            
             self.root_agent = next(iter(agent))
             current_agent_id = self.root_agent
             agent_node = agent.get(current_agent_id)
@@ -495,7 +504,10 @@ class Chat(PipelineBase):
                     if t.get("function", {}).get("name") in allowed_tools
                 ]
 
-                if agent_node.get("enableProgrammaticToolCalling"):
+                logger.warning("Agent Node Information: %s", json.dumps(agent_node))
+
+                if _is_programmatic(agent_node.get("enableProgrammaticToolCalling")):
+                    self.detect_tool_calls = False
                     # Recursive agent prompt tree formatter
                     def format_node_code(a_id: str, a_node: dict, indent: str = "") -> str:
                         skill_path = a_node.get("skillPath", "")
@@ -633,6 +645,13 @@ class Chat(PipelineBase):
                     _agent_section = (
                         f"You are the `{current_agent_id}` agent. Implement the body of `execute(task: str)` inside `{current_agent_id}/main.py`.\n"
                         "Return **only** the code inside the function body — no signature line, no imports, no markdown fences, no explanation.\n"
+                        "\n"
+                        "Example of a CORRECT response (your response should look EXACTLY like this - start directly with indented code, with NO markdown backticks/fences, NO import statements, and NO 'def execute' line):\n"
+                        "    try:\n"
+                        "        # your logic"
+                        "        return ActionResult(result=res)\n"
+                        "    except Exception as e:\n"
+                        "        return ActionResult(result={task: {\"error\": str(e)}})\n"
                         "\n"
                         "The following are already available at call time:\n"
                         "\n"
@@ -803,7 +822,7 @@ class Chat(PipelineBase):
                 self.message_template[0]["content"] = self.prompt
         
         self.logs = {}
-        self.parser = Parser(detect_code_blocks=False)
+        self.parser = Parser(detect_tool_calls=self.detect_tool_calls, detect_code_blocks=False)
         self._stream_start_time = 0.0
         self._stream_end_time = 0.0
         self._completion_tokens = 0
@@ -821,7 +840,7 @@ class Chat(PipelineBase):
         # use locals().get() to avoid a NameError when no agent is configured.
         _agent_node_local = locals().get("agent_node")
         self._programmatic_tool_calling: bool = bool(
-            _agent_node_local and _agent_node_local.get("enableProgrammaticToolCalling", False)
+            _agent_node_local and _is_programmatic(_agent_node_local.get("enableProgrammaticToolCalling", False))
         )
         # Result from the last run_code() call; injected as context on the next start()
         self._code_exec_result: Optional[Dict[str, Any]] = None
@@ -2005,17 +2024,25 @@ class Chat(PipelineBase):
                 None,
             )
             if _ct_call:
-                args_str = safe_get(
+                args_val = safe_get(
                     _ct_call, "function", "arguments", default="{}"
                 )
-                if args_str is not None:
+                if isinstance(args_val, dict):
+                    p_args = args_val
+                elif isinstance(args_val, str):
                     try:
-                        p_args = json.loads(args_str)
+                        p_args = json.loads(args_val)
                     except json.JSONDecodeError:
                         p_args = {}
                 else:
                     p_args = {}
                 query = p_args.get("query", self.query or "")
+
+                # Remove create_tasks from tools so sub-tasks never see it
+                self.tools = [
+                    t for t in self.tools
+                    if not (isinstance(t, dict) and t.get("function", {}).get("name") == "create_tasks")
+                ]
 
                 # Execute task planning via llm_tool
                 tasks = await self._execute_create_tasks(query)
@@ -2064,12 +2091,17 @@ class Chat(PipelineBase):
                             )
                             break
                         name = safe_get(tool_call, "function", "name", default=None)
-                        args_str = safe_get(tool_call, "function", "arguments", default="")
+                        args_val = safe_get(tool_call, "function", "arguments", default="")
                         tool_result = None
-                        if args_str and name:
-                            try:
-                                p_args = json.loads(args_str)
-                            except json.JSONDecodeError:
+                        if args_val and name:
+                            if isinstance(args_val, dict):
+                                p_args = args_val
+                            elif isinstance(args_val, str):
+                                try:
+                                    p_args = json.loads(args_val)
+                                except json.JSONDecodeError:
+                                    p_args = None
+                            else:
                                 p_args = None
                             if isinstance(p_args, dict):
                                 # Wrap the real tool call in a cancellable task.
@@ -2373,7 +2405,13 @@ class Chat(PipelineBase):
         self._consumed_parsed_len = 0          # reset: new parser = new offset
         self._serialized_native_tc_ids = set() # reset: new native tool calls incoming
         self._queued_native_tcs = []           # reset: no deferred tool calls
-        self.parser = Parser()                 # fresh parser for this attempt
+        self.parser = Parser(detect_tool_calls=self.detect_tool_calls, detect_code_blocks=False) # fresh parser for this attempt
+        logger.info(
+            "[%s] messages: %s tools: %s",
+            self.__class__.__name__,
+            json.dumps(self.messages),
+            json.dumps(self.tools),
+        )
     
     # end [end of loop]
     async def end(self, **kwargs) -> None:
@@ -2470,13 +2508,25 @@ class Chat(PipelineBase):
             and not (self._programmatic_tool_calling and self._code_exec_result and not self._code_exec_result.get("success"))
         ):
             # Append the completed task's query and cleaned final response to prior task messages
+            # For streaming responses, last_response is empty – read from the accumulated
+            # response dict instead (set by process_chunk / finalize).
+            _task_assistant_content = self.last_response or ""
+            if not _task_assistant_content:
+                try:
+                    idx = int(self.response_branch or 0)
+                    _task_assistant_content = (
+                        self.r["content"][self.branch_id]["responses"][idx].get("content", "")
+                        or ""
+                    )
+                except (KeyError, IndexError, TypeError):
+                    pass
             self._task_context_messages.append({
                 "role": "user",
                 "content": self.query or "",
             })
             self._task_context_messages.append({
                 "role": "assistant",
-                "content": _clean_assistant_content(self.last_response or ""),
+                "content": _clean_assistant_content(_task_assistant_content),
             })
 
             self._current_task_idx += 1

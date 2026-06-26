@@ -73,6 +73,18 @@ class ToolManager:
     def active_tab_id(self) -> str:
         return self._active_tab_id or "global"
 
+    @property
+    def all_tools(self) -> List[str]:
+        """Return a list of all available tool names (local + MCP)."""
+        tools = list(self.loaded_tools.keys())
+        mcp = self.managers.get("mcp_manager")
+        if mcp:
+            for t in getattr(mcp, "mcp_tools", []):
+                if t.name not in tools:
+                    tools.append(t.name)
+        return tools
+
+
     # Internal helpers
     def _load_metadata_from_manifest(
         self, manifest_path: Path, fallback_name: str

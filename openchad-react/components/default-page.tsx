@@ -224,7 +224,8 @@ export default function DefaultPage(AppInfo: AppInfo) {
             ...prev,
             activeId: activeId,
             isStreaming: true,
-            initialized: true
+            initialized: true,
+            errorMsg: ''
         }));
         try {
             const streamRes = await pyInvoke("v1/chat/completions", {
