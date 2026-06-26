@@ -98,7 +98,7 @@ class ToolBase(ABC):
                     return {}
                 if not tool_calls:
                     logger.error("[llm_tool] no tool_calls")
-                if tool_calls and (self.tool_manager or tool_registry):
+                if tool_calls:
                     results = {}
                     for call in tool_calls:
                         fn_name: str = call["function"]["name"]
@@ -114,16 +114,7 @@ class ToolBase(ABC):
                         if tool_registry and fn_name in tool_registry:
                             result = await tool_registry[fn_name].execute(**kwargs)
                         else:
-                            if self.tool_manager:
-                                result = await self.tool_manager.execute_tool(
-                                    fn_name,
-                                    caller="direct",
-                                    workspace=self.workspace,
-                                    tab_id=self.tab_id,
-                                    **kwargs,
-                                )
-                            else:
-                                return {}
+                            return {}
                         results[call_id] = result
                     return results[next(iter(results))] if len(results) == 1 else results
                 return {}

@@ -109,6 +109,148 @@ def _clean_assistant_content(text: str) -> str:
     text = _RE_CODE_BLOCK.sub(lambda m: re.sub(r"<CodeBlock\b[^>]*>", "", m.group(0)).replace("</CodeBlock>", ""), text)
     return text.strip()
 
+_RE_BACKTICK_FENCE = re.compile(
+    r"```(?:[a-zA-Z0-9_+\-]*)?\n(.*?)```",
+    re.DOTALL,
+)
+
+def _extract_code_from_response(text: str) -> str:
+    """Extract executable Python code from a model response.
+
+    The model may respond with:
+    - Plain code (no backtick fences) — returned as-is after stripping MDX tags.
+    - One or more triple-backtick fenced blocks — the content of the first
+      Python (or language-unspecified) block is returned.
+
+    MDX rendering wrappers (<Think>, <ToolCall/>, <CodeBlock>) are stripped
+    before code extraction so that renderer artefacts do not confuse the
+    extraction logic.
+    """
+    # 1. Strip renderer tags (Think blocks, ToolCall tags, CodeBlock wrappers)
+    text = _RE_THINK_BLOCK.sub("", text)
+    text = _RE_TOOL_CALL.sub("", text)
+    # Unwrap <CodeBlock …>…</CodeBlock> but keep the inner ``` fence so the
+    # backtick-extraction step below can find it.
+    text = _RE_CODE_BLOCK.sub(
+        lambda m: re.sub(r"<CodeBlock\b[^>]*>", "", m.group(0)).replace("</CodeBlock>", ""),
+        text,
+    )
+    text = text.strip()
+
+    # 2. Try to extract code from backtick fences
+    matches = _RE_BACKTICK_FENCE.findall(text)
+    if matches:
+        # Prefer the first Python block; fall back to the first block overall.
+        return matches[0].strip()
+
+    # 3. No fences found — treat the entire (cleaned) text as code
+    return text
+
+
+def _parse_action_result(raw: Any) -> Optional[Dict[str, Any]]:
+    """Normalise a sandbox return value into a plain ActionResult-shaped dict.
+
+    Accepts:
+    - An ActionResult dataclass instance (has `.result` attribute)
+    - A plain dict with 'result', 'next_tasks', 'next_branch' keys
+    - None or anything else → returns None
+    """
+    if raw is None:
+        return None
+    # Dataclass instance (ActionResult)
+    if hasattr(raw, "result"):
+        return {
+            "result":      raw.result,
+            "next_tasks":  list(getattr(raw, "next_tasks", []) or []),
+            "next_branch": getattr(raw, "next_branch", None),
+        }
+    # Plain dict
+    if isinstance(raw, dict) and "result" in raw:
+        return {
+            "result":      raw.get("result", {}),
+            "next_tasks":  list(raw.get("next_tasks") or []),
+            "next_branch": raw.get("next_branch"),
+        }
+    return None
+
+
+async def _fan_out_branch(pipeline: "Chat", action_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Delegate each ``next_task`` to the child node (``next_branch``) via
+    ``pipeline.llm_tool``.
+
+    Returns a list of branch result dicts.  If a child's code itself returns an
+    ``ActionResult`` with ``next_branch`` / ``next_tasks``, this function
+    recurses into the grandchild automatically.
+    """
+    agent = agent_ctx.get()
+    if not agent or not isinstance(agent, dict):
+        logger.warning("[_fan_out_branch] no agent_ctx, skipping fan-out")
+        return []
+
+    current_id = next(iter(agent))
+    current_node = agent[current_id]
+    child_id = action_result["next_branch"]
+    child_node = current_node.get("children", {}).get(child_id)
+    if not child_node:
+        logger.warning("[_fan_out_branch] child node '%s' not found in '%s'", child_id, current_id)
+        return []
+
+    # Swap agent_ctx / model_id_ctx to the child node for the duration
+    old_agent = agent_ctx.get()
+    old_model = model_id_ctx.get()
+    agent_ctx.set({child_id: child_node})
+    child_model = child_node.get("model")
+    if child_model:
+        model_id_ctx.set(child_model)
+
+    branch_results: List[Dict[str, Any]] = []
+    try:
+        for task in action_result["next_tasks"]:
+            try:
+                ans = await pipeline.llm_tool(
+                    query=task,
+                    history_id=child_id,
+                )
+                entry: Dict[str, Any] = {"agent_id": child_id, "task": task, "response": ans}
+
+                # ── Recursive fan-out ──
+                # If the child's code returned an exec_result whose .result is
+                # itself an ActionResult with next_branch + next_tasks, recurse.
+                if isinstance(ans, dict) and ans.get("success") and ans.get("result") is not None:
+                    child_action = _parse_action_result(ans["result"])
+                    if (
+                        child_action
+                        and child_action.get("next_branch")
+                        and child_action.get("next_tasks")
+                    ):
+                        logger.info(
+                            "[_fan_out_branch] recursive fan-out: '%s' → branch='%s', tasks=%s",
+                            child_id,
+                            child_action["next_branch"],
+                            child_action["next_tasks"],
+                        )
+                        # agent_ctx is currently {child_id: child_node}, so
+                        # the recursive call will look up the grandchild
+                        # inside child_node["children"].
+                        sub_results = await _fan_out_branch(pipeline, child_action)
+                        entry["sub_branch_results"] = sub_results
+
+                branch_results.append(entry)
+            except Exception as exc:
+                logger.exception("[_fan_out_branch] task failed | task=%s", task)
+                branch_results.append({"agent_id": child_id, "task": task, "error": str(exc)})
+    finally:
+        agent_ctx.set(old_agent)
+        model_id_ctx.set(old_model)
+
+    logger.info(
+        "[_fan_out_branch] completed %d branch tasks for '%s'",
+        len(branch_results),
+        child_id,
+    )
+    return branch_results
+
+
 def safe_get(data: Any, *keys: Any, default: Any = None) -> Any:
     for key in keys:
         try:
@@ -547,7 +689,7 @@ class Chat(PipelineBase):
                         "\n"
                         "`llm_tool` is a **structured-output-only** LLM call. Under the hood, the model is instructed to call a tool on every response — it never returns plain text. You supply one or more `ToolRegistry` objects; the model picks the right one, fills in the parameters, and your `call` function receives those arguments as `**kwargs`.\n"
                         "\n"
-                        "Use `llm_tool` whenever you need to transform, condense, or structure raw data — after a `web_search`, before building `result`, or when populating `next_tasks`.\n"
+                        "Use `llm_tool` whenever you need to transform, condense, or structure raw data.\n"
                         "\n---\n\n"
                         "### Signature\n"
                         "\n"
@@ -630,7 +772,7 @@ class Chat(PipelineBase):
                         "\n---\n\n"
                         "## Behavior Requirements\n"
                         "\n"
-                        "- Use the available tools (`web_search`, `read_file`, `write_file`, `extract`) to research `task` and gather raw findings.\n"
+                        f"- Use the available tools ({tools_list_str}) to research `task` and gather raw findings.\n"
                         "- Use `llm_tool` to summarize, analyze, classify, or structure tool output before building `result`.\n"
                         "- Build `result` as `{ task: findings }` where `findings` is a structured dict of your processed output.\n"
                         "- Initialize `next_tasks: List[str] = []` and `next_branch: Optional[str] = None`; only populate them if research explicitly surfaces follow-up tasks for a child branch.\n"
@@ -674,6 +816,15 @@ class Chat(PipelineBase):
         self._agent_tasks: List[str] = []    # tasks from create_tasks
         self._task_context_messages: List[Dict[str, str]] = []  # accumulated prior task messages
         self._current_task_idx: int = 0      # index into _agent_tasks
+        # Programmatic tool calling state
+        # agent_node is only defined when the agent block above was entered;
+        # use locals().get() to avoid a NameError when no agent is configured.
+        _agent_node_local = locals().get("agent_node")
+        self._programmatic_tool_calling: bool = bool(
+            _agent_node_local and _agent_node_local.get("enableProgrammaticToolCalling", False)
+        )
+        # Result from the last run_code() call; injected as context on the next start()
+        self._code_exec_result: Optional[Dict[str, Any]] = None
         # Think content is tracked separately and always rendered at the top.
         self._think_content: str = ""       # all completed think block text
         self._think_in_progress: bool = False
@@ -2157,7 +2308,61 @@ class Chat(PipelineBase):
                         except (asyncio.CancelledError, Exception):
                             pass
                 self.logs["messages"] = self.messages
-        self.args["tools"] = self.tools
+        # In programmatic tool calling mode the tools are embedded in the system
+        # prompt, so we must NOT pass them to the model as native tool schemas.
+        if self._programmatic_tool_calling:
+            self.args["tools"] = []
+            # Inject the previous code-execution result as a pair of messages so
+            # the model receives feedback on whether its last code worked.
+            if self._code_exec_result is not None:
+                result = self._code_exec_result
+                if result.get("success"):
+                    # Build plain-prose feedback
+                    feedback_parts = ["Code executed successfully."]
+                    exec_output = result.get("output") or ""
+                    exec_return = result.get("result")
+                    if exec_output:
+                        feedback_parts.append(f"stdout:\n{exec_output}")
+                    if exec_return is not None:
+                        feedback_parts.append(f"Return value: {json.dumps(exec_return, default=str)}")
+                    # Append branch results as plain prose (recursive)
+                    branch_results = result.get("branch_results")
+                    if branch_results:
+                        def _format_branch_results(results: list, indent: str = "  ") -> None:
+                            for br in results:
+                                agent_id = br.get("agent_id", "unknown")
+                                task = br.get("task", "")
+                                if "error" in br:
+                                    feedback_parts.append(
+                                        f"{indent}- Agent '{agent_id}' on task '{task}': failed with error: {br['error']}"
+                                    )
+                                else:
+                                    resp = br.get("response", "")
+                                    if isinstance(resp, dict):
+                                        resp_str = json.dumps(resp, default=str)
+                                    else:
+                                        resp_str = str(resp)
+                                    feedback_parts.append(
+                                        f"{indent}- Agent '{agent_id}' on task '{task}': {resp_str}"
+                                    )
+                                # Recurse into sub-branch results
+                                sub = br.get("sub_branch_results")
+                                if sub:
+                                    feedback_parts.append(f"{indent}  Sub-branch results:")
+                                    _format_branch_results(sub, indent + "    ")
+                        feedback_parts.append("Branch task results:")
+                        _format_branch_results(branch_results)
+
+                    feedback_msg = "\n".join(feedback_parts)
+                else:
+                    error = result.get("error") or "Unknown error"
+                    feedback_msg = f"Code execution failed.\nError:\n{error}"
+                logger.info("[%s] injecting code exec feedback: %s", self.__class__.__name__, feedback_msg[:200])
+                self.messages.append({"role": "assistant", "content": self.last_response or ""})
+                self.messages.append({"role": "user", "content": feedback_msg})
+                self._code_exec_result = None
+        else:
+            self.args["tools"] = self.tools
         self.tool_calls = None
         self.last_response = ""
         # Flush any buffered text from the previous attempt into a completed
@@ -2177,11 +2382,92 @@ class Chat(PipelineBase):
         self.logs["tools_called_" + str(self.attempt)] = json.dumps(self.tool_calls)
         if self.tool_calls:
             is_continue = True
+
+        # ── Programmatic tool calling: extract code, run it, decide continuation ──
+        if self._programmatic_tool_calling and not self.tool_calls:
+            # Retrieve the best available model output text.
+            # For streaming: content has been accumulated via process_chunk().
+            # For non-streaming: self.last_response holds the full content.
+            raw_content = ""
+            try:
+                idx = int(self.response_branch or 0)
+                raw_content = (
+                    self.r["content"][self.branch_id]["responses"][idx].get("content", "")
+                    or self.last_response
+                    or ""
+                )
+            except (KeyError, IndexError, TypeError):
+                raw_content = self.last_response or ""
+
+            code = _extract_code_from_response(raw_content)
+            if code and code.strip():
+                logger.info(
+                    "[%s] programmatic mode – running extracted code (%d chars)",
+                    self.__class__.__name__,
+                    len(code),
+                )
+                try:
+                    exec_result = await self.run_code(code)
+                except Exception as e:
+                    exec_result = {"output": "", "error": str(e), "result": None, "success": False}
+
+                self._code_exec_result = exec_result
+                self.logs["code_exec_" + str(self.attempt)] = {
+                    "code": code,
+                    "success": exec_result.get("success"),
+                    "error": exec_result.get("error"),
+                    "output": exec_result.get("output"),
+                }
+
+                if not exec_result.get("success"):
+                    # Malfunction code → hard cancel, no retry
+                    logger.warning(
+                        "[%s] programmatic: code failed, hard cancel | error=%s",
+                        self.__class__.__name__,
+                        (exec_result.get("error") or "")[:300],
+                    )
+                    is_continue = False
+                else:
+                    # Success — inspect the returned ActionResult
+                    action_result = _parse_action_result(exec_result.get("result"))
+                    logger.info(
+                        "[%s] programmatic: code succeeded | action_result=%s",
+                        self.__class__.__name__,
+                        action_result,
+                    )
+
+                    # Fan-out if the code declared next_branch + next_tasks
+                    if (
+                        action_result
+                        and action_result.get("next_branch")
+                        and action_result.get("next_tasks")
+                    ):
+                        logger.info(
+                            "[%s] programmatic: fan-out → branch='%s', tasks=%s",
+                            self.__class__.__name__,
+                            action_result["next_branch"],
+                            action_result["next_tasks"],
+                        )
+                        branch_results = await _fan_out_branch(self, action_result)
+                        if branch_results:
+                            if self._code_exec_result is None:
+                                self._code_exec_result = {"success": True, "output": "", "result": None, "error": None}
+                            self._code_exec_result["branch_results"] = branch_results
+
+                    # Check whether there are more agent tasks to process
+                    is_continue = False  # default: done unless more tasks exist
+            else:
+                logger.info(
+                    "[%s] programmatic mode – no extractable code in response",
+                    self.__class__.__name__,
+                )
+
         # ── Transition to next agent task if current task completed ──
         if (
             not self.tool_calls
             and self._agent_tasks
             and self._current_task_idx + 1 < len(self._agent_tasks)
+            and not (self._programmatic_tool_calling and self._code_exec_result and not self._code_exec_result.get("success"))
         ):
             # Append the completed task's query and cleaned final response to prior task messages
             self._task_context_messages.append({

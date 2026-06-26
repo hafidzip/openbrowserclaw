@@ -16,7 +16,33 @@ if TYPE_CHECKING:
     from .settings import Settings
     from .event_emitter import EventEmitter
     from .mcp_manager import MCPManager
-logger = logging.getLogger(__name__) 
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Code extraction helper (used by llm_tool in programmatic mode)
+# ---------------------------------------------------------------------------
+_RE_BACKTICK_FENCE_PB = re.compile(
+    r"```(?:[a-zA-Z0-9_+\-]*)?\n(.*?)```",
+    re.DOTALL,
+)
+_RE_THINK_PB  = re.compile(r"<Think>.*?</Think>", re.DOTALL)
+_RE_TOOL_PB   = re.compile(r"<ToolCall\b[^>]*/>", re.DOTALL)
+_RE_CBLOCK_PB = re.compile(r"<CodeBlock\b[^>]*>.*?</CodeBlock>", re.DOTALL)
+
+def _extract_code(text: str) -> str:
+    """Strip MDX render tags then return the first fenced code block, or the
+    whole cleaned text when no fence is present."""
+    text = _RE_THINK_PB.sub("", text)
+    text = _RE_TOOL_PB.sub("", text)
+    text = _RE_CBLOCK_PB.sub(
+        lambda m: re.sub(r"<CodeBlock\b[^>]*>", "", m.group(0)).replace("</CodeBlock>", ""),
+        text,
+    )
+    text = text.strip()
+    matches = _RE_BACKTICK_FENCE_PB.findall(text)
+    return matches[0].strip() if matches else text 
+
+
 class PipelineBase:
     stream: bool
     attempt: int
@@ -419,7 +445,7 @@ class PipelineBase:
                         "\n"
                         "`llm_tool` is a **structured-output-only** LLM call. Under the hood, the model is instructed to call a tool on every response — it never returns plain text. You supply one or more `ToolRegistry` objects; the model picks the right one, fills in the parameters, and your `call` function receives those arguments as `**kwargs`.\n"
                         "\n"
-                        "Use `llm_tool` whenever you need to transform, condense, or structure raw data — after a `web_search`, before building `result`, or when populating `next_tasks`.\n"
+                        "Use `llm_tool` whenever you need to transform, condense, or structure raw data.\n"
                         "\n---\n\n"
                         "### Signature\n"
                         "\n"
@@ -503,7 +529,7 @@ class PipelineBase:
                         "\n---\n\n"
                         "## Behavior Requirements\n"
                         "\n"
-                        "- Use the available tools (`web_search`, `read_file`, `write_file`, `extract`) to research `task` and gather raw findings.\n"
+                        f"- Use the available tools ({tools_list_str}) to research `task` and gather raw findings.\n"
                         "- Use `llm_tool` to summarize, analyze, classify, or structure tool output before building `result`.\n"
                         "- Build `result` as `{ task: findings }` where `findings` is a structured dict of your processed output.\n"
                         "- Initialize `next_tasks: List[str] = []` and `next_branch: Optional[str] = None`; only populate them if research explicitly surfaces follow-up tasks for a child branch.\n"
@@ -689,8 +715,39 @@ class PipelineBase:
                             return {}
                         if not tool_calls:
                             logger.info("[llm_tool] no tool_calls")
+                            final_content = message.get("content") or ""
+
+                            # ── Programmatic mode: model returns code as text ──
+                            _agent_prog = agent_ctx.get()
+                            _is_programmatic = (
+                                _agent_prog
+                                and isinstance(_agent_prog, dict)
+                                and bool(
+                                    next(iter(_agent_prog.values()), {}).get(
+                                        "enableProgrammaticToolCalling", False
+                                    )
+                                )
+                            )
+                            if _is_programmatic and final_content.strip():
+                                code = _extract_code(final_content)
+                                if code.strip():
+                                    logger.info(
+                                        "[llm_tool] programmatic mode – executing code (%d chars)",
+                                        len(code),
+                                    )
+                                    try:
+                                        exec_result = await self.run_code(code)
+                                    except Exception as _e:
+                                        exec_result = {
+                                            "output": "",
+                                            "error": str(_e),
+                                            "result": None,
+                                            "success": False,
+                                        }
+                                    await _save_history(query, final_content)
+                                    return exec_result
+
                             if multi_step:
-                                final_content = message.get("content") or ""
                                 await _save_history(query, final_content)
                                 return final_content
                             else:

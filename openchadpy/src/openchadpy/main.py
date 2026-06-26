@@ -154,7 +154,7 @@ mcp_manager = MCPManager(
 model_manager = ModelManager(emitter=event_emitter, config_path=_CONFIG_PATH, backends_dir=BACKENDS_DIR, config_lock=config_lock)
 # Initialize Tool Manager
 tool_manager = ToolManager(TOOLS_DIR)
-code_sandbox = CodeSandbox(tool_manager)
+code_sandbox = CodeSandbox(tool_manager, model_manager)
 # Initialize Pipeline Manager
 pipeline_manager = PipelineManager(config_path=_CONFIG_PATH, pipelines_dir=PIPELINES_DIR, config_lock=config_lock)
 # Initialize Model Provider Manager
