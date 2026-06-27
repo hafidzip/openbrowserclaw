@@ -1,3 +1,4 @@
+import inspect
 import json
 import logging
 from abc import ABC, abstractmethod
@@ -24,7 +25,10 @@ class ToolRegistry():
         self.schema = schema
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
-        return await self.call(**kwargs)
+        res = self.call(**kwargs)
+        if inspect.isawaitable(res):
+            return await res
+        return res
     
 class ToolBase(ABC):
     """

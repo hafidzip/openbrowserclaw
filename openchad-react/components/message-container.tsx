@@ -920,21 +920,7 @@ function MessageContainer({
 }
 
 const MessageContainerMemoized = memo(MessageContainer, (prevProps, nextProps) => {
-    if (prevProps.isStreaming !== nextProps.isStreaming) return false;
-    if (prevProps.activeId !== nextProps.activeId) return false;
-    if (prevProps.query !== nextProps.query) return false;
-    if (prevProps.siblingIndex !== nextProps.siblingIndex) return false;
-    if (prevProps.totalSiblings !== nextProps.totalSiblings) return false;
-    if (prevProps.responseBranch !== nextProps.responseBranch) return false;
-    if (prevProps.index !== nextProps.index) return false;
-    if (prevProps.childBranchId !== nextProps.childBranchId) return false;
-    if (prevProps.parentBranchId !== nextProps.parentBranchId) return false;
-    if (prevProps.workspace !== nextProps.workspace) return false;
-    if (prevProps.tabId !== nextProps.tabId) return false;
-
-    if (prevProps.responses?.length !== nextProps.responses?.length) return false;
-
-    if (nextProps.isStreaming) {
+    if (prevProps.responses !== nextProps.responses || prevProps.isStreaming !== nextProps.isStreaming) {
         const prevActive = prevProps.responses?.[prevProps.responseBranch];
         const nextActive = nextProps.responses?.[nextProps.responseBranch];
         if (typeof prevActive !== typeof nextActive) return false;

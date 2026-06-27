@@ -253,6 +253,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
         } catch (error) {
             errorlog = JSON.stringify(error);
         } finally {
+            refreshActiveMessages()
             setMessageState(prev => ({
                 ...prev,
                 activeId: '',
@@ -1034,7 +1035,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
                                                 />
                                             );
                                         })()}
-
                                         <div
                                             ref={msgBottomRef}
                                             className="w-full flex-shrink-0"

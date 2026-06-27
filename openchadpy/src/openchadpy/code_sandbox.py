@@ -5,14 +5,21 @@ No security restrictions - full Python access.
 Tools are exposed as async functions the code can call.
 """
 
+from ast import Set
+from typing import Union
+from ast import Tuple
+from dataclasses import field
+from dataclasses import dataclass
 import json
 from openchadpy.context import model_id_ctx
 from openchadpy.tool_base import ToolRegistry
+import datetime
+import re
 import asyncio
 import io
 import traceback
 import logging
-from typing import Any, Dict, Optional, TYPE_CHECKING
+from typing import Any, Dict, Optional, List, TYPE_CHECKING
 from contextlib import redirect_stdout, redirect_stderr
 
 if TYPE_CHECKING:
@@ -33,6 +40,13 @@ class CodeSandbox:
             print(f"Count is now: {result['count']}")
         ''')
     """
+
+    @dataclass
+    class ActionResult:
+        result: Dict[str, Any]              = field(default_factory=dict)
+        next_branches: Dict[str, List[str]] = field(default_factory=dict)
+        next_tasks: List[str]               = field(default_factory=list)
+        next_branch: Optional[str]          = None
     
     def __init__(self, tool_manager : "ToolManager", model_manager: "ModelManager"):
         self.tool_manager = tool_manager
@@ -56,7 +70,7 @@ class CodeSandbox:
         tool_func.__doc__ = f"Call the {tool_name} tool"
         return tool_func
     
-    async def execute(self, code: str, workspace: str = "Private", tab_id: Optional[str] = None, extra_globals: Optional[Dict] = None) -> Dict[str, Any]:
+    async def execute(self, code: str, task:str, workspace: str = "Private", tab_id: Optional[str] = None, extra_globals: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Execute Python code with tool access.
         
@@ -156,6 +170,19 @@ class CodeSandbox:
             "asyncio": asyncio,
             "llm_tool": llm_tool,
             "ToolRegistry": ToolRegistry,
+            "ActionResult": self.ActionResult,
+            "Dict": Dict,
+            "List": List,
+            "Any": Any,
+            "Optional": Optional,
+            "Tuple": Tuple,
+            "Union": Union,
+            "Set": Set,
+            "json": json,
+            "re": re,
+            "datetime": datetime,
+            "asyncio": asyncio,
+            "task": task,
         }
         
         # Add tool functions
@@ -182,7 +209,9 @@ class CodeSandbox:
             wrapped_code = f"""
 async def __user_code__():
 {indented_code}
-"""
+""" 
+            logger.info(f"[code_sandbox] wrapped_code length: {len(wrapped_code)}")
+            logger.info(f"[code_sandbox] wrapped_code: \n{wrapped_code}")
             # Compile the wrapper
             compiled = compile(wrapped_code, "<llm_code>", "exec")
             
@@ -195,6 +224,24 @@ async def __user_code__():
             # Capture output while running
             with redirect_stdout(stdout_capture), redirect_stderr(stderr_capture):
                 result = await user_code_func() #pyrefly: ignore
+                if hasattr(result, "__dataclass_fields__"):
+                    from dataclasses import asdict
+                    try:
+                        serialized = json.dumps(asdict(result), default=str)
+                        logger.info(f"[code_sandbox] result is ActionResult: {serialized}")
+                    except Exception as le:
+                        props = {}
+                        for field_name in result.__dataclass_fields__:
+                            try:
+                                props[field_name] = getattr(result, field_name)
+                            except Exception:
+                                props[field_name] = "<unreadable>"
+                        logger.info(f"[code_sandbox] result is ActionResult: {json.dumps(props, default=str)} (fallback due to: {le})")
+                else:
+                    try:
+                        logger.info(f"[code_sandbox] result: {json.dumps(result, default=str)}")
+                    except Exception as le:
+                        logger.info(f"[code_sandbox] result: {repr(result)} (fallback due to: {le})")
                     
         except Exception as e:
             error = f"{type(e).__name__}: {str(e)}\n{traceback.format_exc()}"

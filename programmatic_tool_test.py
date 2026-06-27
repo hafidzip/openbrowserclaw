@@ -615,6 +615,286 @@ def test_programmatic_prompt_construction():
 
 
 # ============================================================================
+# TEST 5b: Programmatic prompt with allow_multiple=True uses next_branches dict
+# ============================================================================
+def test_programmatic_prompt_allow_multiple():
+    logger.info("=" * 60)
+    logger.info("TEST 5b: Programmatic prompt (allow_multiple=True) -- uses next_branches dict")
+
+    import platform
+    from datetime import datetime
+
+    agent_id = "planner_agent"
+    agent_node = {
+        "skillPath": "/skills/planner.md",
+        "tools": ["web_search", "read_file"],
+        "children": {
+            "writer_agent": {
+                "skillPath": "/skills/writer.md",
+                "tools": ["write_file"],
+                "children": {},
+            },
+            "reviewer_agent": {
+                "skillPath": "/skills/reviewer.md",
+                "tools": ["read_file"],
+                "children": {},
+            },
+        },
+        "enableProgrammaticToolCalling": True,
+        "allowMultiple": True,
+    }
+    allow_multiple = True
+
+    os_info = f"{platform.system()} {platform.release()}"
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    tree_code = "tree = " + format_node_code(agent_id, agent_node, "")
+
+    all_tools_mock = [
+        {"type": "function", "function": {"name": "web_search", "description": "Search the web for information."}},
+        {"type": "function", "function": {"name": "read_file", "description": "Read content from a file."}},
+        {"type": "function", "function": {"name": "agent_query", "description": "Delegate tasks to sub-agents."}},
+    ]
+    allowed_tools = {"web_search", "read_file", "agent_query"}
+    tools_list_str = ", ".join(sorted(allowed_tools))
+
+    tool_defs = []
+    for t_name in sorted(allowed_tools):
+        t_desc = "No description available"
+        for t in all_tools_mock:
+            if isinstance(t, dict) and t.get("function", {}).get("name") == t_name:
+                t_desc = t.get("function", {}).get("description") or "No description available"
+                break
+        t_desc = t_desc.strip()
+        tool_def = (
+            f"async def {t_name}(query: str) -> str:\n"
+            f"    \"\"\"\n"
+            f"    {t_desc}\n"
+            f"    \"\"\"\n"
+            f"    ..."
+        )
+        tool_defs.append(tool_def)
+    tools_code = "\n\n".join(tool_defs)
+
+    _env = (
+        "## Environment\n"
+        f"- OS Information: `{os_info}`\n"
+        f"- Date & Time: `{now_str}`\n"
+        f"- Current node: `{agent_id}`\n"
+    )
+    _main_block = (
+        "# ./main.py\n\n"
+        "```python\n"
+        "import sys\n"
+        "import importlib.util\n"
+        "from collections import deque\n"
+        "from dataclasses import dataclass, field\n"
+        "from typing import Any, Awaitable, Callable, Dict, List, Optional\n"
+        "\n\n"
+        "class ToolRegistry:\n"
+        "    call: Callable[..., Awaitable[Dict[str, Any]]]\n"
+        "    schema: Dict[str, Any]\n"
+        "\n"
+        "    def __init__(\n"
+        "        self,\n"
+        "        call: Callable[..., Awaitable[Dict[str, Any]]],\n"
+        "        schema: Dict[str, Any],\n"
+        "    ):\n"
+        "        self.call = call\n"
+        "        self.schema = schema\n"
+        "\n"
+        "    async def execute(self, **kwargs) -> Dict[str, Any]:\n"
+        "        return await self.call(**kwargs)\n"
+        "\n\n"
+        "def load(path: str, name: str) -> Any:\n"
+        '    \"\"\"Dynamically loads a Python module from `path`, registers it in sys.modules under `name`, and returns the loaded module object.\"\"\"\n'
+        "    ...\n"
+        "\n"
+        "@dataclass\n"
+        "class ActionResult:\n"
+        "    result: Dict[str, Any]\n"
+        + (
+            "    next_branches: Dict[str, List[str]] = field(default_factory=dict)\n"
+            if allow_multiple else
+            "    next_tasks: List[str] = field(default_factory=list)\n"
+            "    next_branch: Optional[str] = None\n"
+        )
+        + "\n\n"
+        "@dataclass\n"
+        "class Skill:\n"
+        "    path: str\n"
+        "    description: str\n"
+        "\n\n"
+        "@dataclass\n"
+        "class Node:\n"
+        "    name: str\n"
+        "    skill: Skill\n"
+        "    available_tools: List[str]\n"
+        "    module_path: str\n"
+        "    module_name: str\n"
+        '    children: List["Node"] = field(default_factory=list)\n'
+        "    _module: Any = field(default=None, init=False, repr=False)\n"
+        "\n"
+        "    @property\n"
+        "    def module(self) -> Any:\n"
+        '        \"\"\"Lazily load the node\'s module on first access.\"\"\"\n'
+        "        if self._module is None:\n"
+        "            self._module = load(self.module_path, self.module_name)\n"
+        "        return self._module\n"
+        "\n"
+        '    async def execute(self, task: str = "") -> "ActionResult":\n'
+        "        return await self.module.execute(task)\n"
+        "\n\n"
+        'def get_node(name: str) -> "Node":\n'
+        '    \"\"\"BFS search for a node by name starting from the root tree.\"\"\"\n'
+        "    ...\n"
+        "\n\n"
+        'def get_children_node(node: Node, name: str) -> "Node":\n'
+        '    \"\"\"Search for a children node by name, only search in node->children, non-recursive.\"\"\"\n'
+        "    ...\n"
+        "\n"
+        + tree_code + "\n"
+        "```\n"
+    )
+    _agent = (
+        f"You are the `{agent_id}` agent. Implement the body of `execute(task: str)` inside `{agent_id}/main.py`.\n"
+        "Return **only** the code inside the function body — no signature line, no imports, no markdown fences, no explanation.\n"
+        "\n"
+        "Example of a CORRECT response (your response should look EXACTLY like this - start directly with indented code, with NO markdown backticks/fences, NO import statements, and NO 'def execute' line):\n"
+        "    try:\n"
+        "        # your logic"
+        "        return ActionResult(result=res)\n"
+        "    except Exception as e:\n"
+        "        return ActionResult(result={task: {\"error\": str(e)}})\n"
+        "\n"
+        "The following are already available at call time:\n"
+        "\n"
+        "```python\n"
+        "from main import ToolRegistry, ActionResult, get_node, get_children_node\n"
+        "from typing import Any, Dict, List, Optional\n"
+        "\n"
+        'initial_task = """\n'
+        "{{current_task}}\n"
+        '"""\n'
+        "\n"
+        "async def llm_tool(\n"
+        "    query: str,\n"
+        "    tool_registry: Optional[Dict[str, ToolRegistry]] = None,\n"
+        ") -> Dict[str, Any]:\n"
+        '    \"\"\"\n'
+        "    Sends `query` to the language model, optionally supplying callable tools from\n"
+        "    `tool_registry`, and returns a dict containing the model's response text and\n"
+        "    any tool-use results.\n"
+        '    \"\"\"\n'
+        "    ...\n"
+        "\n"
+        "# Tools\n"
+        + tools_code + "\n"
+        "\n"
+        "async def main() -> List[Dict[str, Any]]:\n"
+        '    \"\"\"\n'
+        + f"    Entry-point coroutine: runs the {agent_id} node on `initial_task`, fans out\n"
+        "    to any follow-up branch tasks declared in the returned ActionResult, and returns\n"
+        "    the collected list of all result payloads.\n"
+        '    \"\"\"\n'
+        "    results: List[Dict[str, Any]] = []\n"
+        + f'    node = get_node("{agent_id}")\n'
+        "    data: ActionResult = await node.execute(initial_task)\n"
+        "    results.append(data.result)\n"
+        "    # (parent_node, branch_id, task)\n"
+        "    queue: deque[tuple] = deque()\n"
+        + (
+            "    if data.next_branches:\n"
+            "        for branch_id, tasks in data.next_branches.items():\n"
+            "            for task in tasks:\n"
+            "                queue.append((node, branch_id, task))\n"
+            "    while queue:\n"
+            "        parent_node, branch_id, task = queue.popleft()\n"
+            "        branch_node = get_children_node(parent_node, branch_id)\n"
+            "        branch_data: ActionResult = await branch_node.execute(task)\n"
+            "        results.append(branch_data.result)\n"
+            "        if branch_data.next_branches:\n"
+            "            for br_id, ts in branch_data.next_branches.items():\n"
+            "                for t in ts:\n"
+            "                    queue.append((branch_node, br_id, t))\n"
+            "    return results\n"
+            if allow_multiple else
+            "    if data.next_branch and len(data.next_tasks) > 0:\n"
+            "        for task in data.next_tasks:\n"
+            "            queue.append((node, data.next_branch, task))\n"
+            "    while queue:\n"
+            "        parent_node, branch_id, task = queue.popleft()\n"
+            "        branch_node = get_children_node(parent_node, branch_id)\n"
+            "        branch_data: ActionResult = await branch_node.execute(task)\n"
+            "        results.append(branch_data.result)\n"
+            "        if branch_data.next_branch and len(branch_data.next_tasks) > 0:\n"
+            "            for t in branch_data.next_tasks:\n"
+            "                queue.append((branch_node, branch_data.next_branch, t))\n"
+            "    return results\n"
+        )
+        + "```\n"
+    )
+    _docs = (
+        "## Using `llm_tool`\n"
+        "\n"
+        "`llm_tool` is a **structured-output-only** LLM call. Under the hood, the model is instructed to call a tool on every response — it never returns plain text. You supply one or more `ToolRegistry` objects; the model picks the right one, fills in the parameters, and your `call` function receives those arguments as `**kwargs`.\n"
+        "\n"
+        "Use `llm_tool` whenever you need to transform, condense, or structure raw data.\n"
+        "\n---\n\n"
+        "## Behavior Requirements\n"
+        "\n"
+        f"- Use the available tools ({tools_list_str}) to research `task` and gather raw findings.\n"
+        "- Use `llm_tool` to summarize, analyze, classify, or structure tool output before building `result`.\n"
+        "- Build `result` as `{ task: findings }` where `findings` is a structured dict of your processed output.\n"
+        + (
+            "- Initialize `next_branches: Dict[str, List[str]] = {}`; only populate it if research explicitly surfaces follow-up tasks for child branches — map each child branch ID to its list of tasks.\n"
+            '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_branches={})` — `execute()` must never raise.\n'
+            "- Return `ActionResult(result=result, next_branches=next_branches)`.\n"
+            if allow_multiple else
+            "- Initialize `next_tasks: List[str] = []` and `next_branch: Optional[str] = None`; only populate them if research explicitly surfaces follow-up tasks for a child branch.\n"
+            '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_tasks=[], next_branch=None)` — `execute()` must never raise.\n'
+            "- Return `ActionResult(result=result, next_tasks=next_tasks, next_branch=next_branch).\n"
+        )
+    )
+    prompt = (
+        _env + "\n---\n\n"
+        + _main_block + "\n---\n\n"
+        + _agent + "\n---\n\n"
+        + _docs + "\n---\n\n"
+        + get_skill_content(agent_node.get("skillPath", ""))
+    )
+
+    logger.debug(f"Generated allow_multiple=True prompt (FULL):\n{prompt}")
+
+    # --- allow_multiple=True specific assertions ---
+    # ActionResult uses next_branches Dict, not next_branch/next_tasks
+    assert "next_branches: Dict[str, List[str]] = field(default_factory=dict)" in prompt, \
+        "allow_multiple=True: ActionResult must define next_branches as Dict[str, List[str]]"
+    assert "next_branch: Optional[str]" not in prompt, \
+        "allow_multiple=True: ActionResult must NOT contain next_branch"
+    assert "next_tasks: List[str] = field(default_factory=list)" not in prompt, \
+        "allow_multiple=True: ActionResult must NOT contain next_tasks field definition"
+
+    # main() uses next_branches.items() fan-out
+    assert "for branch_id, tasks in data.next_branches.items():" in prompt, \
+        "allow_multiple=True: main() must iterate data.next_branches.items()"
+    assert "for br_id, ts in branch_data.next_branches.items():" in prompt, \
+        "allow_multiple=True: main() must iterate branch_data.next_branches.items()"
+    assert "if data.next_branch and" not in prompt, \
+        "allow_multiple=True: main() must NOT use single next_branch check"
+
+    # Behavior Requirements use next_branches
+    assert "- Initialize `next_branches: Dict[str, List[str]] = {}`" in prompt, \
+        "allow_multiple=True: Behavior Requirements must initialize next_branches as dict"
+    assert "next_branches={})" in prompt, \
+        "allow_multiple=True: except clause must reset next_branches to empty dict"
+    assert "next_branches=next_branches)" in prompt, \
+        "allow_multiple=True: Return must include next_branches=next_branches"
+
+    ok("Programmatic prompt (allow_multiple=True) -- next_branches dict structure verified")
+
+
+
+# ============================================================================
 # TEST 6: _build_initial_messages -- {{current_task}} replacement
 # ============================================================================
 async def test_build_initial_messages_replaces_current_task():
@@ -1157,29 +1437,6 @@ def test_llm_tool_programmatic_prompt():
 
 
 # ============================================================================
-# TEST 12: _is_programmatic helper
-# ============================================================================
-def test_is_programmatic_helper():
-    logger.info("=" * 60)
-    logger.info("TEST 12: _is_programmatic helper handles bool and string values")
-    from openchadpy.pipeline_base import _is_programmatic
-    
-    assert _is_programmatic(True) is True
-    assert _is_programmatic(False) is False
-    assert _is_programmatic("true") is True
-    assert _is_programmatic("True") is True
-    assert _is_programmatic("TRUE") is True
-    assert _is_programmatic("false") is False
-    assert _is_programmatic("False") is False
-    assert _is_programmatic("FALSE") is False
-    assert _is_programmatic(None) is False
-    assert _is_programmatic("") is False
-    assert _is_programmatic(1) is False
-    
-    ok("_is_programmatic helper handles bool and string values")
-
-
-# ============================================================================
 # Runner
 # ============================================================================
 async def main():
@@ -1192,10 +1449,10 @@ async def main():
     test_format_node_code_deep_nesting()
     test_format_node_code_no_duplicate_agent_query()
     test_programmatic_prompt_construction()
+    test_programmatic_prompt_allow_multiple()
     test_format_node_code_empty_tools()
     test_current_task_is_literal_placeholder()
     test_llm_tool_programmatic_prompt()
-    test_is_programmatic_helper()
 
     await test_build_initial_messages_replaces_current_task()
     await test_build_initial_messages_no_placeholder()

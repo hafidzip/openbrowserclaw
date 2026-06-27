@@ -22,27 +22,46 @@ logger = logging.getLogger(__name__)
 # Code extraction helper (used by llm_tool in programmatic mode)
 # ---------------------------------------------------------------------------
 _RE_BACKTICK_FENCE_PB = re.compile(
-    r"```(?:[a-zA-Z0-9_+\-]*)?\n(.*?)```",
+    r"```(?:[a-zA-Z0-9_+\-]*)?\r?\n(.*?)```",
     re.DOTALL,
 )
-_RE_THINK_PB  = re.compile(r"<Think>.*?</Think>", re.DOTALL)
+_RE_THINK_PB  = re.compile(r"<think>.*?</think>|<thinking>.*?</thinking>", re.DOTALL | re.IGNORECASE)
 _RE_TOOL_PB   = re.compile(r"<ToolCall\b[^>]*/>", re.DOTALL)
 _RE_CBLOCK_PB = re.compile(r"<CodeBlock\b[^>]*>.*?</CodeBlock>", re.DOTALL)
 
 def _extract_code(text: str) -> str:
     """Strip MDX render tags then return the first fenced code block, or the
-    whole cleaned text when no fence is present."""
+    whole cleaned text when no fence is present.
+
+    NOTE: end() runs before finalize(), so the parser's pending buffer may
+    still hold the closing ``` when this is called.  We handle both the
+    complete-fence case (regex match) and the incomplete-fence case (opening
+    fence only) so a missing closing ``` never breaks compilation.
+    """
+    import textwrap
     text = _RE_THINK_PB.sub("", text)
     text = _RE_TOOL_PB.sub("", text)
     text = _RE_CBLOCK_PB.sub(
         lambda m: re.sub(r"<CodeBlock\b[^>]*>", "", m.group(0)).replace("</CodeBlock>", ""),
         text,
     )
-    text = text.strip()
+    text = text.strip("\r\n")
     matches = _RE_BACKTICK_FENCE_PB.findall(text)
-    return matches[0].strip() if matches else text 
+    if matches:
+        raw_code = matches[0]
+    else:
+        # Fallback: closing ``` may still be in the parser's pending buffer.
+        # Strip just the opening fence and treat everything after as the body.
+        open_match = re.match(r"```(?:[a-zA-Z0-9_+\-]*)?\r?\n(.*)", text, re.DOTALL)
+        if open_match:
+            raw_code = open_match.group(1)
+            # Remove any trailing incomplete ``` that made it in
+            raw_code = re.sub(r"\n?```\s*$", "", raw_code, flags=re.DOTALL)
+        else:
+            raw_code = text
+    return textwrap.dedent(raw_code.strip("\r\n")).strip()
 
-def _is_programmatic(val: Any) -> bool:
+def _parse_bool(val: Any) -> bool:
     if isinstance(val, bool):
         return val
     if isinstance(val, str):
@@ -145,8 +164,10 @@ class PipelineBase:
             if agent_node:
                 # Add agent_query tool schema if children exist
                 children = agent_node.get("children")
+                is_programmatic = _parse_bool(agent_node.get("enableProgrammaticToolCalling"))
+                allow_multiple = _parse_bool(agent_node.get("allowMultiple"))
                 if children:  
-                    if agent_node.get("allowMultiple", False):
+                    if allow_multiple:
                         tools.append({
                             "type": "function",
                             "function": {
@@ -251,7 +272,7 @@ class PipelineBase:
                     except Exception:
                         return skill_filename, "No description available"
 
-                if _is_programmatic(agent_node.get("enableProgrammaticToolCalling")):
+                if is_programmatic:
                     # --- Programmatic prompt (same structure as Chat.__init__) ---
                     def format_node_code(a_id: str, a_node: dict, indent: str = "") -> str:
                         skill_path = a_node.get("skillPath", "")
@@ -355,9 +376,13 @@ class PipelineBase:
                         "@dataclass\n"
                         "class ActionResult:\n"
                         "    result: Dict[str, Any]\n"
-                        "    next_tasks: List[str] = field(default_factory=list)\n"
-                        "    next_branch: Optional[str] = None\n"
-                        "\n\n"
+                        + (
+                            "    next_branches: Dict[str, List[str]] = field(default_factory=dict)\n"
+                            if allow_multiple else
+                            "    next_tasks: List[str] = field(default_factory=list)\n"
+                            "    next_branch: Optional[str] = None\n"
+                        )
+                        + "\n\n"
                         "@dataclass\n"
                         "class Skill:\n"
                         "    path: str\n"
@@ -396,14 +421,16 @@ class PipelineBase:
                     )
                     _agent_section = (
                         f"You are the `{current_agent_id}` agent. Implement the body of `execute(task: str)` inside `{current_agent_id}/main.py`.\n"
-                        "Return **only** the code inside the function body — no signature line, no imports, no markdown fences, no explanation.\n"
+                        "Return **only** the code inside the function body — no signature line, no imports, no explanation, and wrapped it inside a ```python ... ``` block.\n"
                         "\n"
                         "Example of a CORRECT response (your response should look EXACTLY like this - start directly with indented code, with NO markdown backticks/fences, NO import statements, and NO 'def execute' line):\n"
-                        "    try:\n"
-                        "        # your logic"
-                        "        return ActionResult(result=res)\n"
-                        "    except Exception as e:\n"
-                        "        return ActionResult(result={task: {\"error\": str(e)}})\n"
+                        "```python\n"
+                        "try:\n"
+                        "    # your logic"
+                        "    return ActionResult(result=res)\n"
+                        "except Exception as e:\n"
+                        "    return ActionResult(result={task: {\"error\": str(e)}})\n"
+                        "```\n"
                         "\n"
                         "The following are already available at call time:\n"
                         "\n"
@@ -441,19 +468,36 @@ class PipelineBase:
                         "    results.append(data.result)\n"
                         "    # (parent_node, branch_id, task)\n"
                         "    queue: deque[tuple] = deque()\n"
-                        "    if data.next_branch and len(data.next_tasks) > 0:\n"
-                        "        for task in data.next_tasks:\n"
-                        "            queue.append((node, data.next_branch, task))\n"
-                        "    while queue:\n"
-                        "        parent_node, branch_id, task = queue.popleft()\n"
-                        "        branch_node = get_children_node(parent_node, branch_id)\n"
-                        "        branch_data: ActionResult = await branch_node.execute(task)\n"
-                        "        results.append(branch_data.result)\n"
-                        "        if branch_data.next_branch and len(branch_data.next_tasks) > 0:\n"
-                        "            for t in branch_data.next_tasks:\n"
-                        "                queue.append((branch_node, branch_data.next_branch, t))\n"
-                        "    return results\n"
-                        "```\n"
+                        + (
+                            "    if data.next_branches:\n"
+                            "        for branch_id, tasks in data.next_branches.items():\n"
+                            "            for task in tasks:\n"
+                            "                queue.append((node, branch_id, task))\n"
+                            "    while queue:\n"
+                            "        parent_node, branch_id, task = queue.popleft()\n"
+                            "        branch_node = get_children_node(parent_node, branch_id)\n"
+                            "        branch_data: ActionResult = await branch_node.execute(task)\n"
+                            "        results.append(branch_data.result)\n"
+                            "        if branch_data.next_branches:\n"
+                            "            for br_id, ts in branch_data.next_branches.items():\n"
+                            "                for t in ts:\n"
+                            "                    queue.append((branch_node, br_id, t))\n"
+                            "    return results\n"
+                            if allow_multiple else
+                            "    if data.next_branch and len(data.next_tasks) > 0:\n"
+                            "        for task in data.next_tasks:\n"
+                            "            queue.append((node, data.next_branch, task))\n"
+                            "    while queue:\n"
+                            "        parent_node, branch_id, task = queue.popleft()\n"
+                            "        branch_node = get_children_node(parent_node, branch_id)\n"
+                            "        branch_data: ActionResult = await branch_node.execute(task)\n"
+                            "        results.append(branch_data.result)\n"
+                            "        if branch_data.next_branch and len(branch_data.next_tasks) > 0:\n"
+                            "            for t in branch_data.next_tasks:\n"
+                            "                queue.append((branch_node, branch_data.next_branch, t))\n"
+                            "    return results\n"
+                        )
+                        + "```\n"
                     )
                     _llm_tool_docs = (
                         "## Using `llm_tool`\n"
@@ -547,9 +591,15 @@ class PipelineBase:
                         f"- Use the available tools ({tools_list_str}) to research `task` and gather raw findings.\n"
                         "- Use `llm_tool` to summarize, analyze, classify, or structure tool output before building `result`.\n"
                         "- Build `result` as `{ task: findings }` where `findings` is a structured dict of your processed output.\n"
-                        "- Initialize `next_tasks: List[str] = []` and `next_branch: Optional[str] = None`; only populate them if research explicitly surfaces follow-up tasks for a child branch.\n"
-                        '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_tasks=[], next_branch=None)` — `execute()` must never raise.\n'
-                        "- Return `ActionResult(result=result, next_tasks=next_tasks, next_branch=next_branch)`.\n"
+                        + (
+                            "- Initialize `next_branches: Dict[str, List[str]] = {}`; only populate it if research explicitly surfaces follow-up tasks for child branches — map each child branch ID to its list of tasks.\n"
+                            '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_branches={})` — `execute()` must never raise.\n'
+                            "- Return `ActionResult(result=result, next_branches=next_branches)`.\n"
+                            if allow_multiple else
+                            "- Initialize `next_tasks: List[str] = []` and `next_branch: Optional[str] = None`; only populate them if research explicitly surfaces follow-up tasks for a child branch.\n"
+                            '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_tasks=[], next_branch=None)` — `execute()` must never raise.\n'
+                            "- Return `ActionResult(result=result, next_tasks=next_tasks, next_branch=next_branch)`.\n"
+                        )
                     )
                     context = (
                         _env_header + "\n---\n\n"
@@ -737,9 +787,9 @@ class PipelineBase:
                             is_prog_mode = (
                                 _agent_prog
                                 and isinstance(_agent_prog, dict)
-                                and _is_programmatic(
+                                and _parse_bool(
                                     next(iter(_agent_prog.values()), {}).get(
-                                        "enableProgrammaticToolCalling", False
+                                        "enableProgrammaticToolCalling"
                                     )
                                 )
                             )
@@ -751,7 +801,7 @@ class PipelineBase:
                                         len(code),
                                     )
                                     try:
-                                        exec_result = await self.run_code(code)
+                                        exec_result = await self.run_code(code, query)
                                     except Exception as _e:
                                         exec_result = {
                                             "output": "",
@@ -827,10 +877,10 @@ class PipelineBase:
                 except asyncio.CancelledError:
                     pass
 
-    async def run_code(self, code: str) -> Dict[str, Any]:
+    async def run_code(self, code: str, task: str) -> Dict[str, Any]:
         try:
             if self.code_sandbox and self.workspace and self.tab_id:
-                return await self.code_sandbox.execute(code, workspace=self.workspace, tab_id=self.tab_id)
+                return await self.code_sandbox.execute(code, task, workspace=self.workspace, tab_id=self.tab_id)
             else:
                 return {"error": "Setup code_sandbox failed"}
         except Exception as e:
