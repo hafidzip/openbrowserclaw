@@ -8,6 +8,10 @@ export class MessageParser {
         const { text: textWithoutComponents, placeholders: componentPlaceholders } =
             this.protectCustomComponents(processed);
         processed = textWithoutComponents;
+        // Protect lowercase HTML elements (e.g. <div>, <span>) before escaping stray brackets
+        const { text: textWithoutHtmlElements, placeholders: htmlElementPlaceholders } =
+            this.protectHtmlElements(processed);
+        processed = textWithoutHtmlElements;
         const { text: textWithoutTables, placeholders: tablePlaceholders } =
             this.protectMdxTables(processed);
         processed = textWithoutTables;
@@ -22,6 +26,7 @@ export class MessageParser {
         processed = this.restorePlaceholders(processed, codePlaceholders, '__CODE_BLOCK_');
         processed = this.restorePlaceholders(processed, tablePlaceholders, '__MDX_TABLE_');
         processed = this.restorePlaceholders(processed, componentPlaceholders, '__COMPONENT_');
+        processed = this.restorePlaceholders(processed, htmlElementPlaceholders, '__HTML_ELEMENT_');
         processed = this.restorePlaceholders(processed, commentPlaceholders, '__HTML_COMMENT_');
         processed = this.escapeThinkComponentBraces(processed);
         return processed;
@@ -42,6 +47,32 @@ export class MessageParser {
         processed = this.restorePlaceholders(processed, codePlaceholders, '__CODE_BLOCK_');
         processed = this.escapeThinkComponentBraces(processed);
         return processed;
+    }
+    /**
+     * Protects well-formed lowercase HTML elements (e.g. <div>, <span>, <p>) from being
+     * mangled by escapeStrayAngleBrackets. Only self-closing and balanced open/close tag
+     * pairs are protected. Attributes (including className) are preserved.
+     */
+    private static protectHtmlElements(text: string): { text: string; placeholders: string[] } {
+        const placeholders: string[] = [];
+        // Match self-closing lowercase tags first: <br />, <input ... />, etc.
+        let result = text.replace(
+            /<([a-z][a-zA-Z0-9]*)((?:\s+[^>]*?)?)\/>/g,
+            (match) => {
+                placeholders.push(match);
+                return `__HTML_ELEMENT_${placeholders.length - 1}__`;
+            }
+        );
+        // Match open tags (including those with attributes like className="...") without self-close
+        // We replace their angle brackets with placeholders so escapeStrayAngleBrackets won't mangle them
+        result = result.replace(
+            /<([a-z][a-zA-Z0-9]*)(?:\s[^>]*?)?\/?>|<\/([a-z][a-zA-Z0-9]*)>/g,
+            (match) => {
+                placeholders.push(match);
+                return `__HTML_ELEMENT_${placeholders.length - 1}__`;
+            }
+        );
+        return { text: result, placeholders };
     }
     private static protectHtmlComments(text: string): { text: string; placeholders: string[] } {
         const placeholders: string[] = [];

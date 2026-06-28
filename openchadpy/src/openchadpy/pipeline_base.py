@@ -1,6 +1,7 @@
 from openchadpy.context import agent_ctx
 import json
 import logging
+import sys
 import os
 import re
 from openchadpy.tool_base import ToolRegistry
@@ -342,8 +343,10 @@ class PipelineBase:
                     _env_header = (
                         "## Environment\n"
                         f"- OS Information: `{os_info}`\n"
-                        f"- Date & Time: `{now_str}`\n"
-                        f"- Current node: `{current_agent_id}`\n"
+                        f"- Current Date & Time: `{now_str}`\n"
+                        f"- Current Node: `{current_agent_id if self.attempt > 0 else 'root'}`\n"
+                        f"- Current Python Version: `{sys.version.split()[0]}`\n"
+                        "- Current Task: `{{current_task}}`\n"
                     )
                     _main_py_block = (
                         "# ./main.py\n\n"
@@ -415,7 +418,14 @@ class PipelineBase:
                         'def get_children_node(node: Node, name: str) -> "Node":\n'
                         '    """Search for a children node by name, only search in node->children, non-recursive."""\n'
                         "    ...\n"
-                        "\n"                        
+                        "\n"
+                        +
+                        (
+                            "# IMPORTANT !!!, read tree CAREFULLY before populating " 
+                            "`next_branches`\n" if allow_multiple else "`next_tasks` and `next_branch`\n"
+                            if children else 
+                            ''
+                        )
                         + tree_code + "\n"
                         "```\n"
                     )
@@ -423,11 +433,11 @@ class PipelineBase:
                         f"You are the `{current_agent_id}` agent. Implement the body of `execute(task: str)` inside `{current_agent_id}/main.py`.\n"
                         "Return **only** the code inside the function body — no signature line, no imports, no explanation, and wrapped it inside a ```python ... ``` block.\n"
                         "\n"
-                        "Example of a CORRECT response (your response should look EXACTLY like this - start directly with indented code, with NO markdown backticks/fences, NO import statements, and NO 'def execute' line):\n"
+                        "Example of a CORRECT response (your response should look EXACTLY like this:\n"
                         "```python\n"
                         "try:\n"
-                        "    # your logic"
-                        "    return ActionResult(result=res)\n"
+                        "    # your logic\n"
+                        "    return ActionResult(result=res, "+"next_tasks=next_tasks, next_branch=next_branch" if allow_multiple else "next_branches=next_branches" +"\n" if children else "    return ActionResult(result=res, "+"next_tasks=[], next_branch=None" if allow_multiple else "next_branches={}" + ")\n"
                         "except Exception as e:\n"
                         "    return ActionResult(result={task: {\"error\": str(e)}})\n"
                         "```\n"
@@ -435,8 +445,12 @@ class PipelineBase:
                         "The following are already available at call time:\n"
                         "\n"
                         "```python\n"
+                        "import json\n"
+                        "import asyncio\n"
+                        "import re\n"
+                        "import datetime\n"
                         "from main import ToolRegistry, ActionResult, get_node, get_children_node\n"
-                        "from typing import Any, Dict, List, Optional\n"
+                        "from typing import Any, Dict, List, Optional, Tuple, Union, Set\n"
                         "\n"
                         'initial_task = """\n'
                         "{{current_task}}\n"
@@ -568,7 +582,7 @@ class PipelineBase:
                         "**Rules:**\n"
                         "- The `call` function's return value is what `llm_tool` passes back to you — return only what you need.\n"
                         "- The `description` at both the function level and parameter level directly influences model quality; be explicit.\n"
-                        "- Fields listed in `required` are always filled by the model; optional fields may be absent from `kwargs`.\n"
+                        "- Fields listed in `required` are always filled by the model; optional fields may be absent from `kwargs`.\n"                 
                         "\n---\n\n"
                         "### Error Handling\n"
                         "\n"
@@ -588,24 +602,41 @@ class PipelineBase:
                         "\n---\n\n"
                         "## Behavior Requirements\n"
                         "\n"
-                        f"- Use the available tools ({tools_list_str}) to research `task` and gather raw findings.\n"
-                        "- Use `llm_tool` to summarize, analyze, classify, or structure tool output before building `result`.\n"
-                        "- Build `result` as `{ task: findings }` where `findings` is a structured dict of your processed output.\n"
-                        + (
-                            "- Initialize `next_branches: Dict[str, List[str]] = {}`; only populate it if research explicitly surfaces follow-up tasks for child branches — map each child branch ID to its list of tasks.\n"
+                        "- **NEVER** call `llm_tool` without `tool_registry`\n"   
+                        "- `tool_registry` `call` function **MUST** be created with `async def my_tool(**kwargs) -> Dict[str, Any]` and **NEVER** use direct lambda functions.\n"
+                        "- `tool_registry` `call` function **MUST** return a plain `Dict[str, Any]`, **DO NOT** return `kwargs.get('value')`, list, string, or other type directly — use `{\"key\": value}` to wrap your data.\n"
+                        "- Use `llm_tool` to transform, summarize, analyze, classify, or structure output.\n"
+                        +
+                        (
+                            f"- Read `tree = Node(...)` carefully, identify `{current_agent_id}` children's tools and skill before populating "
+                            "`next_branches`\n" if allow_multiple else "`next_tasks` and `next_branch`\n"
+                            if children else 
+                            ''
+                        )
+                        +
+                        (
                             '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_branches={})` — `execute()` must never raise.\n'
                             "- Return `ActionResult(result=result, next_branches=next_branches)`.\n"
                             if allow_multiple else
-                            "- Initialize `next_tasks: List[str] = []` and `next_branch: Optional[str] = None`; only populate them if research explicitly surfaces follow-up tasks for a child branch.\n"
-                            '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_tasks=[], next_branch=None)` — `execute()` must never raise.\n'
+                            '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_tasks=[], next_branch=None)` — `execute()` must never raise.\n'                            
+                        ) +
+                        (
                             "- Return `ActionResult(result=result, next_tasks=next_tasks, next_branch=next_branch)`.\n"
+                            if children else
+                            "- Return `ActionResult(result=result, next_tasks=[], next_branch=None)`.\n"
                         )
+                    )
+                    _available_branch = (
+                        f"# Available `next_branch`: \n{''.join(f"- {child['name']}\n" for child in children or [{"name": current_agent_id}])}"
+                        if self.attempt == 0 or children else 
+                        ""
                     )
                     context = (
                         _env_header + "\n---\n\n"
                         + _main_py_block + "\n---\n\n"
                         + _agent_section + "\n---\n\n"
                         + _llm_tool_docs + "\n---\n\n"
+                        + _available_branch + "\n---\n\n"
                         + get_skill_content(agent_node.get("skillPath", ""))
                     )
                 else:
@@ -758,8 +789,15 @@ class PipelineBase:
                     ]
                     
                     multi_step = (agent_ctx.get() is not None)
+                    # Grab the cancel event (may be None when llm_tool is called
+                    # without a full pipeline context, e.g. from tests).
+                    _cancel_ev = getattr(self, "cancel_event", None)
                     
                     while True:
+                        # ── Cancel check before each LLM call ─────────────────
+                        if _cancel_ev and _cancel_ev.is_set():
+                            logger.info("[llm_tool] cancel_event set – aborting before model call")
+                            return {}
                         response = await self.model_manager.text_chat(
                             messages=messages,
                             model_id=model_id,
@@ -796,6 +834,12 @@ class PipelineBase:
                             if is_prog_mode and final_content.strip():
                                 code = _extract_code(final_content)
                                 if code.strip():
+                                    # ── Cancel check before run_code ───────────
+                                    if _cancel_ev and _cancel_ev.is_set():
+                                        logger.info(
+                                            "[llm_tool] cancel_event set – aborting before run_code"
+                                        )
+                                        return {}
                                     logger.info(
                                         "[llm_tool] programmatic mode – executing code (%d chars)",
                                         len(code),
@@ -809,7 +853,31 @@ class PipelineBase:
                                             "result": None,
                                             "success": False,
                                         }
-                                    await _save_history(query, final_content)
+                                    
+                                    res_val = None
+                                    if exec_result.get("success"):
+                                        exec_return = exec_result.get("result")
+                                        if exec_return is not None:
+                                            if hasattr(exec_return, "result"):
+                                                res_val = exec_return.result
+                                            elif isinstance(exec_return, dict) and "result" in exec_return:
+                                                res_val = exec_return.get("result")
+                                            else:
+                                                res_val = exec_return
+                                        
+                                        if isinstance(res_val, dict) or isinstance(res_val, list):
+                                            try:
+                                                res_str = json.dumps(res_val, indent=2)
+                                            except Exception:
+                                                res_str = str(res_val)
+                                        elif res_val is not None:
+                                            res_str = str(res_val)
+                                        else:
+                                            res_str = str(exec_result.get("output") or "Success")
+                                    else:
+                                        res_str = f"Error: {exec_result.get('error') or 'Unknown error'}"
+
+                                    await _save_history(query, res_str)
                                     return exec_result
 
                             if multi_step:
@@ -829,9 +897,19 @@ class PipelineBase:
                                     logger.warning(f"[llm_tool] Failed to parse arguments for {fn_name}: {raw_args}")
                                     kwargs = {}
                                     return {}
+                                # ── Cancel check before each tool execution ────
+                                if _cancel_ev and _cancel_ev.is_set():
+                                    logger.info(
+                                        "[llm_tool] cancel_event set – aborting before tool '%s'",
+                                        fn_name,
+                                    )
+                                    return {}
                                 logger.info(f"[llm_tool] Executing tool '{fn_name}' with kwargs={kwargs}")
                                 if tool_registry and fn_name in tool_registry:
                                     result = await tool_registry[fn_name].execute(**kwargs)
+                                    # Always coerce to dict so callers can safely use .get()
+                                    if not isinstance(result, dict):
+                                        result = {"result": result}
                                 else:
                                     if self.tool_manager:
                                         result = await self.tool_manager.execute_tool(

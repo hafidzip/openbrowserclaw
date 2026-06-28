@@ -78,6 +78,9 @@ class EventEmitter:
         self._max_history_size = 100
         # WebSocket manager (lazy import to avoid circular deps)
         self._manager = None
+        # Serialize concurrent emit() calls so the frontend never receives
+        # interleaved or duplicate messages from parallel coroutines.
+        self._emit_lock: asyncio.Lock = asyncio.Lock()
     @classmethod
 
     def get_instance(cls) -> "EventEmitter":
@@ -120,56 +123,57 @@ class EventEmitter:
             List of connection IDs that failed to receive the event (WebSocket mode)
             Empty list in Tauri mode
         """
-        payload = data or {}
-        manager = self._get_ws_manager()
-        # Tauri mode: Use pytauri Emitter
-        if is_tauri_mode():
-            try:
-                from pytauri.ffi import Emitter
-                safe_event = sanitize_tauri_event(event)
-                json_payload = json.dumps(payload)
-                Emitter.emit_str(_app_handle, safe_event, json_payload) #pyrefly: ignore
-                logger.debug(f"Emitted event '{safe_event}' via Tauri Emitter")
-                message = {
-                    "event": event,
-                    "response": payload
-                }
+        async with self._emit_lock:
+            payload = data or {}
+            manager = self._get_ws_manager()
+            # Tauri mode: Use pytauri Emitter
+            if is_tauri_mode():
                 try:
-                    self._add_to_history(event, payload, ["tauri"])
-                    await manager.broadcast(message, manager.active_websockets.keys()) #pyrefly: ignore
+                    from pytauri.ffi import Emitter
+                    safe_event = sanitize_tauri_event(event)
+                    json_payload = json.dumps(payload)
+                    Emitter.emit_str(_app_handle, safe_event, json_payload) #pyrefly: ignore
+                    logger.debug(f"Emitted event '{safe_event}' via Tauri Emitter")
+                    message = {
+                        "event": event,
+                        "response": payload
+                    }
+                    try:
+                        self._add_to_history(event, payload, ["tauri"])
+                        await manager.broadcast(message, manager.active_websockets.keys()) #pyrefly: ignore
+                    except Exception as e:
+                        pass
+                    return []
                 except Exception as e:
-                    pass
+                    logger.error(f"Failed to emit event via Tauri: {e}")
+                    return []
+            message = {
+                "event": event,
+                "response": payload
+            }
+            # Determine target connections
+            if conn_ids is not None:
+                targets = set(conn_ids)
+            elif event in self._subscriptions and self._subscriptions[event]:
+                # Use subscribers for this event
+                targets = self._subscriptions[event].copy()
+            else:
+                # Broadcast to all connected clients
+                targets = set(manager.active_websockets.keys())
+            # Apply exclusions
+            if exclude_conn_ids:
+                targets -= set(exclude_conn_ids)
+            if not targets:
                 return []
-            except Exception as e:
-                logger.error(f"Failed to emit event via Tauri: {e}")
-                return []
-        message = {
-            "event": event,
-            "response": payload
-        }
-        # Determine target connections
-        if conn_ids is not None:
-            targets = set(conn_ids)
-        elif event in self._subscriptions and self._subscriptions[event]:
-            # Use subscribers for this event
-            targets = self._subscriptions[event].copy()
-        else:
-            # Broadcast to all connected clients
-            targets = set(manager.active_websockets.keys())
-        # Apply exclusions
-        if exclude_conn_ids:
-            targets -= set(exclude_conn_ids)
-        if not targets:
-            return []
-        # Broadcast the event
-        failed = await manager.broadcast(message, list(targets))
-        # Clean up failed connections from subscriptions
-        for failed_id in failed:
-            self._remove_connection(failed_id)
-        # Store in history (optional)
-        self._add_to_history(event, payload, list(targets))
-        logger.debug(f"Emitted event '{event}' to {len(targets)} clients, {len(failed)} failed")
-        return failed
+            # Broadcast the event
+            failed = await manager.broadcast(message, list(targets))
+            # Clean up failed connections from subscriptions
+            for failed_id in failed:
+                self._remove_connection(failed_id)
+            # Store in history (optional)
+            self._add_to_history(event, payload, list(targets))
+            logger.debug(f"Emitted event '{event}' to {len(targets)} clients, {len(failed)} failed")
+            return failed
 
     def emit_nowait(
         self,

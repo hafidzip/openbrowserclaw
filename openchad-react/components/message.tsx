@@ -337,6 +337,14 @@ interface MessageProps {
   activeId: string | null,
 }
 
+const Tasker:FC<{children: ReactNode}> = ({children}) => {
+  return (
+    <div className="flex items-center gap-1 relative">
+      {children}
+    </div>
+  )
+}
+
 export default function Message({ response, id, activeId }: MessageProps) {
   const [MDXContent, setMDXContent] = useState<any>(null);
   const [LastValidMDXContent, setLastValidMDXContent] = useState<any>(null);
@@ -347,6 +355,10 @@ export default function Message({ response, id, activeId }: MessageProps) {
   // ============================================
   const components = useMemo(() => ({
     // Support both PascalCase and lowercase
+    Tasker: Tasker,
+    tasker: Tasker,
+    Spinner: Spinner,
+    spinner: Spinner,
     Alert: AlertBox,
     alert: AlertBox,
     Button: ActionButton,
@@ -385,6 +397,7 @@ export default function Message({ response, id, activeId }: MessageProps) {
       try {
         // Use MessageParser to handle cleanup, custom tags like <think>, and tool calls
         const processedFile = MessageParser.process(response);
+        console.log("[PROCESSED FILE]", JSON.stringify(processedFile));
         // evaluate compiles and executes the MDX
         const { default: Content } = await evaluate(processedFile, {
           ...runtime,
@@ -396,6 +409,7 @@ export default function Message({ response, id, activeId }: MessageProps) {
           setError(null)
         }
       } catch (firstErr: any) {
+        console.error("[MDX FIRST PASS ERROR]", firstErr?.stack || firstErr?.message || firstErr);
         // Second pass: aggressive fallback escape ALL HTML and braces, keep only markdown
         try {
           const aggressiveFallback = MessageParser.aggressiveEscape(response);

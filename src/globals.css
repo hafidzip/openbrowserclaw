@@ -1552,3 +1552,34 @@ body {
 }
 
 
+.shiny-text {
+  /* Alternating your accent with a lighter shade for high contrast contrast */
+  background: linear-gradient(
+    135deg, 
+    hsl(var(--accent)), 
+    hsl(var(--card)), 
+    hsl(var(--accent)), 
+    hsl(var(--card))
+  );
+  background-size: 400% 400%;
+  
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+  
+  /* Smooth, linear infinite loop */
+  animation: text-gradient 4s linear infinite;
+}
+
+@keyframes text-gradient {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}

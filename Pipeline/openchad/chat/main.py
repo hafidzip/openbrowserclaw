@@ -13,6 +13,8 @@ import time
 import copy
 import os
 import re
+import html
+import sys
 logger = logging.getLogger(__name__)
 
 # If self.query exceeds this character count it will be spooled to disk and
@@ -204,28 +206,36 @@ def _parse_action_result(raw: Any) -> Optional[Dict[str, Any]]:
     return None
 
 
-async def _fan_out_branch(pipeline: "Chat", action_result: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Delegate each ``next_task`` to the child node (``next_branch``) via
-    ``pipeline.llm_tool``.
+async def _fan_out_single_branch(
+    pipeline: "Chat",
+    child_id: str,
+    tasks: List[str],
+    cancel_event: Any,
+) -> List[Dict[str, Any]]:
+    """Run *tasks* against a single child branch (``child_id``).
 
-    Returns a list of branch result dicts.  If a child's code itself returns an
-    ``ActionResult`` with ``next_branch`` / ``next_tasks``, this function
-    recurses into the grandchild automatically.
+    Expects ``agent_ctx`` to already be set to the parent node so the child
+    node can be resolved from its ``children`` dict.  The context is swapped
+    to the child for the duration of the call and restored before returning.
+
+    Returns a list of per-task result dicts.
     """
     agent = agent_ctx.get()
     if not agent or not isinstance(agent, dict):
-        logger.warning("[_fan_out_branch] no agent_ctx, skipping fan-out")
+        logger.warning("[_fan_out_single_branch] no agent_ctx, skipping branch '%s'", child_id)
         return []
 
     current_id = next(iter(agent))
     current_node = agent[current_id]
-    child_id = action_result["next_branch"]
     child_node = current_node.get("children", {}).get(child_id)
     if not child_node:
-        logger.warning("[_fan_out_branch] child node '%s' not found in '%s'", child_id, current_id)
+        logger.warning(
+            "[_fan_out_single_branch] child node '%s' not found in '%s'",
+            child_id, current_id,
+        )
         return []
 
-    # Swap agent_ctx / model_id_ctx to the child node for the duration
+    # Swap agent_ctx / model_id_ctx to the child node for the duration.
     old_agent = agent_ctx.get()
     old_model = model_id_ctx.get()
     agent_ctx.set({child_id: child_node})
@@ -235,50 +245,189 @@ async def _fan_out_branch(pipeline: "Chat", action_result: Dict[str, Any]) -> Li
 
     branch_results: List[Dict[str, Any]] = []
     try:
-        for task in action_result["next_tasks"]:
-            try:
-                ans = await pipeline.llm_tool(
-                    query=task,
-                    history_id=child_id,
+        for task in tasks:
+            # Pre-task cancel check.
+            if cancel_event and cancel_event.is_set():
+                logger.info(
+                    "[_fan_out_single_branch] cancel_event set before task '%s' – aborting remaining tasks for '%s'",
+                    task, child_id,
                 )
+                break
+            try:
+                # ── Cancel-aware LLM call (mirrors tool sentinel pattern) ──────
+                _llm_sentinel: Optional[asyncio.Task] = None
+                if cancel_event:
+                    _llm_sentinel = asyncio.get_event_loop().create_task(
+                        cancel_event.wait(),
+                        name=f"cancel_sentinel_fan_out_{child_id}_{id(pipeline)}",
+                    )
+                try:
+                    _llm_task: asyncio.Task = asyncio.get_event_loop().create_task(
+                        pipeline.llm_tool(
+                            query=task,
+                            history_id=child_id,
+                        ),
+                        name=f"llm_tool_fan_out_{child_id}_{id(pipeline)}",
+                    )
+                    try:
+                        if _llm_sentinel is not None:
+                            # Race: whichever finishes first wins.
+                            _done, _ = await asyncio.wait(
+                                {_llm_task, _llm_sentinel},
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            if _llm_sentinel in _done:
+                                # Cancel was requested while the LLM call was in flight.
+                                logger.info(
+                                    "[_fan_out_single_branch] cancel_event fired during llm_tool for task '%s' in branch '%s' – cancelling",
+                                    task, child_id,
+                                )
+                                _llm_task.cancel()
+                                try:
+                                    await _llm_task
+                                except (asyncio.CancelledError, Exception):
+                                    pass
+                                break  # exit the task loop
+                            # LLM call finished normally – retrieve result.
+                            ans = _llm_task.result()
+                        else:
+                            ans = await _llm_task
+                    except asyncio.CancelledError:
+                        _llm_task.cancel()
+                        raise
+                    except Exception:
+                        raise
+                finally:
+                    # Always clean up the sentinel so it never leaks.
+                    if _llm_sentinel is not None and not _llm_sentinel.done():
+                        _llm_sentinel.cancel()
+                        try:
+                            await _llm_sentinel
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                # ─────────────────────────────────────────────────────────────
                 entry: Dict[str, Any] = {"agent_id": child_id, "task": task, "response": ans}
 
-                # ── Recursive fan-out ──
-                # If the child's code returned an exec_result whose .result is
-                # itself an ActionResult with next_branch + next_tasks, recurse.
+                # Recursive fan-out: if the child returned an ActionResult with
+                # next_branch+next_tasks OR next_branches, recurse.
                 if isinstance(ans, dict) and ans.get("success") and ans.get("result") is not None:
                     child_action = _parse_action_result(ans["result"])
-                    if (
-                        child_action
-                        and child_action.get("next_branch")
-                        and child_action.get("next_tasks")
-                    ):
-                        logger.info(
-                            "[_fan_out_branch] recursive fan-out: '%s' → branch='%s', tasks=%s",
-                            child_id,
-                            child_action["next_branch"],
-                            child_action["next_tasks"],
-                        )
-                        # agent_ctx is currently {child_id: child_node}, so
-                        # the recursive call will look up the grandchild
-                        # inside child_node["children"].
-                        sub_results = await _fan_out_branch(pipeline, child_action)
-                        entry["sub_branch_results"] = sub_results
+                    if child_action:
+                        has_single = child_action.get("next_branch") and child_action.get("next_tasks")
+                        has_multi  = bool(child_action.get("next_branches"))
+                        if has_single or has_multi:
+                            # Pre-recursion cancel check.
+                            if cancel_event and cancel_event.is_set():
+                                logger.info(
+                                    "[_fan_out_single_branch] cancel_event set before recursive fan-out from '%s' – skipping",
+                                    child_id,
+                                )
+                            else:
+                                logger.info(
+                                    "[_fan_out_single_branch] recursive fan-out from '%s': next_branch=%s next_branches=%s tasks=%s",
+                                    child_id,
+                                    child_action.get("next_branch"),
+                                    list((child_action.get("next_branches") or {}).keys()),
+                                    child_action.get("next_tasks"),
+                                )
+                                # agent_ctx is currently {child_id: child_node},
+                                # so the recursive call resolves grandchildren
+                                # from child_node["children"].
+                                sub_results = await _fan_out_branch(pipeline, child_action)
+                                entry["sub_branch_results"] = sub_results
 
                 branch_results.append(entry)
             except Exception as exc:
-                logger.exception("[_fan_out_branch] task failed | task=%s", task)
+                logger.exception("[_fan_out_single_branch] task failed | task=%s child=%s", task, child_id)
                 branch_results.append({"agent_id": child_id, "task": task, "error": str(exc)})
     finally:
         agent_ctx.set(old_agent)
         model_id_ctx.set(old_model)
 
     logger.info(
-        "[_fan_out_branch] completed %d branch tasks for '%s'",
+        "[_fan_out_single_branch] completed %d branch tasks for '%s'",
         len(branch_results),
         child_id,
     )
     return branch_results
+
+
+async def _fan_out_branch(pipeline: "Chat", action_result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Delegate tasks to one or more child nodes via ``pipeline.llm_tool``.
+
+    Supports two routing shapes in *action_result*:
+
+    * **Single-branch**: ``{"next_branch": str, "next_tasks": [str, ...]}``
+      – all tasks are sent to the one named child.
+
+    * **Multi-branch**: ``{"next_branches": {branch_id: [str, ...], ...}}``
+      – tasks are grouped per branch and each group is dispatched in order.
+
+    Both shapes may coexist; ``next_branches`` is processed first, then
+    ``next_branch`` / ``next_tasks`` if present.
+
+    Returns a flat list of branch result dicts.  If a child's result is itself
+    an ActionResult with ``next_branch`` / ``next_tasks`` or ``next_branches``,
+    this function recurses automatically.
+
+    Cancellation: checks ``pipeline.cancel_event`` before every branch and
+    every task.  On cancel, returns whatever results were already collected so
+    no work is orphaned and the caller can propagate the signal.
+    """
+    cancel_event = getattr(pipeline, "cancel_event", None)
+    all_results: List[Dict[str, Any]] = []
+
+    # ── Multi-branch path (concurrent) ───────────────────────────────────────
+    next_branches: Dict[str, List[str]] = action_result.get("next_branches") or {}
+    if next_branches:
+        if cancel_event and cancel_event.is_set():
+            logger.info(
+                "[_fan_out_branch] cancel_event set before multi-branch dispatch – aborting",
+            )
+            return all_results
+
+        async def _run_branch(br_id: str, br_tasks: List[str]) -> List[Dict[str, Any]]:
+            if cancel_event and cancel_event.is_set():
+                logger.info(
+                    "[_fan_out_branch] cancel_event set before branch '%s' – skipping",
+                    br_id,
+                )
+                return []
+            logger.info(
+                "[_fan_out_branch] multi-branch dispatch (concurrent): branch='%s', tasks=%s",
+                br_id, br_tasks,
+            )
+            return await _fan_out_single_branch(pipeline, br_id, br_tasks, cancel_event)
+
+        branch_results = await asyncio.gather(
+            *(_run_branch(br_id, br_tasks) for br_id, br_tasks in next_branches.items()),
+            return_exceptions=True,
+        )
+        for item in branch_results:
+            if isinstance(item, BaseException):
+                logger.error("[_fan_out_branch] branch raised an exception: %s", item)
+            else:
+                all_results.extend(item)
+
+    # ── Single-branch path ───────────────────────────────────────────────────
+    single_id: str | None = action_result.get("next_branch")
+    single_tasks: List[str] = list(action_result.get("next_tasks") or [])
+    if single_id and single_tasks:
+        if cancel_event and cancel_event.is_set():
+            logger.info(
+                "[_fan_out_branch] cancel_event set before single branch '%s' – aborting",
+                single_id,
+            )
+            return all_results
+        logger.info(
+            "[_fan_out_branch] single-branch dispatch: branch='%s', tasks=%s",
+            single_id, single_tasks,
+        )
+        results = await _fan_out_single_branch(pipeline, single_id, single_tasks, cancel_event)
+        all_results.extend(results)
+
+    logger.info("[_fan_out_branch] completed total %d results", len(all_results))
+    return all_results
 
 
 def safe_get(data: Any, *keys: Any, default: Any = None) -> Any:
@@ -303,9 +452,15 @@ class Chat(PipelineBase):
     content: str
     tool_logs: List[List[Dict[str, Any]]]
     detect_tool_calls: bool
+    _agent_mode: bool
+    current_agent_id: str | None
+    _programmatic_tool_calling: bool
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        
+        self._agent_mode = False
+        self._programmatic_tool_calling = False
+
         self.prompt = """
         You are a helpful assistant.
         """
@@ -322,16 +477,23 @@ class Chat(PipelineBase):
         agent = agent_ctx.get()
         self.detect_tool_calls = True
         if agent and isinstance(agent, dict):
+            self._agent_mode = True
             # Backup all available tools before filtering
             all_tools = list(self.tools)
             self.root_agent = next(iter(agent))
-            current_agent_id = self.root_agent
-            agent_node = agent.get(current_agent_id)
+            self.current_agent_id = self.root_agent
+            agent_node = agent.get(self.current_agent_id)
             if agent_node:
                 # Add agent_query tool schema if children exist
                 children = agent_node.get("children")
                 is_programmatic = _parse_bool(agent_node.get("enableProgrammaticToolCalling"))
                 allow_multiple = _parse_bool(agent_node.get("allowMultiple"))
+                # Store state needed for _build_system_prompt() rebuilds
+                self._agent_node = agent_node
+                self._all_tools = all_tools
+                self._allow_multiple = allow_multiple
+                self._agent_children = children
+                self._is_programmatic = is_programmatic
                 if children:  
                     if allow_multiple:
                         self.tools.append({
@@ -517,10 +679,16 @@ class Chat(PipelineBase):
 
                     return "\n".join(lines).strip()
 
+                # Store helpers so _build_system_prompt() can call them after __init__
+                self._get_skill_content = get_skill_content
+                self._get_skill_info = get_skill_info
+                self._format_agent = format_agent
+
                 # Ensure agent_query is allowed if children exist
                 allowed_tools = set(agent_node.get("tools", []))
                 if children:
                     allowed_tools.add("agent_query")
+                self._allowed_tools = allowed_tools
 
                 # Filter self.tools for the root agent
                 self.tools = [
@@ -530,365 +698,10 @@ class Chat(PipelineBase):
 
                 logger.warning("Agent Node Information: %s", json.dumps(agent_node))
 
-                if is_programmatic:
-                    self.detect_tool_calls = False
-                    # Recursive agent prompt tree formatter
-                    def format_node_code(a_id: str, a_node: dict, indent: str = "") -> str:
-                        skill_path = a_node.get("skillPath", "")
-                        fname, skill_desc = get_skill_info(skill_path) if skill_path else ("", "No description available")
-                        node_children = a_node.get("children", {})
-                        tools = list(a_node.get("tools", []))
-                        if node_children and "agent_query" not in tools:
-                            tools.append("agent_query")
-                        tools_str = ", ".join(f'"{t}"' for t in sorted(tools))
-                        module_name = a_id.replace("-", "_")
-                        lines = [
-                            f"{indent}Node(",
-                            f"{indent}    name=\"{a_id}\",",
-                            f"{indent}    skill=Skill(",
-                            f"{indent}        path=\"{skill_path}\",",
-                            f"{indent}        description=\"{skill_desc}\",",
-                            f"{indent}    ),",
-                            f"{indent}    available_tools=[{tools_str}],",
-                            f"{indent}    module_path=\"{a_id}/main.py\",",
-                            f"{indent}    module_name=\"{module_name}\","
-                        ]
-                        if node_children:
-                            lines.append(f"{indent}    children=[")
-                            for child_id, child_node in node_children.items():
-                                child_code = format_node_code(child_id, child_node, indent + "        ")
-                                lines.append(child_code + ",")
-                            lines.append(f"{indent}    ],")
-                        lines.append(f"{indent})")
-                        return "\n".join(lines)
-
-                    import platform
-                    from datetime import datetime
-                    os_info = f"{platform.system()} {platform.release()}"
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    tree_code = format_node_code(current_agent_id, agent_node, "        ")
-                    skill_path , skill_desc = get_skill_info(agent_node.get("skillPath", ""))
-                    tool_defs = []
-                    for t_name in sorted(allowed_tools):
-                        t_desc = "No description available"
-                        for t in all_tools:
-                            if isinstance(t, dict) and t.get("function", {}).get("name") == t_name:
-                                t_desc = t.get("function", {}).get("description") or "No description available"
-                                break
-                        t_desc = t_desc.strip()
-                        tool_def = (
-                            f"async def {t_name}(query: str) -> str:\n"
-                            f"    \"\"\"\n"
-                            f"    {t_desc}\n"
-                            f"    \"\"\"\n"
-                            f"    ..."
-                        )
-                        tool_defs.append(tool_def)
-                    tools_code = "\n\n".join(tool_defs)
-                    tools_list_str = ", ".join(sorted(allowed_tools))
-
-                    # Build the programmatic system prompt as plain string concatenation.
-                    # Only use f-strings for sections that need variable interpolation;
-                    # the rest stays as regular string literals so braces are never escaped.
-                    _env_header = (
-                        "## Environment\n"
-                        f"- OS Information: `{os_info}`\n"
-                        f"- Date & Time: `{now_str}`\n"
-                        f"- Current node: `{current_agent_id if self.attempt > 0 else 'root'}`\n"
-                    )
-                    _main_py_block = (
-                        "# ./main.py\n\n"
-                        "```python\n"
-                        "import sys\n"
-                        "import importlib.util\n"
-                        "from collections import deque\n"
-                        "from dataclasses import dataclass, field\n"
-                        "from typing import Any, Awaitable, Callable, Dict, List, Optional\n"
-                        "\n\n"
-                        "class ToolRegistry:\n"
-                        "    call: Callable[..., Awaitable[Dict[str, Any]]]\n"
-                        "    schema: Dict[str, Any]\n"
-                        "\n"
-                        "    def __init__(\n"
-                        "        self,\n"
-                        "        call: Callable[..., Awaitable[Dict[str, Any]]],\n"
-                        "        schema: Dict[str, Any],\n"
-                        "    ):\n"
-                        "        self.call = call\n"
-                        "        self.schema = schema\n"
-                        "\n"
-                        "    async def execute(self, **kwargs) -> Dict[str, Any]:\n"
-                        "        return await self.call(**kwargs)\n"
-                        "\n\n"
-                        "def load(path: str, name: str) -> Any:\n"
-                        '    """Dynamically loads a Python module from `path`, registers it in sys.modules under `name`, and returns the loaded module object."""\n'
-                        "    ...\n"
-                        "\n"
-                        "@dataclass\n"
-                        "class ActionResult:\n"
-                        "    result: Dict[str, Any]\n"
-                        + (
-                            "    next_branches: Dict[str, List[str]] = field(default_factory=dict)\n"
-                            if allow_multiple else
-                            "    next_tasks: List[str] = field(default_factory=list)\n"
-                            "    next_branch: Optional[str] = None\n"
-                        )
-                        + "\n\n"
-                        "@dataclass\n"
-                        "class Skill:\n"
-                        "    path: str\n"
-                        "    description: str\n"
-                        "\n\n"
-                        "@dataclass\n"
-                        "class Node:\n"
-                        "    name: str\n"
-                        "    skill: Skill\n"
-                        "    available_tools: List[str]\n"
-                        "    module_path: str\n"
-                        "    module_name: str\n"
-                        '    children: List["Node"] = field(default_factory=list)\n'
-                        "    _module: Any = field(default=None, init=False, repr=False)\n"
-                        "\n"
-                        "    @property\n"
-                        "    def module(self) -> Any:\n"
-                        '        """Lazily load the node\'s module on first access."""\n'
-                        "        if self._module is None:\n"
-                        "            self._module = load(self.module_path, self.module_name)\n"
-                        "        return self._module\n"
-                        "\n"
-                        '    async def execute(self, task: str = "") -> "ActionResult":\n'
-                        "        return await self.module.execute(task)\n"
-                        "\n\n"
-                        'def get_node(name: str) -> "Node":\n'
-                        '    """BFS search for a node by name starting from the root tree."""\n'
-                        "    ...\n"
-                        "\n\n"
-                        'def get_children_node(node: Node, name: str) -> "Node":\n'
-                        '    """Search for a children node by name, only search in node->children, non-recursive."""\n'
-                        "    ...\n"
-                        "\n"
-                        "tree = Node(\n"
-                        '    name="root",\n'
-                        '    skill=Skill(\n'
-                        '        path="{skill_path}",\n'
-                        '        description="{skill_desc}",\n'
-                        '    ),\n'
-                        f'    available_tools=[{tools_list_str}],\n'
-                        '    module_path="root/main.py",\n'
-                        '    module_name="root",\n'
-                        '    children=[\n'
-                        f'{tree_code}\n'
-                        '    ],\n'
-                        ')\n'
-                        # "tree = " + tree_code + "\n"
-                        "```\n"
-                    )
-                    _agent_section = (
-                        f"You are the `{current_agent_id if self.attempt > 0 else 'root'}` agent. Implement the body of `execute(task: str)` inside `{current_agent_id if self.attempt > 0 else 'root'}/main.py`.\n"
-                        "Return **only** the code inside the function body — no signature line, no imports, no explanation, and wrapped it inside a ```python ... ``` block.\n"
-                        "\n"
-                        "Example of a CORRECT response (your response should look EXACTLY like this - start directly with indented code, with NO markdown backticks/fences, NO import statements, and NO 'def execute' line):\n"
-                        "```python\n"
-                        "try:\n"
-                        "    # your logic"
-                        "    return ActionResult(result=res)\n"
-                        "except Exception as e:\n"
-                        "    return ActionResult(result={task: {\"error\": str(e)}})\n"
-                        "```\n"
-                        "\n"
-                        "The following are already available at call time:\n"
-                        "\n"
-                        "```python\n"
-                        "from main import ToolRegistry, ActionResult, get_node, get_children_node\n"
-                        "from typing import Any, Dict, List, Optional\n"
-                        "\n"
-                        'initial_task = """\n'
-                        "{{current_task}}\n"
-                        '"""\n'
-                        "\n"
-                        "async def llm_tool(\n"
-                        "    query: str,\n"
-                        "    tool_registry: Optional[Dict[str, ToolRegistry]] = None,\n"
-                        ") -> Dict[str, Any]:\n"
-                        '    """\n'
-                        "    Sends `query` to the language model, optionally supplying callable tools from\n"
-                        "    `tool_registry`, and returns a dict containing the model's response text and\n"
-                        "    any tool-use results.\n"
-                        '    """\n'
-                        "    ...\n"
-                        "\n"
-                        "# Tools\n"
-                        + tools_code + "\n"
-                        "\n"
-                        "async def main() -> List[Dict[str, Any]]:\n"
-                        '    """\n'
-                        + f"    Entry-point coroutine: runs the {current_agent_id if self.attempt > 0 else 'root'} node on `initial_task`, fans out\n"
-                        "    to any follow-up branch tasks declared in the returned ActionResult, and returns\n"
-                        "    the collected list of all result payloads.\n"
-                        '    """\n'
-                        "    results: List[Dict[str, Any]] = []\n"
-                        + f'    node = get_node("{current_agent_id if self.attempt > 0 else 'root'}")\n'
-                        "    data: ActionResult = await node.execute(initial_task)\n"
-                        "    results.append(data.result)\n"
-                        "    # (parent_node, branch_id, task)\n"
-                        "    queue: deque[tuple] = deque()\n"
-                        + (
-                            "    if data.next_branches:\n"
-                            "        for branch_id, tasks in data.next_branches.items():\n"
-                            "            for task in tasks:\n"
-                            "                queue.append((node, branch_id, task))\n"
-                            "    while queue:\n"
-                            "        parent_node, branch_id, task = queue.popleft()\n"
-                            "        branch_node = get_children_node(parent_node, branch_id)\n"
-                            "        branch_data: ActionResult = await branch_node.execute(task)\n"
-                            "        results.append(branch_data.result)\n"
-                            "        if branch_data.next_branches:\n"
-                            "            for br_id, ts in branch_data.next_branches.items():\n"
-                            "                for t in ts:\n"
-                            "                    queue.append((branch_node, br_id, t))\n"
-                            "    return results\n"
-                            if allow_multiple else
-                            "    if data.next_branch and data.next_tasks:\n"
-                            "        for task in data.next_tasks:\n"
-                            "            queue.append((node, data.next_branch, task))\n"
-                            "    while queue:\n"
-                            "        parent_node, branch_id, task = queue.popleft()\n"
-                            "        branch_node = get_children_node(parent_node, branch_id)\n"
-                            "        branch_data: ActionResult = await branch_node.execute(task)\n"
-                            "        results.append(branch_data.result)\n"
-                            "        if branch_data.next_branch and branch_data.next_tasks:\n"
-                            "            for t in branch_data.next_tasks:\n"
-                            "                queue.append((branch_node, branch_data.next_branch, t))\n"
-                            "    return results\n"
-                        )
-                        + "```\n"
-                    )
-                    _llm_tool_docs = (
-                        "## Using `llm_tool`\n"
-                        "\n"
-                        "`llm_tool` is a **structured-output-only** LLM call. Under the hood, the model is instructed to call a tool on every response — it never returns plain text. You supply one or more `ToolRegistry` objects; the model picks the right one, fills in the parameters, and your `call` function receives those arguments as `**kwargs`.\n"
-                        "\n"
-                        "Use `llm_tool` whenever you need to transform, condense, or structure raw data.\n"
-                        "\n---\n\n"
-                        "### Signature\n"
-                        "\n"
-                        "```python\n"
-                        "res: Dict[str, Any] = await llm_tool(\n"
-                        '    query="<prompt describing what the model should do>",\n'
-                        '    tool_registry={"tool_name": ToolRegistry(...)}\n'
-                        ")\n"
-                        "```\n"
-                        "\n"
-                        "| Parameter | Type | Description |\n"
-                        "|---|---|---|\n"
-                        "| `query` | `str` | The full prompt: include context, instructions, and any content to process. |\n"
-                        "| `tool_registry` | `Dict[str, ToolRegistry]` | Maps tool name → `ToolRegistry`. The **key must exactly match** `function.name` in the schema. |\n"
-                        '| **Returns** | `Dict[str, Any]` | The `dict` returned by your `call` function (single tool call). Returns `{}` on any error. |\n'
-                        "\n"
-                        "> **`llm_tool` returns `{}` on every error** — no model, no tool calls produced, JSON parse failure, etc.\n"
-                        "> Always check `if not res:` before reading fields.\n"
-                        "\n---\n\n"
-                        "### Defining a `ToolRegistry`\n"
-                        "\n"
-                        "```python\n"
-                        '""""\n'
-                        "async def my_call(**kwargs) -> Dict[str, Any]:\n"
-                        '    value = kwargs.get("input_field", "") # Extract the input parameter sent by the LLM \n'
-                        "    # -- Process the value here (OPTIONAL) --\n"
-                        "    # Skip this entire block if the tool only needs to echo the LLM's input\n"
-                        "    # straight to the output (e.g. the tool's purpose is just to capture or\n"
-                        "    # store what the LLM provided, with no transformation needed).\n"
-                        "    #\n"
-                        "    # Only add processing if you need to transform the value (string manipulation, validation, computation) with:\n"
-                        "    #   - Run a sub-task via another `llm_tool` (e.g. classification, rewriting)\n"
-                        f"    #  - Fetch external data with `await` ({tools_list_str})\n"
-                        "    # --\n"
-                        '    return {"output_field": processed_value or value }  # return this dict is what llm_tool returns to you\n'
-                        '""""\n'
-                        "\n"
-                        "my_tool = ToolRegistry(\n"
-                        "    call=my_call,\n"
-                        "    schema={\n"
-                        '        "type": "function",\n'
-                        '        "function": {\n'
-                        '            "name": "my_tool",          # Must match the key in tool_registry dict\n'
-                        '            "description": "...",       # Be precise — the model reads this to decide when/how to call\n'
-                        '            "parameters": {\n'
-                        '                "type": "object",\n'
-                        '                "properties": {\n'
-                        '                    "output_field": {\n'
-                        '                        "type": "string",\n'
-                        '                        "description": "Description the model uses to fill this field"\n'
-                        "                    }\n"
-                        "                },\n"
-                        '                "required": ["output_field"]\n'
-                        "            }\n"
-                        "        }\n"
-                        "    }\n"
-                        ")\n"
-                        "```\n"
-                        "\n"
-                        "**Rules:**\n"
-                        "- The `call` function's return value is what `llm_tool` passes back to you — return only what you need.\n"
-                        "- The `description` at both the function level and parameter level directly influences model quality; be explicit.\n"
-                        "- Fields listed in `required` are always filled by the model; optional fields may be absent from `kwargs`.\n"
-                        "\n---\n\n"
-                        "### Error Handling\n"
-                        "\n"
-                        "`llm_tool` returns `{}` on every internal failure: missing model, no tool calls produced, JSON parse error.\n"
-                        "Always guard before reading any field:\n"
-                        "\n"
-                        "```python\n"
-                        'res = await llm_tool(query, tool_registry={"my_tool": my_tool})\n'
-                        "\n"
-                        "if not res:\n"
-                        '    raise RuntimeError("llm_tool returned empty — check model config and tool schema")\n'
-                        "\n"
-                        'value = res.get("field", default_value)\n'
-                        "```\n"
-                        "\n"
-                        "Inside `execute`, this is already covered by the top-level `try/except` (see Behavior Requirements below), but defensive `.get()` calls with defaults prevent silent data loss.\n"
-                        "\n---\n\n"
-                        "## Behavior Requirements\n"
-                        "\n"
-                        f"- Use the available tools ({tools_list_str}) to research `task` and gather raw findings.\n"
-                        "- Use `llm_tool` to summarize, analyze, classify, or structure tool output before building `result`.\n"
-                        "- Build `result` as `{ task: findings }` where `findings` is a structured dict of your processed output.\n"
-                        + (
-                            "- Initialize `next_branches: Dict[str, List[str]] = {}`; only populate it if research explicitly surfaces follow-up tasks for child branches — map each child branch ID to its list of tasks.\n"
-                            '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_branches={})` — `execute()` must never raise.\n'
-                            "- Return `ActionResult(result=result, next_branches=next_branches)`.\n"
-                            if allow_multiple else
-                            "- Initialize `next_tasks: List[str] = []` and `next_branch: Optional[str] = None`; only populate them if research explicitly surfaces follow-up tasks for a child branch.\n"
-                            '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_tasks=[], next_branch=None)` — `execute()` must never raise.\n'
-                            "- Return `ActionResult(result=result, next_tasks=next_tasks, next_branch=next_branch)`.\n"
-                        )
-                    )
-                    self.prompt = (
-                        _env_header + "\n---\n\n"
-                        + _main_py_block + "\n---\n\n"
-                        + _agent_section + "\n---\n\n"
-                        + _llm_tool_docs + "\n---\n\n"  
-                        + get_skill_content(agent_node.get("skillPath", ""))
-                    )
-                else:
-                    # Generate raw prompt and clean up consecutive newlines
-                    raw_prompt = format_agent(current_agent_id, agent_node, 0)
-                    self.prompt = re.sub(r'\n{3,}', '\n\n', raw_prompt).strip()
-                    import platform
-                    from datetime import datetime
-                    os_info = f"{platform.system()} {platform.release()}"
-                    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    self.prompt += (
-                        f"\n\n## Environment\n"
-                        f"- OS Information: {os_info}\n"
-                        f"- Current Date & Time: {now_str}"
-                    )
-
-                self.message_template[0]["content"] = self.prompt
+                self._build_system_prompt()
         
         self.logs = {}
-        self.parser = Parser(detect_tool_calls=self.detect_tool_calls, detect_code_blocks=False)
+        self.parser = Parser(detect_tool_calls=self.detect_tool_calls, detect_code_blocks=True)
         self._stream_start_time = 0.0
         self._stream_end_time = 0.0
         self._completion_tokens = 0
@@ -897,6 +710,8 @@ class Chat(PipelineBase):
         self.r: Dict[str, Any] = {}
         self.content = ""
         self.tool_logs = []
+        self._sync_lock = asyncio.Lock()
+        self._last_sync_time = 0.0
         # Agent task planning state
         self._agent_tasks: List[str] = []    # tasks from create_tasks
         self._task_context_messages: List[Dict[str, str]] = []  # accumulated prior task messages
@@ -1151,7 +966,418 @@ class Chat(PipelineBase):
             )
         return self._costs
 
-    # ── Agent task-planning helpers ──────────────────────────────────────
+    #  Agent system-prompt builder (callable from __init__ and after next_tasks) 
+    def _build_system_prompt(self) -> None:
+        """(Re-)build ``self.prompt`` and sync it into ``self.message_template``.
+
+        Uses the state stored during ``__init__``:
+        ``_agent_node``, ``_all_tools``, ``_allowed_tools``,
+        ``_allow_multiple``, ``_agent_children``, ``_is_programmatic``.
+        Safe to call again whenever ``self.current_agent_id`` or
+        ``self.attempt`` changes (e.g. after ``next_tasks`` is found).
+        """
+        agent_node   = getattr(self, "_agent_node", None)
+        all_tools    = getattr(self, "_all_tools", [])
+        allowed_tools = getattr(self, "_allowed_tools", set())
+        allow_multiple = getattr(self, "_allow_multiple", False)
+        children     = getattr(self, "_agent_children", None)
+        is_programmatic = getattr(self, "_is_programmatic", False)
+        get_skill_content = getattr(self, "_get_skill_content", lambda p: "")
+        get_skill_info    = getattr(self, "_get_skill_info",    lambda p: ("", ""))
+        format_agent      = getattr(self, "_format_agent",      lambda a, n, d: "")
+
+        if agent_node is None:
+            return  # No agent context – nothing to build.
+
+        if is_programmatic:
+            self.detect_tool_calls = False
+
+            # Recursive tree formatter (mirrors the old inline version)
+            def format_node_code(a_id: str, a_node: dict, indent: str = "") -> str:
+                skill_path = a_node.get("skillPath", "")
+                _, skill_desc = get_skill_info(skill_path) if skill_path else ("", "No description available")
+                node_children = a_node.get("children", {})
+                tools = list(a_node.get("tools", []))
+                if node_children and "agent_query" not in tools:
+                    tools.append("agent_query")
+                tools_str = ", ".join(f'"{t}"' for t in sorted(tools))
+                lines = [
+                    f"{indent}Node(",
+                    f"{indent}    name=\"{a_id}\",",
+                    f"{indent}    skill=Skill(",
+                    f"{indent}        path=\"{skill_path}\",",
+                    f"{indent}        description=\"{skill_desc}\",",
+                    f"{indent}    ),",
+                    f"{indent}    available_tools=[{tools_str}],",
+                    f"{indent}    module_path=\"{a_id}/main.py\",",
+                    f"{indent}    module_name=\"{a_id.replace('-', '_')}\",",
+                ]
+                if node_children:
+                    lines.append(f"{indent}    children=[")
+                    for child_id, child_node in node_children.items():
+                        lines.append(format_node_code(child_id, child_node, indent + "        ") + ",")
+                    lines.append(f"{indent}    ],")
+                lines.append(f"{indent})")
+                return "\n".join(lines)
+
+            import platform
+            from datetime import datetime
+            os_info  = f"{platform.system()} {platform.release()}"
+            now_str  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            node_id  = self.current_agent_id if self.attempt > 0 else "root"
+            tree_code = format_node_code(self.current_agent_id, agent_node, "        ") #pyrefly: ignore
+
+            tool_defs: List[str] = []
+            for t_name in sorted(allowed_tools):
+                t_desc = "No description available"
+                for t in all_tools:
+                    if isinstance(t, dict) and t.get("function", {}).get("name") == t_name:
+                        t_desc = t.get("function", {}).get("description") or "No description available"
+                        break
+                t_desc = t_desc.strip()
+                tool_defs.append(
+                    f"async def {t_name}(query: str) -> str:\n"
+                    f"    \"\"\"\n"
+                    f"    {t_desc}\n"
+                    f"    \"\"\"\n"
+                    f"    ..."
+                )
+            tools_code     = "\n\n".join(tool_defs)
+            tools_list_str = ", ".join(sorted(allowed_tools))
+
+            _env_header = (
+                "## Environment\n"
+                f"- OS Information: `{os_info}`\n"
+                f"- Current Date & Time: `{now_str}`\n"
+                f"- Current Node: `{node_id}`\n"
+                f"- Current Python Version: `{sys.version.split()[0]}`\n"
+                "- Current Task: `{{current_task}}`\n"
+            )
+            _main_py_block = (
+                "# ./main.py\n\n"
+                "```python\n"
+                "import sys\n"
+                "import importlib.util\n"
+                "from collections import deque\n"
+                "from dataclasses import dataclass, field\n"
+                "from typing import Any, Awaitable, Callable, Dict, List, Optional\n"
+                "\n\n"
+                "class ToolRegistry:\n"
+                "    call: Callable[..., Awaitable[Dict[str, Any]]]\n"
+                "    schema: Dict[str, Any]\n"
+                "\n"
+                "    def __init__(\n"
+                "        self,\n"
+                "        call: Callable[..., Awaitable[Dict[str, Any]]],\n"
+                "        schema: Dict[str, Any],\n"
+                "    ):\n"
+                "        self.call = call\n"
+                "        self.schema = schema\n"
+                "\n"
+                "    async def execute(self, **kwargs) -> Dict[str, Any]:\n"
+                "        return await self.call(**kwargs)\n"
+                "\n\n"
+                "def load(path: str, name: str) -> Any:\n"
+                '    """Dynamically loads a Python module from `path`, registers it in sys.modules under `name`, and returns the loaded module object."""\n'
+                "    ...\n"
+                "\n"
+                "@dataclass\n"
+                "class ActionResult:\n"
+                "    result: Dict[str, Any]\n"
+                + (
+                    "    next_branches: Dict[str, List[str]] = field(default_factory=dict)\n"
+                    if allow_multiple and self.attempt > 0 else
+                    "    next_tasks: List[str] = field(default_factory=list)\n"
+                    "    next_branch: Optional[str] = None\n"
+                )
+                + "\n\n"
+                "@dataclass\n"
+                "class Skill:\n"
+                "    path: str\n"
+                "    description: str\n"
+                "\n\n"
+                "@dataclass\n"
+                "class Node:\n"
+                "    name: str\n"
+                "    skill: Skill\n"
+                "    available_tools: List[str]\n"
+                "    module_path: str\n"
+                "    module_name: str\n"
+                '    children: List["Node"] = field(default_factory=list)\n'
+                "    _module: Any = field(default=None, init=False, repr=False)\n"
+                "\n"
+                "    @property\n"
+                "    def module(self) -> Any:\n"
+                '        """Lazily load the node\'s module on first access."""\n'
+                "        if self._module is None:\n"
+                "            self._module = load(self.module_path, self.module_name)\n"
+                "        return self._module\n"
+                "\n"
+                '    async def execute(self, task: str = "") -> "ActionResult":\n'
+                "        return await self.module.execute(task)\n"
+                "\n\n"
+                'def get_node(name: str) -> "Node":\n'
+                '    """BFS search for a node by name starting from the root tree."""\n'
+                "    ...\n"
+                "\n\n"
+                'def get_children_node(node: Node, name: str) -> "Node":\n'
+                '    """Search for a children node by name, only search in node->children, non-recursive."""\n'
+                "    ...\n"
+                "\n"
+                + (
+                    "# IMPORTANT !!!, read tree CAREFULLY before populating "
+                    "`next_branches`\n" if allow_multiple and self.attempt > 0
+                    else "`next_tasks` and `next_branch`\n" if (self.attempt == 0 or children)
+                    else ""
+                )
+                + "\ntree = Node(\n"
+                '    name="root",\n'
+                '    skill=Skill(\n'
+                '        path="{skill_path}",\n'
+                '        description="{skill_desc}",\n'
+                '    ),\n'
+                f'    available_tools=[{tools_list_str}],\n'
+                '    module_path="root/main.py",\n'
+                '    module_name="root",\n'
+                '    children=[\n'
+                f'{tree_code}\n'
+                '    ],\n'
+                ')\n'
+                "```\n"
+            )
+            _agent_section = (
+                f"You are the `{node_id}` agent. Implement the body of `execute(task: str)` inside `{node_id}/main.py`.\n"
+                "Return **only** the code inside the function body — no signature line, no imports, no explanation, and wrapped it inside a ```python ... ``` block.\n"
+                "\n"
+                "Example of a CORRECT response (your response should look EXACTLY like this:\n"
+                "```python\n"
+                "try:\n"
+                "    # your logic\n"
+                + (
+                    "    return ActionResult(result=res, next_branches=next_branches)\n"
+                    if allow_multiple and self.attempt > 0 else
+                    "    return ActionResult(result=res, next_tasks=next_tasks, next_branch=next_branch)\n"
+                )
+                + "except Exception as e:\n"
+                '    return ActionResult(result={task: {"error": str(e)}})\n'
+                "```\n"
+                "\n"
+                "The following are already available at call time:\n"
+                "\n"
+                "```python\n"
+                "import json\n"
+                "import asyncio\n"
+                "import re\n"
+                "import datetime\n"
+                "from main import ToolRegistry, ActionResult, get_node, get_children_node\n"
+                "from typing import Any, Dict, List, Optional, Tuple, Union, Set\n"
+                "\n"
+                'initial_task = """\n'
+                "{{current_task}}\n"
+                '"""\n'
+                "\n"
+                "async def llm_tool(\n"
+                "    query: str,\n"
+                "    tool_registry: Optional[Dict[str, ToolRegistry]] = None,\n"
+                ") -> Dict[str, Any]:\n"
+                '    """\n'
+                "    Sends `query` to the language model, optionally supplying callable tools from\n"
+                "    `tool_registry`, and returns a dict containing the model's response text and\n"
+                "    any tool-use results.\n"
+                '    """\n'
+                "    ...\n"
+                "\n"
+                "# Tools\n"
+                + tools_code + "\n"
+                "\n"
+                "async def main() -> List[Dict[str, Any]]:\n"
+                '    """\n'
+                + f"    Entry-point coroutine: runs the {node_id} node on `initial_task`, fans out\n"
+                "    to any follow-up branch tasks declared in the returned ActionResult, and returns\n"
+                "    the collected list of all result payloads.\n"
+                '    """\n'
+                "    results: List[Dict[str, Any]] = []\n"
+                + f'    node = get_node("{node_id}")\n'
+                "    data: ActionResult = await node.execute(initial_task)\n"
+                "    results.append(data.result)\n"
+                "    # (parent_node, branch_id, task)\n"
+                "    queue: deque[tuple] = deque()\n"
+                + (
+                    "    if data.next_branches:\n"
+                    "        for branch_id, tasks in data.next_branches.items():\n"
+                    "            for task in tasks:\n"
+                    "                queue.append((node, branch_id, task))\n"
+                    "    while queue:\n"
+                    "        parent_node, branch_id, task = queue.popleft()\n"
+                    "        branch_node = get_children_node(parent_node, branch_id)\n"
+                    "        branch_data: ActionResult = await branch_node.execute(task)\n"
+                    "        results.append(branch_data.result)\n"
+                    "        if branch_data.next_branches:\n"
+                    "            for br_id, ts in branch_data.next_branches.items():\n"
+                    "                for t in ts:\n"
+                    "                    queue.append((branch_node, br_id, t))\n"
+                    "    return results\n"
+                    if allow_multiple and self.attempt > 0 else
+                    "    if data.next_branch and data.next_tasks:\n"
+                    "        for task in data.next_tasks:\n"
+                    "            queue.append((node, data.next_branch, task))\n"
+                    "    while queue:\n"
+                    "        parent_node, branch_id, task = queue.popleft()\n"
+                    "        branch_node = get_children_node(parent_node, branch_id)\n"
+                    "        branch_data: ActionResult = await branch_node.execute(task)\n"
+                    "        results.append(branch_data.result)\n"
+                    "        if branch_data.next_branch and branch_data.next_tasks:\n"
+                    "            for t in branch_data.next_tasks:\n"
+                    "                queue.append((branch_node, branch_data.next_branch, t))\n"
+                    "    return results\n"
+                )
+                + "```\n"
+            )
+            _llm_tool_docs = (
+                "## Using `llm_tool`\n"
+                "\n"
+                "`llm_tool` is a **structured-output-only** LLM call. Under the hood, the model is instructed to call a tool on every response — it never returns plain text. You supply one or more `ToolRegistry` objects; the model picks the right one, fills in the parameters, and your `call` function receives those arguments as `**kwargs`.\n"
+                "\n"
+                "Use `llm_tool` whenever you need to transform, condense, or structure raw data.\n"
+                "\n---\n\n"
+                "### Signature\n"
+                "\n"
+                "```python\n"
+                "res: Dict[str, Any] = await llm_tool(\n"
+                '    query="<prompt describing what the model should do>",\n'
+                '    tool_registry={"tool_name": ToolRegistry(...)}\n'
+                ")\n"
+                "```\n"
+                "\n"
+                "| Parameter | Type | Description |\n"
+                "|---|---|---|\n"
+                "| `query` | `str` | The full prompt: include context, instructions, and any content to process. |\n"
+                "| `tool_registry` | `Dict[str, ToolRegistry]` | Maps tool name \u2192 `ToolRegistry`. The **key must exactly match** `function.name` in the schema. |\n"
+                '| **Returns** | `Dict[str, Any]` | The `dict` returned by your `call` function (single tool call). Returns `{}` on any error. |\n'
+                "\n"
+                "> **`llm_tool` returns `{}` on every error** \u2014 no model, no tool calls produced, JSON parse failure, etc.\n"
+                "> Always check `if not res:` before reading fields.\n"
+                "\n---\n\n"
+                "### Defining a `ToolRegistry`\n"
+                "\n"
+                "```python\n"
+                '""""\n'
+                "async def my_call(**kwargs) -> Dict[str, Any]:\n"
+                '    value = kwargs.get("input_field", "") # Extract the input parameter sent by the LLM\n'
+                "    # -- Process the value here (OPTIONAL) --\n"
+                "    # Only add processing if you need to transform the value (string manipulation, validation, computation) with:\n"
+                "    #   - Run a sub-task via another `llm_tool` (e.g. classification, rewriting)\n"
+                f"    #  - Fetch external data with `await` ({tools_list_str})\n"
+                "    # --\n"
+                '    return {"output_field": processed_value or value}\n'
+                '""""\n'
+                "\n"
+                "my_tool = ToolRegistry(\n"
+                "    call=my_call,\n"
+                "    schema={\n"
+                '        "type": "function",\n'
+                '        "function": {\n'
+                '            "name": "my_tool",\n'
+                '            "description": "...",\n'
+                '            "parameters": {\n'
+                '                "type": "object",\n'
+                '                "properties": {\n'
+                '                    "output_field": {\n'
+                '                        "type": "string",\n'
+                '                        "description": "Description the model uses to fill this field"\n'
+                "                    }\n"
+                "                },\n"
+                '                "required": ["output_field"]\n'
+                "            }\n"
+                "        }\n"
+                "    }\n"
+                ")\n"
+                "```\n"
+                "\n"
+                "**Rules:**\n"
+                "- The `call` function **MUST return a `dict`** \u2014 `llm_tool` always returns `Dict[str, Any]`.\n"
+                "- The `description` directly influences model quality; be explicit.\n"
+                "- Fields listed in `required` are always filled by the model.\n"
+                "\n---\n\n"
+                "### Reading the Result\n"
+                "\n"
+                "`llm_tool` **always** returns a `dict`. The keys depend on what your `call` function returns:\n"
+                "\n"
+                "| `call` returns | `llm_tool` returns | How to read |\n"
+                "|---|---|---|\n"
+                "| `{\"tasks\": [...]}` | `{\"tasks\": [...]}` | `res.get(\"tasks\", [])` |\n"
+                "| `[\"a\", \"b\"]` (list \u2014 **avoid this**) | `{\"result\": [\"a\", \"b\"]}` | `res.get(\"result\", [])` |\n"
+                "\n"
+                "> **Always return a plain `dict` from `call`.** Never return a list or string directly.\n"
+                "\n---\n\n"
+                "### Error Handling\n"
+                "\n"
+                "`llm_tool` returns `{}` on every internal failure.\n"
+                "Always guard before reading any field:\n"
+                "\n"
+                "```python\n"
+                'res = await llm_tool(query, tool_registry={"my_tool": my_tool})\n'
+                "if not res:\n"
+                '    raise RuntimeError("llm_tool returned empty \u2014 check model config and tool schema")\n'
+                'value = res.get("field", default_value)\n'
+                "```\n"
+                "\n---\n\n"
+                "## Behavior Requirements\n"
+                "\n"
+                "- **NEVER** call `llm_tool` without `tool_registry`\n"   
+                "- `tool_registry` `call` function **MUST** be created with `async def my_tool(**kwargs) -> Dict[str, Any]` and **NEVER** use direct lambda functions.\n"
+                "- `tool_registry` `call` function **MUST** return a plain `Dict[str, Any]`, **DO NOT** return `kwargs.get('value')`, list, string, or other type directly — use `{\"key\": value}` to wrap your data.\n"
+                "- Use `llm_tool` to transform, summarize, analyze, classify, or structure output.\n"
+                + (
+                    f"- Read `tree = Node(...)` carefully, identify `{node_id}` children's tools and skill before populating their "
+                    "`next_branches`\n" if allow_multiple and self.attempt > 0
+                    else "`next_tasks` and `next_branch`\n" if (self.attempt == 0 or children)
+                    else ""
+                )
+                + (                    
+                    '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_branches={})` \u2014 `execute()` must never raise.\n'
+                    "- Return `ActionResult(result=result, next_branches=next_branches)`.\n"
+                    if allow_multiple and self.attempt > 0 else
+                    '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_tasks=[], next_branch=None)` \u2014 `execute()` must never raise.\n'
+                )
+                + (
+                    "- Return `ActionResult(result=result, next_tasks=next_tasks, next_branch=next_branch)`.\n"
+                    if self.attempt == 0 or children else
+                    "- Return `ActionResult(result=result, next_tasks=[], next_branch=None)`.\n"
+                )
+            )
+            _available_branch = (
+                f"# Available `next_branch`: \n{''.join(f"- {child['name']}\n" for child in children or [{"name": self.current_agent_id}])}"
+                if self.attempt == 0 or children else 
+                ""
+            )
+
+            self.prompt = (
+                _env_header + "\n---\n\n"
+                + _main_py_block + "\n---\n\n"
+                + _agent_section + "\n---\n\n"
+                + _llm_tool_docs + "\n---\n\n"
+                + _available_branch + "\n---\n\n"
+                + get_skill_content(agent_node.get("skillPath", ""))
+            )
+        else:
+            raw_prompt = format_agent(self.current_agent_id, agent_node, 0)
+            self.prompt = re.sub(r"\n{3,}", "\n\n", raw_prompt).strip()
+            import platform
+            from datetime import datetime
+            os_info = f"{platform.system()} {platform.release()}"
+            now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.prompt += (
+                f"\n\n## Environment\n"
+                f"- OS Information: {os_info}\n"
+                f"- Current Date & Time: {now_str}"
+            )
+
+        self.message_template[0]["content"] = self.prompt
+        logger.info("[%s] _build_system_prompt: rebuilt for node='%s' attempt=%d",
+                    self.__class__.__name__, self.current_agent_id, self.attempt)
+
+    #  Agent task-planning helpers 
     async def _build_initial_messages(self) -> None:
         """Build the initial message list from history and current query.
         Extracted so it can be reused when transitioning between agent tasks."""
@@ -1173,7 +1399,7 @@ class Chat(PipelineBase):
         if msg_template and len(msg_template) > 0 and "content" in msg_template[0]:
             content = msg_template[0]["content"]
             if "{{current_task}}" in content:
-                msg_template[0]["content"] = content.replace("{{current_task}}", f"{context}{self.query}")
+                msg_template[0]["content"] = content.replace("{{current_task}}", (f"Create sub-tasks then delegate to `{self.current_agent_id}` to process this query:" if self.attempt == 0 else "") + f"{context}{self.query}")
 
         self.messages = (
             msg_template
@@ -1404,14 +1630,51 @@ class Chat(PipelineBase):
         agent_ctx.set(None)
         try:
             processed_query = await self._process_query(query)
-            await self.llm_tool(
-                query=(
-                    "Analyze the following user request and break it down into clear, "
-                    "sequential tasks. Call the create_tasks tool with the list of tasks.\n"
-                    f"{processed_query}"
+            #  Cancel check before task creation LLM call 
+            if self.cancel_event and self.cancel_event.is_set():
+                logger.info("[%s] _execute_create_tasks: cancel_event already set – skipping", self.__class__.__name__)
+                return []
+
+            llm_task = asyncio.get_event_loop().create_task(
+                self.llm_tool(
+                    query=(
+                        "Analyze the following user request and break it down into clear, "
+                        "sequential tasks. Call the create_tasks tool with the list of tasks.\n"
+                        f"{processed_query}"
+                    ),
+                    tool_registry={"create_tasks": create_tasks_tool},
                 ),
-                tool_registry={"create_tasks": create_tasks_tool},
+                name=f"create_tasks_llm_tool_{id(self)}",
             )
+            cancel_sentinel = None
+            if self.cancel_event:
+                cancel_sentinel = asyncio.get_event_loop().create_task(
+                    self.cancel_event.wait(),
+                    name=f"cancel_sentinel_create_tasks_{id(self)}",
+                )
+            try:
+                if cancel_sentinel is not None:
+                    done, _ = await asyncio.wait(
+                        {llm_task, cancel_sentinel},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if cancel_sentinel in done:
+                        logger.info("[%s] _execute_create_tasks: cancel_event fired during llm_tool – cancelling", self.__class__.__name__)
+                        llm_task.cancel()
+                        try:
+                            await llm_task
+                        except (asyncio.CancelledError, Exception):
+                            pass
+                        return []
+                else:
+                    await llm_task
+            finally:
+                if cancel_sentinel is not None and not cancel_sentinel.done():
+                    cancel_sentinel.cancel()
+                    try:
+                        await cancel_sentinel
+                    except (asyncio.CancelledError, Exception):
+                        pass
         except Exception as e:
             logger.error(
                 "[%s] _execute_create_tasks failed: %s",
@@ -1424,46 +1687,6 @@ class Chat(PipelineBase):
             return captured_tasks
         # Fallback: if task planning failed, use the original query as a single task
         return [query]
-
-    async def _execute_synthesis(self, original_query: str, task_responses: List[dict]) -> str:
-        """Combine all task responses into one concise final response. No tools/code."""
-        synthesis_query = (
-            f"Original user request: {original_query}\n\n"
-            f"The following tasks were completed:\n\n{"\n-".join(self._agent_tasks)}\n\n"
-            "Synthesize all the above into a single, concise, well-organized response "
-            "that directly answers the original user request."
-        )
-        
-        model_id = model_id_ctx.get() or (self.model_manager.get_default_id("llm") if self.model_manager else None)
-        if not model_id:
-            logger.error("[%s] _execute_synthesis failed: no model ID", self.__class__.__name__)
-            return ""
-            
-        messages = [
-            {
-                "role": "system",
-                "content": "You are a helpful assistant that synthesizes task results into a single concise response."
-            },
-            {
-                "role": "user",
-                "content": synthesis_query
-            }
-        ]
-        
-        try:
-            response = await self.model_manager.text_chat( #pyrefly: ignore
-                messages=messages,
-                model_id=model_id,
-                stream=False,
-            )
-            if isinstance(response, dict) and "choices" in response:
-                return response["choices"][0]["message"].get("content") or ""
-        except Exception as e:
-            logger.error("[%s] _execute_synthesis failed: %s", self.__class__.__name__, e)
-            
-        return ""
-
-    # PipelineBase lifecycle
     
     def _get_parent_branch_id(self) -> str:
         if self.tb:
@@ -1472,60 +1695,87 @@ class Chat(PipelineBase):
                 return "_".join(parts[1:-1])
         return _sha256_short("0")
 
+    def _escape_for_jsx(self, text: str) -> str:
+        escaped = html.escape(text, quote=True)          # &, <, >, ", '
+        escaped = escaped.replace("{", "&#123;").replace("}", "&#125;")
+        escaped = escaped.replace("[", "&#91;").replace("]", "&#93;")
+        return escaped
+
     async def _sync_message_to_db(self):
         if not self.tab_db or not self.tb or not self.branch_id:
             return
         
-        branch_data = self.r.get("content", {}).get(self.branch_id)
-        if not branch_data:
-            return
+        async with self._sync_lock:
+            now = time.time()
+            elapsed = now - self._last_sync_time
+            if elapsed < 0.25:
+                await asyncio.sleep(0.25 - elapsed)
+            self._last_sync_time = time.time()
+
+            branch_data = self.r.get("content", {}).get(self.branch_id)
+            if not branch_data:
+                return
+                
+            parent_branch_id = self._get_parent_branch_id()
+            try:
+                msg_index = int(self.tb.rsplit("_", 1)[-1])
+            except (ValueError, IndexError):
+                msg_index = 0
+                
+            query = branch_data.get("query")
+            # Suppress intermediate DB writes during agent sub-task processing.
+            # Only write the final synthesis to the database messages table when self._synthesis_done is True.
+            if self.attempt == 0 and self._agent_mode:
+                placeholder = _make_empty_model_output(self.model_name)
+                placeholder["content"] = (
+                    '<Tasker>'
+                    '<Spinner />'
+                    '<span className="shiny-text">Creating tasks</span>'
+                    '</Tasker>'
+                )
+                responses = json.dumps([placeholder])
+            elif self._agent_tasks and not self._synthesis_done:
+                placeholder = _make_empty_model_output(self.model_name)
+                placeholder["content"] = (
+                    f'<Tasker>'
+                    f'<Spinner />'
+                    f'<span className="flex-1 shiny-text truncate">{self._escape_for_jsx(self._agent_tasks[self._current_task_idx])}</span>'
+                    f'</Tasker>'
+                )
+                responses = json.dumps([placeholder])
+            else:
+                responses = json.dumps(branch_data.get("responses", []))
+            response_branch = int(branch_data.get("response_branch", 0))
+            timestamp = int(time.time())
             
-        parent_branch_id = self._get_parent_branch_id()
-        try:
-            msg_index = int(self.tb.rsplit("_", 1)[-1])
-        except (ValueError, IndexError):
-            msg_index = 0
+            await self.tab_db.execute(
+                "messages",
+                """
+                INSERT OR REPLACE INTO {table} (
+                    parent_branch_id,
+                    child_branch_id,
+                    msg_index,
+                    query,
+                    responses,
+                    response_branch,
+                    timestamp
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [parent_branch_id, self.branch_id, msg_index, query, responses, response_branch, timestamp]
+            )
             
-        query = branch_data.get("query")
-        # Suppress intermediate DB writes during agent sub-task processing.
-        # Only write the final synthesis to the database messages table when self._synthesis_done is True.
-        if self._agent_tasks and not self._synthesis_done:
-            placeholder = _make_empty_model_output(self.model_name)
-            placeholder["content"] = "Thinking..."
-            responses = json.dumps([placeholder])
-        else:
-            responses = json.dumps(branch_data.get("responses", []))
-        response_branch = int(branch_data.get("response_branch", 0))
-        timestamp = int(time.time())
-        
-        await self.tab_db.execute(
-            "messages",
-            """
-            INSERT OR REPLACE INTO {table} (
-                parent_branch_id,
-                child_branch_id,
-                msg_index,
-                query,
-                responses,
-                response_branch,
-                timestamp
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            [parent_branch_id, self.branch_id, msg_index, query, responses, response_branch, timestamp]
-        )
-        
-        selected_branch_index = int(self.r.get("branch", 0))
-        await self.tab_db.execute(
-            "conversation_branches",
-            """
-            INSERT OR REPLACE INTO {table} (
-                parent_branch_id,
-                msg_index,
-                selected_branch_index
-            ) VALUES (?, ?, ?)
-            """,
-            [parent_branch_id, msg_index, selected_branch_index]
-        )
+            selected_branch_index = int(self.r.get("branch", 0))
+            await self.tab_db.execute(
+                "conversation_branches",
+                """
+                INSERT OR REPLACE INTO {table} (        
+                    parent_branch_id,
+                    msg_index,
+                    selected_branch_index
+                ) VALUES (?, ?, ?)
+                """,
+                [parent_branch_id, msg_index, selected_branch_index]
+            )
 
     async def get_history(self) -> List[Dict[str, Any]]:
         """Walk the recursive message chain from the DB using recursive CTE.
@@ -2019,6 +2269,7 @@ class Chat(PipelineBase):
                 model_output["content"] = final_rendered
         except (KeyError, IndexError, TypeError):
             pass
+
         if self.tab_db and self.tb:
             await self._sync_message_to_db()
         if remaining_raw or final_rendered:
@@ -2112,36 +2363,6 @@ class Chat(PipelineBase):
                     logger.error(f"Error in root agent heartbeat task: {e}")
             self._root_heartbeat_task = asyncio.create_task(send_root_heartbeats())
 
-        if self._synthesis_pending and not self._synthesis_done:
-            logger.info("[%s] Executing synthesis step...", self.__class__.__name__)
-            synthesized_text = await self._execute_synthesis(self._original_query, self._task_context_messages)
-            self.messages = [
-                {
-                    "role": "system",
-                    "content": "You are a text repeater. Repeat the text provided by the user exactly without any changes, markdown blocks, fences, intro, or outro. Do not add anything."
-                },
-                {
-                    "role": "user",
-                    "content": synthesized_text
-                }
-            ]
-            self.tools = []
-            self.detect_tool_calls = False
-            self.args["tools"] = []
-            self._synthesis_done = True
-            self._synthesis_pending = False
-            
-            # Reset state for the synthesis streaming attempt
-            self._think_in_progress = False
-            self._pending_text = ""
-            self._consumed_parsed_len = 0
-            self._serialized_native_tc_ids = set()
-            self._queued_native_tcs = []
-            self._content_segments = []
-            self._think_content = ""
-            self.last_response = ""
-            self.parser = Parser(detect_tool_calls=self.detect_tool_calls, detect_code_blocks=False)
-            return
 
         if not self.messages:
             # Build history context: clean think/tool tags from assistant turns
@@ -2178,7 +2399,7 @@ class Chat(PipelineBase):
                     self.__class__.__name__,
                 )
         elif self.tool_calls and isinstance(self.tool_calls, list):
-            # ── Intercept create_tasks for agent task planning ──
+            #  Intercept create_tasks for agent task planning 
             _ct_call = next(
                 (tc for tc in self.tool_calls
                  if safe_get(tc, "function", "name") == "create_tasks"),
@@ -2226,7 +2447,7 @@ class Chat(PipelineBase):
                 # Rebuild messages with first task as the query
                 await self._build_initial_messages()
             else:
-                # ── Normal tool-call processing ──
+                #  Normal tool-call processing 
                 self.messages.append(
                     {
                         "role": "assistant",
@@ -2372,14 +2593,59 @@ class Chat(PipelineBase):
                                                                 
                                                                 try:
                                                                     for task in sub_tasks:
+                                                                        #  Cancel check before each sub-task 
+                                                                        if self.cancel_event and self.cancel_event.is_set():
+                                                                            logger.info(
+                                                                                "[%s] cancel_event set before agent_query sub-task '%s' – aborting",
+                                                                                self.__class__.__name__, task,
+                                                                            )
+                                                                            break
                                                                         if agent_query:
                                                                             try:
-                                                                                ans = await self.llm_tool(
-                                                                                    history_id=sub_agent_id,
-                                                                                    query=task, 
-                                                                                    tool_registry={
-                                                                                    'agent_query' : agent_query
-                                                                                })
+                                                                                llm_task = asyncio.get_event_loop().create_task(
+                                                                                    self.llm_tool(
+                                                                                        history_id=sub_agent_id,
+                                                                                        query=task, 
+                                                                                        tool_registry={
+                                                                                            'agent_query' : agent_query
+                                                                                        }
+                                                                                    ),
+                                                                                    name=f"agent_query_llm_tool_{id(self)}",
+                                                                                )
+                                                                                cancel_sentinel = None
+                                                                                if self.cancel_event:
+                                                                                    cancel_sentinel = asyncio.get_event_loop().create_task(
+                                                                                        self.cancel_event.wait(),
+                                                                                        name=f"cancel_sentinel_aq_{id(self)}",
+                                                                                    )
+                                                                                try:
+                                                                                    if cancel_sentinel is not None:
+                                                                                        done, _ = await asyncio.wait(
+                                                                                            {llm_task, cancel_sentinel},
+                                                                                            return_when=asyncio.FIRST_COMPLETED,
+                                                                                        )
+                                                                                        if cancel_sentinel in done:
+                                                                                            logger.info(
+                                                                                                "[%s] agent_query: cancel_event fired – cancelling sub-task",
+                                                                                                self.__class__.__name__,
+                                                                                            )
+                                                                                            llm_task.cancel()
+                                                                                            try:
+                                                                                                await llm_task
+                                                                                            except (asyncio.CancelledError, Exception):
+                                                                                                pass
+                                                                                            break
+                                                                                        ans = llm_task.result()
+                                                                                    else:
+                                                                                        ans = await llm_task
+                                                                                finally:
+                                                                                    if cancel_sentinel is not None and not cancel_sentinel.done():
+                                                                                        cancel_sentinel.cancel()
+                                                                                        try:
+                                                                                            await cancel_sentinel
+                                                                                        except (asyncio.CancelledError, Exception):
+                                                                                            pass
+ 
                                                                                 agent_results.append({
                                                                                     "agent_id": sub_agent_id,
                                                                                     "response": ans
@@ -2501,24 +2767,13 @@ class Chat(PipelineBase):
                         except (asyncio.CancelledError, Exception):
                             pass
                 self.logs["messages"] = self.messages
-        # ── Programmatic deferred code execution ──────────────────────────────
+        #  Programmatic deferred code execution 
         # When _code_deferred is True, end() saved the response_branch index
         # before finalize() ran.  Now finalize() has flushed the parser and the
         # complete content is available in model_output["content"].  Extract and
         # run the code here, then inject feedback so the model can continue.
-        if getattr(self, "_code_deferred", False) and self._programmatic_tool_calling:
-            self._code_deferred = False
-            deferred_idx = getattr(self, "_deferred_code_branch_idx", 0)
-            raw_content = ""
-            try:
-                raw_content = (
-                    self.r["content"][self.branch_id]["responses"][deferred_idx].get("content", "")
-                    or ""
-                )
-            except (KeyError, IndexError, TypeError):
-                pass
-
-            code = _extract_code_from_response(raw_content)
+        if getattr(self, '_code_deferred', False) and self._programmatic_tool_calling and len(self._content_segments) > 0:            
+            code = _extract_code_from_response(self._content_segments[-1]["code"])
             if code and code.strip():
                 logger.info(
                     "[%s] programmatic mode – running deferred code (%d chars)",
@@ -2590,40 +2845,123 @@ class Chat(PipelineBase):
                         "[%s] deferred code succeeded",
                         self.__class__.__name__,
                     )
-                    # Fan-out if the code declared branch tasks
                     action_result = _parse_action_result(exec_result.get("result"))
-                    if action_result:
-                        next_branches = action_result.get("next_branches") or {}
-                        if next_branches:
-                            all_branch_results = []
-                            for br_id, br_tasks in next_branches.items():
-                                for br_task in br_tasks:
-                                    sub_result = await _fan_out_branch(
-                                        self,
-                                        {"next_branch": br_id, "next_tasks": [br_task]},
+                    
+                    is_attempt_0 = (self.attempt == 1)
+                    if is_attempt_0:
+                        next_tasks = action_result.get("next_tasks") if action_result else None
+                        if next_tasks:
+                            self._original_query = self.query or ""
+                            
+                            # Robustly parse next_tasks
+                            cleaned_tasks = []
+                            if isinstance(next_tasks, list):
+                                for item in next_tasks:
+                                    if item is not None:
+                                        cleaned_tasks.append(str(item).strip())
+                            elif isinstance(next_tasks, str) and next_tasks.strip():
+                                cleaned_tasks.append(next_tasks.strip())
+                            elif next_tasks:
+                                cleaned_tasks.append(str(next_tasks).strip())
+                            
+                            # Filter out empty strings
+                            cleaned_tasks = [t for t in cleaned_tasks if t]
+                            
+                            if cleaned_tasks:
+                                self._agent_tasks = cleaned_tasks
+                                self._current_task_idx = 0
+                                logger.info(
+                                    "[%s] programmatic mode – attempt 0: next_tasks parsed: %s",
+                                    self.__class__.__name__,
+                                    self._agent_tasks,
+                                )
+                                # Switch to the child agent context
+                                next_branch = action_result.get("next_branch") if action_result else None
+                                if next_branch:
+                                    self.current_agent_id = next_branch
+                                    # Rebuild _agent_node to point at the child
+                                    parent_node = getattr(self, "_agent_node", {})
+                                    child_node = (parent_node.get("children") or {}).get(next_branch)
+                                    if child_node:
+                                        self._agent_node = child_node
+                                        self._allow_multiple = _parse_bool(child_node.get("allowMultiple"))
+                                        self._agent_children = child_node.get("children")
+                                        self._is_programmatic = _parse_bool(child_node.get("enableProgrammaticToolCalling"))
+                                        self._programmatic_tool_calling = self._is_programmatic
+                                        child_tools = set(child_node.get("tools", []))
+                                        if self._agent_children:
+                                            child_tools.add("agent_query")
+                                        self._allowed_tools = child_tools
+                                # Rebuild system prompt for the child agent
+                                self._build_system_prompt()
+                                # Set up message list for first task execution
+                                self.query = self._agent_tasks[0]
+                                self.tool_calls = None
+                                self._task_context_messages = []
+                                self.messages = []
+                                await self._build_initial_messages()
+                            else:
+                                # when no valid next_tasks found, hard cancel it
+                                logger.warning(
+                                    "[%s] programmatic mode – attempt 0: no valid next_tasks found, performing hard cancel",
+                                    self.__class__.__name__,
+                                )
+                                exec_result["success"] = False
+                                exec_result["error"] = "Hard cancelled: no valid next_tasks found in attempt 0 result."
+                                self._code_exec_result = exec_result
+                                self._hard_cancelled = True
+                                if self.set_continue:
+                                    self.set_continue(False)
+                                raise RuntimeError("Hard cancel: No valid next_tasks found in attempt 0 result")
+                        else:
+                            # when no next_tasks found, hard cancel it
+                            logger.warning(
+                                "[%s] programmatic mode – attempt 0: no next_tasks found, performing hard cancel",
+                                self.__class__.__name__,
+                            )
+                            exec_result["success"] = False
+                            exec_result["error"] = "Hard cancelled: no next_tasks found in attempt 0 result."
+                            self._code_exec_result = exec_result
+                            self._hard_cancelled = True
+                            if self.set_continue:
+                                self.set_continue(False)
+                            raise RuntimeError("Hard cancel: No next_tasks found in attempt 0 result")
+                    else:
+                        if action_result:
+                            has_branches = bool(
+                                action_result.get("next_branches")
+                                or (action_result.get("next_branch") and action_result.get("next_tasks"))
+                            )
+                            if has_branches:
+                                # _fan_out_branch handles both next_branches and
+                                # next_branch+next_tasks (and any mix of both).
+                                if self.cancel_event and self.cancel_event.is_set():
+                                    logger.info(
+                                        "[%s] cancel_event set before fan-out – aborting",
+                                        self.__class__.__name__,
                                     )
-                                    all_branch_results.extend(sub_result)
-                            if all_branch_results:
-                                exec_result["branch_results"] = all_branch_results #pyrefly: ignore
-                                self._code_exec_result = exec_result
-                        elif action_result.get("next_branch") and action_result.get("next_tasks"):
-                            branch_results = await _fan_out_branch(self, action_result)
-                            if branch_results:
-                                exec_result["branch_results"] = branch_results #pyrefly: ignore
-                                self._code_exec_result = exec_result
+                                else:
+                                    fan_results = await _fan_out_branch(self, action_result)
+                                    if fan_results:
+                                        exec_result["branch_results"] = fan_results  #pyrefly: ignore
+                                        self._code_exec_result = exec_result
                 else:
                     logger.warning(
-                        "[%s] deferred code failed | error=%s",
+                        "[%s] deferred code failed | performing hard cancel | error=%s",
                         self.__class__.__name__,
                         (exec_result.get("error") or "")[:300], #pyrefly: ignore
                     )
+                    self._hard_cancelled = True
+                    if self.set_continue:
+                        self.set_continue(False)
+                    raise RuntimeError(f"Hard cancel: Code execution failed: {exec_result.get('error') or 'Unknown error'}")
             else:
                 logger.info(
                     "[%s] deferred code: no extractable code in response",
                     self.__class__.__name__,
                 )
 
-        # ── Programmatic tool calling mode: suppress native tools ────────────
+        #  Programmatic tool calling mode: suppress native tools 
         # tools are embedded in the system prompt — don't pass them as native schemas.
         if self._programmatic_tool_calling:
             self.args["tools"] = []
@@ -2680,12 +3018,52 @@ class Chat(PipelineBase):
                 else:
                     error = result.get("error") or "Unknown error"
                     feedback_msg = f"Code execution failed.\nError:\n{error}"
-                logger.info("[%s] injecting code exec feedback: %s", self.__class__.__name__, feedback_msg[:200])
-                self.messages.append({"role": "assistant", "content": self.last_response or ""})
+                logger.info("[%s] injecting code exec feedback: %s", self.__class__.__name__, feedback_msg)
+                self.messages.append({"role": "assistant", "content": self._content_segments[-1]["code"]})
                 self.messages.append({"role": "user", "content": feedback_msg})
+                if self._task_context_messages and self._task_context_messages[-1]["role"] == "assistant":
+                    self._task_context_messages[-1]["content"] = feedback_msg
                 self._code_exec_result = None
         else:
             self.args["tools"] = self.tools
+
+        if self._synthesis_pending and not self._synthesis_done:
+            logger.info("[%s] Executing synthesis step...", self.__class__.__name__)
+            synthesis_query = (
+                f"Original user request: {self._original_query}\n\n"
+                f"The following tasks were completed:\n\n{"\n-".join(self._agent_tasks)}\n\n"
+                f"Result preview (5000 chars max): {json.dumps(self._task_context_messages)[:5000]}\n\n"
+                "Synthesize all the above into a single, concise, well-organized response "
+                "that directly answers the original user request."
+            )
+            self.messages = [
+                {
+                    "role": "system",
+                    "content": "You are a helpful assistant that synthesizes task results into a single concise response."
+                },
+                {
+                    "role": "user",
+                    "content": synthesis_query
+                }
+            ]
+            self.tools = []
+            self.detect_tool_calls = False
+            self.args["tools"] = []
+            self._synthesis_done = True
+            self._synthesis_pending = False
+            
+            # Reset state for the synthesis streaming attempt
+            self._think_in_progress = False
+            self._pending_text = ""
+            self._consumed_parsed_len = 0
+            self._serialized_native_tc_ids = set()
+            self._queued_native_tcs = []
+            self._content_segments = []
+            self._think_content = ""
+            self.last_response = ""
+            self.parser = Parser(detect_tool_calls=self.detect_tool_calls, detect_code_blocks=True)
+            return
+
 
         self.tool_calls = None
         self.last_response = ""
@@ -2697,7 +3075,7 @@ class Chat(PipelineBase):
         self._consumed_parsed_len = 0          # reset: new parser = new offset
         self._serialized_native_tc_ids = set() # reset: new native tool calls incoming
         self._queued_native_tcs = []           # reset: no deferred tool calls
-        self.parser = Parser(detect_tool_calls=self.detect_tool_calls, detect_code_blocks=False) # fresh parser for this attempt
+        self.parser = Parser(detect_tool_calls=self.detect_tool_calls, detect_code_blocks=True) # fresh parser for this attempt
         logger.info(
             "[%s] messages: %s tools: %s",
             self.__class__.__name__,
@@ -2713,13 +3091,13 @@ class Chat(PipelineBase):
         if self.tool_calls:
             is_continue = True
 
-        # ── Programmatic tool calling: defer code execution to start() ──
+        #  Programmatic tool calling: defer code execution to start() 
         # end() runs BEFORE finalize(), so the parser's pending buffer may still
         # hold the closing ``` and the last few tokens.  We therefore do NOT run
         # the code here.  Instead we set a flag so that start() of the next
         # attempt can read the COMPLETE content (after finalize() has flushed the
         # parser) and execute it there.
-        if self._programmatic_tool_calling and not self.tool_calls and not self._synthesis_done:
+        if self._programmatic_tool_calling and not self.tool_calls and not self._synthesis_done and not getattr(self, "_hard_cancelled", False):
             try:
                 self._deferred_code_branch_idx = int(self.response_branch or 0)
             except (TypeError, ValueError):
@@ -2740,27 +3118,45 @@ class Chat(PipelineBase):
                 self._synthesis_done,
             )
 
-        # ── Transition to next agent task if current task completed ──
+        #  Transition to next agent task if current task completed 
 
         if (
             not self.tool_calls
             and self._agent_tasks
             and self._current_task_idx + 1 < len(self._agent_tasks)
             and not (self._programmatic_tool_calling and self._code_exec_result and not self._code_exec_result.get("success"))
+            and not getattr(self, "_hard_cancelled", False)
         ):
-            # Append the completed task's query and cleaned final response to prior task messages
-            # For streaming responses, last_response is empty – read from the accumulated
-            # response dict instead (set by process_chunk / finalize).
-            _task_assistant_content = self.last_response or ""
-            if not _task_assistant_content:
-                try:
-                    idx = int(self.response_branch or 0)
-                    _task_assistant_content = (
-                        self.r["content"][self.branch_id]["responses"][idx].get("content", "")
-                        or ""
-                    )
-                except (KeyError, IndexError, TypeError):
-                    pass
+            # In programmatic mode use the real code-execution output as the
+            # assistant content so downstream tasks / synthesis receive actual
+            # results, not the raw ```python ... ``` block.
+            if self._programmatic_tool_calling and self._code_exec_result is not None:
+                _exec_r = self._code_exec_result
+                if _exec_r.get("success"):
+                    _fb = ["Code executed successfully."]
+                    if _exec_r.get("output"):
+                        _fb.append(f"stdout:\n{_exec_r['output']}")
+                    if _exec_r.get("result") is not None:
+                        try:
+                            _fb.append(f"Return value: {json.dumps(_exec_r['result'], default=str)}")
+                        except Exception:
+                            _fb.append(f"Return value: {_exec_r['result']}")
+                    _task_assistant_content = "\n".join(_fb)
+                else:
+                    _task_assistant_content = f"Code execution failed.\nError:\n{_exec_r.get('error') or 'Unknown error'}"
+            else:
+                # For streaming responses, last_response is empty – read from the accumulated
+                # response dict instead (set by process_chunk / finalize).
+                _task_assistant_content = self.last_response or ""
+                if not _task_assistant_content:
+                    try:
+                        idx = int(self.response_branch or 0)
+                        _task_assistant_content = (
+                            self.r["content"][self.branch_id]["responses"][idx].get("content", "")
+                            or ""
+                        )
+                    except (KeyError, IndexError, TypeError):
+                        pass
             self._task_context_messages.append({
                 "role": "user",
                 "content": self.query or "",
@@ -2779,7 +3175,7 @@ class Chat(PipelineBase):
                 self.__class__.__name__,
                 self._current_task_idx + 1,
                 len(self._agent_tasks),
-                self.query[:100],
+                str(self.query or "")[:100],
             )
         elif (
             not self.tool_calls
@@ -2788,18 +3184,35 @@ class Chat(PipelineBase):
             and not self._synthesis_done
             and not self._synthesis_pending
             and not (self._programmatic_tool_calling and self._code_exec_result and not self._code_exec_result.get("success"))
+            and not getattr(self, "_hard_cancelled", False)
         ):
             # All tasks completed. Append the last task's response to task context messages.
-            _task_assistant_content = self.last_response or ""
-            if not _task_assistant_content:
-                try:
-                    idx = int(self.response_branch or 0)
-                    _task_assistant_content = (
-                        self.r["content"][self.branch_id]["responses"][idx].get("content", "")
-                        or ""
-                    )
-                except (KeyError, IndexError, TypeError):
-                    pass
+            # In programmatic mode, prefer the actual code-execution output.
+            if self._programmatic_tool_calling and self._code_exec_result is not None:
+                _exec_r = self._code_exec_result
+                if _exec_r.get("success"):
+                    _fb = ["Code executed successfully."]
+                    if _exec_r.get("output"):
+                        _fb.append(f"stdout:\n{_exec_r['output']}")
+                    if _exec_r.get("result") is not None:
+                        try:
+                            _fb.append(f"Return value: {json.dumps(_exec_r['result'], default=str)}")
+                        except Exception:
+                            _fb.append(f"Return value: {_exec_r['result']}")
+                    _task_assistant_content = "\n".join(_fb)
+                else:
+                    _task_assistant_content = f"Code execution failed.\nError:\n{_exec_r.get('error') or 'Unknown error'}"
+            else:
+                _task_assistant_content = self.last_response or ""
+                if not _task_assistant_content:
+                    try:
+                        idx = int(self.response_branch or 0)
+                        _task_assistant_content = (
+                            self.r["content"][self.branch_id]["responses"][idx].get("content", "")
+                            or ""
+                        )
+                    except (KeyError, IndexError, TypeError):
+                        pass
             self._task_context_messages.append({
                 "role": "user",
                 "content": self.query or "",

@@ -722,12 +722,13 @@ function MessageContainer({
                 : "py-2 max-h-[148px] overflow-hidden"), "w-fit 2xl:max-w-[500px] lg:max-w-[350px]")
     );
 
-    const hasResponse = responses && responses.length > 0 && getResponseContent(responses[responseBranch]);
+    const activeResponseBranch = (typeof responseBranch === 'number' && responseBranch >= 0 && responseBranch < (responses?.length ?? 0)) ? responseBranch : 0;
+    const hasResponse = responses && responses.length > 0 && Boolean(getResponseContent(responses[activeResponseBranch]));
 
     return (
         <div id={"container_" + index} className="pt-4 w-full">
             <div className="w-full">
-                <div    
+                <div
                     style={{ whiteSpace: 'pre-wrap', wordWrap: 'break-word' }}
                     className="flex flex-col gap-2 group w-full items-end"
                 >
@@ -821,8 +822,8 @@ function MessageContainer({
             {hasResponse && (
                 <div className="group relative w-full">
                     <Message
-                        response={getResponseContent(responses[responseBranch])}
-                        id={tabId + "_response_" + childBranchId + "_" + responseBranch + "_" + siblingIndex}
+                        response={getResponseContent(responses[activeResponseBranch])}
+                        id={tabId + "_response_" + childBranchId + "_" + activeResponseBranch + "_" + siblingIndex}
                         activeId={activeId}
                     />
                     {isStreaming && (
@@ -838,24 +839,24 @@ function MessageContainer({
                                         <>
                                             <ChevronLeft
                                                 className={clsx(
-                                                    responseBranch === 0 ? "opacity-50" : "opacity-100 cursor-pointer",
+                                                    activeResponseBranch === 0 ? "opacity-50" : "opacity-100 cursor-pointer",
                                                     "w-4 h-4"
                                                 )}
                                                 onClick={() => {
-                                                    if (responseBranch > 0) {
-                                                        onResponseBranchChange(childBranchId, responseBranch - 1);
+                                                    if (activeResponseBranch > 0) {
+                                                        onResponseBranchChange(childBranchId, activeResponseBranch - 1);
                                                     }
                                                 }}
                                             />
-                                            <span>{responseBranch + 1} / {responses.length}</span>
+                                            <span>{activeResponseBranch + 1} / {responses.length}</span>
                                             <ChevronRight
                                                 className={clsx(
-                                                    responseBranch === responses.length - 1 ? "opacity-50" : "opacity-100 cursor-pointer",
+                                                    activeResponseBranch === responses.length - 1 ? "opacity-50" : "opacity-100 cursor-pointer",
                                                     "w-4 h-4"
                                                 )}
                                                 onClick={() => {
-                                                    if (responseBranch < responses.length - 1) {
-                                                        onResponseBranchChange(childBranchId, responseBranch + 1);
+                                                    if (activeResponseBranch < responses.length - 1) {
+                                                        onResponseBranchChange(childBranchId, activeResponseBranch + 1);
                                                     }
                                                 }}
                                             />
@@ -865,7 +866,7 @@ function MessageContainer({
                                         <Copy
                                             className="w-4 h-4 transform translate-y-[2px] cursor-pointer"
                                             onClick={() => {
-                                                navigator.clipboard.writeText(getResponseContent(responses[responseBranch]));
+                                                navigator.clipboard.writeText(getResponseContent(responses[activeResponseBranch]));
                                                 setIsCopied(true);
                                                 setTimeout(() => { setIsCopied(false); }, 500);
                                             }}
@@ -886,7 +887,7 @@ function MessageContainer({
                                             </TooltipTrigger>
                                             <TooltipContent>
                                                 {(() => {
-                                                    const currentResponse = responses[responseBranch];
+                                                    const currentResponse = responses[activeResponseBranch];
                                                     const isModelOutput = typeof currentResponse === "object" && currentResponse !== null && "content" in currentResponse;
                                                     if (!isModelOutput) return null;
                                                     const mo = currentResponse as ModelOutput;
@@ -920,9 +921,24 @@ function MessageContainer({
 }
 
 const MessageContainerMemoized = memo(MessageContainer, (prevProps, nextProps) => {
-    if (prevProps.responses !== nextProps.responses || prevProps.isStreaming !== nextProps.isStreaming) {
-        const prevActive = prevProps.responses?.[prevProps.responseBranch];
-        const nextActive = nextProps.responses?.[nextProps.responseBranch];
+    if (prevProps.isStreaming !== nextProps.isStreaming) return false;
+    if (prevProps.activeId !== nextProps.activeId) return false;
+    if (prevProps.query !== nextProps.query) return false;
+    if (prevProps.siblingIndex !== nextProps.siblingIndex) return false;
+    if (prevProps.totalSiblings !== nextProps.totalSiblings) return false;
+    if (prevProps.responseBranch !== nextProps.responseBranch) return false;
+    if (prevProps.index !== nextProps.index) return false;
+    if (prevProps.childBranchId !== nextProps.childBranchId) return false;
+    if (prevProps.parentBranchId !== nextProps.parentBranchId) return false;
+    if (prevProps.workspace !== nextProps.workspace) return false;
+    if (prevProps.tabId !== nextProps.tabId) return false;
+    if (prevProps.responses?.length !== nextProps.responses?.length) return false;
+    if (prevProps.responses !== nextProps.responses) {
+
+        const prevIdx = (typeof prevProps.responseBranch === 'number' && prevProps.responseBranch >= 0 && prevProps.responseBranch < (prevProps.responses?.length ?? 0)) ? prevProps.responseBranch : 0;
+        const nextIdx = (typeof nextProps.responseBranch === 'number' && nextProps.responseBranch >= 0 && nextProps.responseBranch < (nextProps.responses?.length ?? 0)) ? nextProps.responseBranch : 0;
+        const prevActive = prevProps.responses?.[prevIdx];
+        const nextActive = nextProps.responses?.[nextIdx];
         if (typeof prevActive !== typeof nextActive) return false;
         if (typeof nextActive === "string") {
             if (prevActive !== nextActive) return false;

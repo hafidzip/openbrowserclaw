@@ -153,6 +153,9 @@ class CodeSandbox:
                                 logger.info(f"[llm_tool] Executing tool '{fn_name}' with kwargs={kwargs}")
                                 if tool_registry and fn_name in tool_registry:
                                     result = await tool_registry[fn_name].execute(**kwargs)
+                                    # Always coerce to dict so callers can safely use .get()
+                                    if not isinstance(result, dict):
+                                        result = {"result": result}
                                 else:
                                     return {}
                                 results[call_id] = result
@@ -168,21 +171,21 @@ class CodeSandbox:
         exec_globals = {
             "__builtins__": __builtins__,
             "asyncio": asyncio,
+            "json": json,
+            "re": re,
+            "datetime": datetime,
             "llm_tool": llm_tool,
             "ToolRegistry": ToolRegistry,
             "ActionResult": self.ActionResult,
+            "Any": Any,
             "Dict": Dict,
             "List": List,
-            "Any": Any,
             "Optional": Optional,
             "Tuple": Tuple,
             "Union": Union,
             "Set": Set,
-            "json": json,
-            "re": re,
-            "datetime": datetime,
-            "asyncio": asyncio,
             "task": task,
+            "initial_task": task
         }
         
         # Add tool functions

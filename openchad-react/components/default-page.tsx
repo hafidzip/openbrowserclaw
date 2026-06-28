@@ -172,7 +172,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
                         sql: `SELECT * FROM tasks WHERE id = ?`,
                         params: [tabId],
                     });
-                    console.log(oldData.data[0]);
                     if (oldData && oldData.data[0]) {
                         try {
                             const data = JSON.parse(oldData.data[0].metadata);
@@ -266,22 +265,11 @@ export default function DefaultPage(AppInfo: AppInfo) {
     // Keyset Recursive CTE Pagination
     const refreshActiveMessages = useCallback(async (customLimit?: number) => {
         if (!workspace || !tabId) {
-            console.log("[DefaultPage] refreshActiveMessages skipped: workspace or tabId missing", { workspace, tabId });
             return;
         }
         const messagesTable = generateIdFromString(tabId + "/messages");
         const branchesTable = generateIdFromString(tabId + "/conversation_branches");
         const rootParent = sha256("0").slice(0, 32);
-
-        console.log("[DefaultPage] refreshActiveMessages starting", {
-            workspace,
-            tabId,
-            messagesTable,
-            branchesTable,
-            rootParent,
-            customLimit,
-            loadedMessagesLength: loadedMessagesLengthRef.current
-        });
 
         const findLeafSql = `
           WITH SiblingNumbered AS (
@@ -321,7 +309,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
         `;
 
         try {
-            console.log("[DefaultPage] Executing findLeafSql query with rootParent:", rootParent);
             const leafRowsRaw: any = await pyInvoke('sqlite', {
                 db: workspace,
                 table: messagesTable,
@@ -330,12 +317,9 @@ export default function DefaultPage(AppInfo: AppInfo) {
                 params: [rootParent, rootParent]
             });
 
-            console.log("[DefaultPage] leafRows raw response:", leafRowsRaw);
             const leafRows = Array.isArray(leafRowsRaw) ? leafRowsRaw : (leafRowsRaw?.data || []);
-            console.log("[DefaultPage] leafRows parsed:", leafRows);
 
             if (!leafRows || leafRows.length === 0) {
-                console.log("[DefaultPage] No active leaf found in conversation.");
                 setActiveLeafId(null);
                 setLoadedMessages([]);
                 setHasMore(false);
@@ -343,11 +327,9 @@ export default function DefaultPage(AppInfo: AppInfo) {
             }
 
             const leafId = leafRows[0].child_branch_id;
-            console.log("[DefaultPage] Found leaf ID:", leafId);
             setActiveLeafId(leafId);
 
             const queryLimit = customLimit || Math.max(20, loadedMessagesLengthRef.current);
-            console.log("[DefaultPage] Fetching chat chain with queryLimit:", queryLimit);
 
             const fetchChainSql = `
               WITH RECURSIVE chat_chain AS (
@@ -373,12 +355,9 @@ export default function DefaultPage(AppInfo: AppInfo) {
                 params: [leafId, queryLimit]
             });
 
-            console.log("[DefaultPage] chainRows raw response:", chainRowsRaw);
             const chainRows = Array.isArray(chainRowsRaw) ? chainRowsRaw : (chainRowsRaw?.data || []);
-            console.log("[DefaultPage] chainRows parsed length:", chainRows.length);
 
-            if (!chainRows || chainRows.length === 0) {
-                console.log("[DefaultPage] Chain rows query returned empty.");
+            if (!chainRows || chainRows.length === 0) {                
                 setLoadedMessages([]);
                 setHasMore(false);
                 return;
@@ -386,7 +365,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
 
             const parentIds = chainRows.map((r: any) => r.parent_branch_id);
             const uniqueParentIds = Array.from(new Set(parentIds)).filter(Boolean);
-            console.log("[DefaultPage] uniqueParentIds for siblings:", uniqueParentIds);
 
             let siblingsGrouped: Record<string, string[]> = {};
             if (uniqueParentIds.length > 0) {
@@ -398,7 +376,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
                   ORDER BY timestamp ASC;
                 `;
 
-                console.log("[DefaultPage] Fetching sibling branches...");
                 const siblingRowsRaw: any = await pyInvoke('sqlite', {
                     db: workspace,
                     table: messagesTable,
@@ -407,9 +384,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
                     params: uniqueParentIds
                 });
 
-                console.log("[DefaultPage] siblingRows raw response:", siblingRowsRaw);
                 const siblingRows = Array.isArray(siblingRowsRaw) ? siblingRowsRaw : (siblingRowsRaw?.data || []);
-                console.log("[DefaultPage] siblingRows parsed length:", siblingRows.length);
 
                 if (Array.isArray(siblingRows)) {
                     siblingRows.forEach((sRow: any) => {
@@ -455,18 +430,14 @@ export default function DefaultPage(AppInfo: AppInfo) {
             });
 
             parsedMessages.sort((a: any, b: any) => b.msg_index - a.msg_index);
-            console.log("[DefaultPage] Final parsedMessages (sorted reverse):", parsedMessages);
             setLoadedMessages(parsedMessages);
 
             const oldestMsg = parsedMessages[parsedMessages.length - 1];
             if (chainRows.length < queryLimit) {
-                console.log("[DefaultPage] Setting hasMore: false (chainRows count < queryLimit)");
                 setHasMore(false);
             } else if (oldestMsg && oldestMsg.parentBranchId === rootParent) {
-                console.log("[DefaultPage] Setting hasMore: false (reached rootParent)");
                 setHasMore(false);
             } else {
-                console.log("[DefaultPage] Setting hasMore: true");
                 setHasMore(true);
             }
 
@@ -477,7 +448,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
 
     const loadMoreMessages = useCallback(async () => {
         if (loading || !hasMore || !workspace || !tabId || loadedMessages.length === 0) {
-            console.log("[DefaultPage] loadMoreMessages skipped", { loading, hasMore, workspace, tabId, loadedLength: loadedMessages.length });
             return;
         }
         setLoading(true);
@@ -486,12 +456,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
         const rootParent = sha256("0").slice(0, 32);
         const oldestMsg = loadedMessages[loadedMessages.length - 1];
         const anchorId = oldestMsg.parentBranchId.slice(0, 32);
-
-        console.log("[DefaultPage] loadMoreMessages starting", {
-            oldestMsg,
-            anchorId,
-            rootParent
-        });
 
         const fetchChainSql = `
           WITH RECURSIVE chat_chain AS (
@@ -518,9 +482,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
                 params: [anchorId, 20]
             });
 
-            console.log("[DefaultPage] loadMore chainRows raw response:", chainRowsRaw);
             const chainRows = Array.isArray(chainRowsRaw) ? chainRowsRaw : (chainRowsRaw?.data || []);
-            console.log("[DefaultPage] loadMore chainRows parsed length:", chainRows.length);
 
             if (!chainRows || chainRows.length === 0) {
                 setHasMore(false);
@@ -604,19 +566,15 @@ export default function DefaultPage(AppInfo: AppInfo) {
                     seen.add(m.childBranchId);
                     return true;
                 });
-                console.log("[DefaultPage] loadMore merged messages count:", filtered.length);
                 return filtered;
             });
 
             const oldestNewMsg = parsedMessages[parsedMessages.length - 1];
             if (chainRows.length < 20) {
-                console.log("[DefaultPage] loadMore Setting hasMore: false (chainRows count < 20)");
                 setHasMore(false);
             } else if (oldestNewMsg && oldestNewMsg.parentBranchId === rootParent) {
-                console.log("[DefaultPage] loadMore Setting hasMore: false (reached rootParent)");
                 setHasMore(false);
             } else {
-                console.log("[DefaultPage] loadMore Setting hasMore: true");
                 setHasMore(true);
             }
 
@@ -641,11 +599,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
             (entries) => {
                 const entry = entries[0];
                 if (entry.isIntersecting && hasMoreRef.current && !loadingRef.current) {
-                    console.log("[DefaultPage] IntersectionObserver triggered loadMoreMessages!", {
-                        isIntersecting: entry.isIntersecting,
-                        hasMore: hasMoreRef.current,
-                        loading: loadingRef.current,
-                    });
                     loadMoreRef.current?.();
                 }
             },
@@ -661,9 +614,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
         const sentinel = document.getElementById("scroll-sentinel");
         if (sentinel) {
             observer.observe(sentinel);
-            console.log("[DefaultPage] IntersectionObserver attached to sentinel");
-        } else {
-            console.log("[DefaultPage] IntersectionObserver: sentinel not found, will retry via MutationObserver");
         }
 
         // Use a MutationObserver to catch sentinel mount/remount
@@ -686,7 +636,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
         if (!workspace || !tabId) return;
         const branchesTable = generateIdFromString(tabId + "/conversation_branches");
         const sql = `INSERT OR REPLACE INTO \`${branchesTable}\` (parent_branch_id, msg_index, selected_branch_index) VALUES (?, ?, ?)`;
-        console.log("[DefaultPage] handleSiblingChange", { parentBranchId, msgIndex, newSiblingIndex });
         try {
             await pyInvoke('sqlite', {
                 db: workspace,
@@ -704,7 +653,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
         if (!workspace || !tabId) return;
         const messagesTable = generateIdFromString(tabId + "/messages");
         const sql = `UPDATE \`${messagesTable}\` SET response_branch = ? WHERE child_branch_id = ?`;
-        console.log("[DefaultPage] handleResponseBranchChange", { childBranchId, newResponseBranch });
         try {
             await pyInvoke('sqlite', {
                 db: workspace,
@@ -723,7 +671,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
 
         const messagesTable = generateIdFromString(tabId + "/messages");
         const branchesTable = generateIdFromString(tabId + "/conversation_branches");
-        console.log("[DefaultPage] handleEditSubmit", { newQuery, siblingIndex, parentBranchId, msgIndex });
 
         try {
             const countSql = `SELECT COUNT(*) as count FROM \`${messagesTable}\` WHERE parent_branch_id = ?`;
@@ -738,7 +685,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
             const newSiblingIndex = countRes?.[0]?.count ?? 0;
 
             const newChildBranchId = sha256(parentBranchId + "_" + newSiblingIndex).slice(0, 32);
-            console.log("[DefaultPage] handleEditSubmit: computed new sibling and child IDs", { newSiblingIndex, newChildBranchId });
 
             const insertSql = `
                 INSERT INTO \`${messagesTable}\` (parent_branch_id, child_branch_id, msg_index, query, responses, response_branch, timestamp)
@@ -775,7 +721,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
         const msg = loadedMessages.find(m => m.childBranchId === childBranchId);
         const msgIndex = msg ? msg.msg_index : 0;
         const targetTable = `tb_${parentBranchId}_${msgIndex}`;
-        console.log("[DefaultPage] handleRegenerate", { query, parentBranchId, childBranchId, siblingIndex, msgIndex, targetTable });
         await request(query, targetTable, childBranchId, siblingIndex, responsesLength);
     }, [workspace, tabId, request, loadedMessages]);
 
@@ -783,7 +728,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
     useEffect(() => {
         if (!ready || !workspace || !tabId) return;
 
-        console.log("[DefaultPage] Database change listeners setting up", { ready, workspace, tabId });
         refreshActiveMessages(20);
 
         const messagesTable = generateIdFromString(tabId + "/messages");
@@ -796,7 +740,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
         let pendingRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
         const handleDbChange = (eventInfo?: any) => {
-            console.log("[DefaultPage] DB changed triggered!", eventInfo);
             if (!messageStateRef.current.isStreaming) {
                 if (pendingRefreshTimer) {
                     clearTimeout(pendingRefreshTimer);
@@ -827,8 +770,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
         const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
         const msgEvent = `db_changed:${workspace}.${messagesTable}`;
         const branchEvent = `db_changed:${workspace}.${branchesTable}`;
-
-        console.log("[DefaultPage] Listening for events", { msgEvent, branchEvent, isTauri });
 
         // Subscribe to database changes in the backend
         pyInvoke('db_subscribe', { db: workspace, table: messagesTable }).catch((err) => console.error("Subscribe messages failed", err));

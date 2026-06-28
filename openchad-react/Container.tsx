@@ -156,6 +156,9 @@ export default function Container({ Apps }: { Apps: Project }) {
   codeIdRef.current = codeId;
 
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
+  const lastCodeUpdateRef = useRef<number>(0);
+  const codeUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const codeDataRef = useRef<string | null>(null);
 
   const handleMount: OnMount = (editor) => {
     editorRef.current = editor;
@@ -990,9 +993,29 @@ export default function Container({ Apps }: { Apps: Project }) {
       const data = (e as CustomEvent).detail;
       const editor = editorRef.current;
       if (data.codeId === codeIdRef.current && data.code && editor) {
-        setCode(data.code);
-        const lineCount = editor.getModel()?.getLineCount() ?? 0;
-        editor.revealLine(lineCount, 1); // 1 = ScrollType.Immediate
+        codeDataRef.current = data.code;
+        const now = Date.now();
+        const elapsed = now - lastCodeUpdateRef.current;
+
+        const applyUpdate = () => {
+          lastCodeUpdateRef.current = Date.now();
+          setCode(codeDataRef.current!);
+          const lineCount = editor.getModel()?.getLineCount() ?? 0;
+          editor.revealLine(lineCount, 1); // 1 = ScrollType.Immediate
+        };
+
+        if (elapsed >= 1000) {
+          if (codeUpdateTimerRef.current) {
+            clearTimeout(codeUpdateTimerRef.current);
+            codeUpdateTimerRef.current = null;
+          }
+          applyUpdate();
+        } else {
+          if (codeUpdateTimerRef.current) {
+            clearTimeout(codeUpdateTimerRef.current);
+          }
+          codeUpdateTimerRef.current = setTimeout(applyUpdate, 1000 - elapsed);
+        }
       }
     }
 
@@ -1008,6 +1031,10 @@ export default function Container({ Apps }: { Apps: Project }) {
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
+      if (codeUpdateTimerRef.current) {
+        clearTimeout(codeUpdateTimerRef.current);
+        codeUpdateTimerRef.current = null;
+      }
     };
   }, [mounted]);
   // Mobile bottom bar search  
