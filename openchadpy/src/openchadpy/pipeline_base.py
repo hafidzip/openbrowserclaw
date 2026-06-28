@@ -149,16 +149,24 @@ class PipelineBase:
             except Exception as e:
                 logger.warning(f"[llm_tool] could not save history for id={history_id}: {e}")
         
-        if tool_registry:
-            for reg in tool_registry.values():
-                tools.append(reg.schema)
-        else: 
+        # If we are executing an agent (history_id is set), we need all system schemas
+        # so we can filter them based on the agent's defined tools.
+        if not tool_registry or history_id:
             if self.tool_manager:
                 tools.extend(self.tool_manager.get_openai_schemas())
             if self.mcp_manager:
                 tools.extend(self.mcp_manager.get_openai_schemas())
+        
+        # Always include tool_registry schemas if provided
+        if tool_registry:
+            for reg in tool_registry.values():
+                # Avoid duplicates
+                reg_name = reg.schema.get("function", {}).get("name")
+                if not any(t.get("function", {}).get("name") == reg_name for t in tools):
+                    tools.append(reg.schema)
+                    
         agent = agent_ctx.get()
-        if not tool_registry and agent and isinstance(agent, dict):
+        if (history_id or not tool_registry) and agent and isinstance(agent, dict):
             all_tools = list(tools)
             current_agent_id = next(iter(agent))
             agent_node = agent.get(current_agent_id)
@@ -602,6 +610,7 @@ class PipelineBase:
                         "\n---\n\n"
                         "## Behavior Requirements\n"
                         "\n"
+                        "- **ALWAYS** wrap it in triple backticks with 'python' language identifier.\n"
                         "- **NEVER** call `llm_tool` without `tool_registry`\n"   
                         "- `tool_registry` `call` function **MUST** be created with `async def my_tool(**kwargs) -> Dict[str, Any]` and **NEVER** use direct lambda functions.\n"
                         "- `tool_registry` `call` function **MUST** return a plain `Dict[str, Any]`, **DO NOT** return `kwargs.get('value')`, list, string, or other type directly — use `{\"key\": value}` to wrap your data.\n"
@@ -627,7 +636,7 @@ class PipelineBase:
                         )
                     )
                     _available_branch = (
-                        f"# Available `next_branch`: \n{''.join(f"- {child['name']}\n" for child in children or [{"name": current_agent_id}])}"
+                        f"# Available `next_branch`: \n" + "".join(f"- {child['name']}\n" for child in children or [{"name": current_agent_id}])
                         if self.attempt == 0 or children else 
                         ""
                     )
@@ -639,6 +648,8 @@ class PipelineBase:
                         + _available_branch + "\n---\n\n"
                         + get_skill_content(agent_node.get("skillPath", ""))
                     )
+                    # Clear tools for the actual LLM API call so that native tools are disabled.
+                    tools = []
                 else:
                     # --- Legacy format_agent prompt (non-programmatic mode) ---
                     def format_agent(a_id: str, a_node: dict, depth: int) -> str:

@@ -12,6 +12,7 @@ import cssWorker from 'monaco-editor/esm/vs/language/css/css.worker?worker'
 import htmlWorker from 'monaco-editor/esm/vs/language/html/html.worker?worker'
 import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker'
 import { Layers } from 'lucide-react'
+import { OpenBrowserIcon } from './OpenBrowserIcon'
 
 // Configure Monaco workers to use local bundled files (CDN is blocked by CSP)
 self.MonacoEnvironment = {
@@ -29,7 +30,7 @@ loader.config({ monaco })
 
 const Apps: Project = {
   projectName: "OpenBrowser",
-  projectIcon: () => <Layers className='w-5 h-5'/>,
+  projectIcon: OpenBrowserIcon,
   defaultTab: {
     layout: "single",
     icon: "Compass",

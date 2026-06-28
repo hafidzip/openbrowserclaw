@@ -339,7 +339,7 @@ interface MessageProps {
 
 const Tasker:FC<{children: ReactNode}> = ({children}) => {
   return (
-    <div className="flex items-center gap-1 relative">
+    <div className="flex items-center gap-1 relative mb-2">
       {children}
     </div>
   )

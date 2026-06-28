@@ -24,3 +24,5 @@ __pycache__
 .env.local
 python/config.json
 Extensions
+Backend/openchad/custombackend
+ModelProvider/openchad/CustomModelProvider

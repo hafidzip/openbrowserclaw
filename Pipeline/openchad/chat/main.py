@@ -21,6 +21,12 @@ logger = logging.getLogger(__name__)
 # the LLM will receive a compact file-reference instruction instead.
 MAX_QUERY_CHARS: int = 4000
 
+def _escape_for_jsx(text: str) -> str:
+    escaped = html.escape(text, quote=True)          # &, <, >, ", '
+    escaped = escaped.replace("{", "&#123;").replace("}", "&#125;")
+    escaped = escaped.replace("[", "&#91;").replace("]", "&#93;")
+    return escaped
+
 def _format_chunk(chunk: Any, max_length: int = 200) -> str:
     """Gracefully format any chunk type for logging."""
     try:
@@ -204,6 +210,189 @@ def _parse_action_result(raw: Any) -> Optional[Dict[str, Any]]:
             "next_branches": dict(raw.get("next_branches") or {}),
         }
     return None
+def _create_agent_query_tool(pipeline: "Chat", agent_node: dict) -> ToolRegistry:
+    allow_multiple = _parse_bool(agent_node.get("allowMultiple"))
+    if allow_multiple:
+        schema = {
+            "type": "function",
+            "function": {
+                "name": "agent_query",
+                "description": "Send queries to one or more agents and retrieve their responses. Use this to delegate subtasks or gather information from specialized agents.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "queries": {
+                            "type": "array",
+                            "description": "List of queries to send to agents. Multiple entries allow querying several agents in a single call.",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "agent_id": {
+                                        "type": "string",
+                                        "description": "The unique identifier of the target agent."
+                                    },
+                                    "tasks": {
+                                        "type": "array",
+                                        "description": "List of tasks or questions to delegate to the target agent.",
+                                        "items": {
+                                            "type": "string",
+                                            "description": "A specific question or instruction for the agent."
+                                        }
+                                    }
+                                },
+                                "required": ["agent_id", "tasks"]
+                            },
+                            "minItems": 1
+                        }
+                    },
+                    "required": ["queries"]
+                }
+            }
+        }
+    else:
+        schema = {
+            "type": "function",
+            "function": {
+                "name": "agent_query",
+                "description": "Send a list of tasks to a specific agent and retrieve its response. Use this to delegate subtasks or gather information from specialized agents.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "agent_id": {
+                            "type": "string",
+                            "description": "The unique identifier of the target agent."
+                        },
+                        "tasks": {
+                            "type": "array",
+                            "description": "List of tasks or questions to delegate to the target agent.",
+                            "items": {
+                                "type": "string",
+                                "description": "A specific question or instruction for the agent."
+                            }
+                        }
+                    },
+                    "required": ["agent_id", "tasks"]
+                }
+            }
+        }
+
+    async def execute_tool(**kwargs) -> Dict[str, Any]:
+        queries = kwargs.get("queries")
+        if not queries:
+            query_val = kwargs.get("query") or kwargs.get("tasks")
+            queries = [{"agent_id": kwargs.get("agent_id"), "tasks": query_val}]
+        
+        async def run_agent_queries(q_item: dict) -> List[dict]:
+            sub_agent_id = q_item.get("agent_id")
+            sub_tasks = q_item.get("tasks") or q_item.get("query")
+            if not sub_agent_id or not sub_tasks:
+                return []
+            if isinstance(sub_tasks, str):
+                sub_tasks = [sub_tasks]
+            
+            agent_results = []
+            sub_agent_tree = agent_node.get("children", {}).get(sub_agent_id)
+            if sub_agent_tree:
+                old_agent = agent_ctx.get()
+                old_model = model_id_ctx.get()
+                
+                agent_ctx.set({sub_agent_id: sub_agent_tree})
+                sub_model = sub_agent_tree.get("model")
+                if sub_model:
+                    model_id_ctx.set(sub_model)
+                
+                try:
+                    sub_agent_query = _create_agent_query_tool(pipeline, sub_agent_tree) if sub_agent_tree.get("children") else None
+                    
+                    for task in sub_tasks:
+                        if pipeline.cancel_event and pipeline.cancel_event.is_set():
+                            logger.info(
+                                "[%s] cancel_event set before agent_query sub-task '%s' – aborting",
+                                pipeline.__class__.__name__, task,
+                            )
+                            break
+                        
+                        tool_registry = {'agent_query': sub_agent_query} if sub_agent_query else None
+                        try:
+                            llm_task = asyncio.get_event_loop().create_task(
+                                pipeline.llm_tool(
+                                    history_id=sub_agent_id,
+                                    query=task,
+                                    tool_registry=tool_registry,
+                                ),
+                                name=f"agent_query_llm_tool_{id(pipeline)}",
+                            )
+                            cancel_sentinel = None
+                            if pipeline.cancel_event:
+                                cancel_sentinel = asyncio.get_event_loop().create_task(
+                                    pipeline.cancel_event.wait(),
+                                    name=f"cancel_sentinel_aq_{id(pipeline)}",
+                                )
+                            try:
+                                if cancel_sentinel is not None:
+                                    done, _ = await asyncio.wait(
+                                        {llm_task, cancel_sentinel},
+                                        return_when=asyncio.FIRST_COMPLETED,
+                                    )
+                                    if cancel_sentinel in done:
+                                        logger.info(
+                                            "[%s] agent_query: cancel_event fired – cancelling sub-task",
+                                            pipeline.__class__.__name__,
+                                        )
+                                        llm_task.cancel()
+                                        try:
+                                            await llm_task
+                                        except (asyncio.CancelledError, Exception):
+                                            pass
+                                        break
+                                    ans = llm_task.result()
+                                else:
+                                    ans = await llm_task
+                            finally:
+                                if cancel_sentinel is not None and not cancel_sentinel.done():
+                                    cancel_sentinel.cancel()
+                                    try:
+                                        await cancel_sentinel
+                                    except (asyncio.CancelledError, Exception):
+                                        pass
+                            
+                            entry = {
+                                "agent_id": sub_agent_id,
+                                "response": ans
+                            }
+                            # Recursive fan-out check for programmatic child
+                            if isinstance(ans, dict) and ans.get("success") and ans.get("result") is not None:
+                                child_action = _parse_action_result(ans["result"])
+                                if child_action:
+                                    has_single = child_action.get("next_branch") and child_action.get("next_tasks")
+                                    has_multi  = bool(child_action.get("next_branches"))
+                                    if has_single or has_multi:
+                                        sub_results = await _fan_out_branch(pipeline, child_action)
+                                        entry["sub_branch_results"] = sub_results
+                            agent_results.append(entry)
+                        except Exception as e:
+                            logger.exception("Error executing sub-agent task: %s", task)
+                            agent_results.append({
+                                "agent_id": sub_agent_id,
+                                "response": f"Error: {str(e)}"
+                            })
+                finally:
+                    agent_ctx.set(old_agent)
+                    model_id_ctx.set(old_model)
+            else:
+                agent_results.append({
+                    "agent_id": sub_agent_id,
+                    "response": f"Error: Agent '{sub_agent_id}' not found."
+                })
+            return agent_results
+
+        results = await asyncio.gather(*(run_agent_queries(q) for q in queries))
+        flat_results = []
+        for r in results:
+            flat_results.extend(r)
+        return {"results": flat_results} if allow_multiple else (flat_results[0] if flat_results else {})
+
+    return ToolRegistry(call=execute_tool, schema=schema)
 
 
 async def _fan_out_single_branch(
@@ -245,6 +434,21 @@ async def _fan_out_single_branch(
 
     branch_results: List[Dict[str, Any]] = []
     try:
+        is_child_prog = _parse_bool(child_node.get("enableProgrammaticToolCalling"))
+        has_children = bool(child_node.get("children"))
+        child_agent_query = None
+        if not is_child_prog and has_children:
+            child_agent_query = _create_agent_query_tool(pipeline, child_node)
+
+        import inspect
+        try:
+            sig = inspect.signature(pipeline.llm_tool)
+            has_tool_registry = "tool_registry" in sig.parameters or any(
+                p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()
+            )
+        except Exception:
+            has_tool_registry = False
+
         for task in tasks:
             # Pre-task cancel check.
             if cancel_event and cancel_event.is_set():
@@ -262,11 +466,15 @@ async def _fan_out_single_branch(
                         name=f"cancel_sentinel_fan_out_{child_id}_{id(pipeline)}",
                     )
                 try:
+                    llm_kwargs: Dict[str, Any] = {
+                        "query": task,
+                        "history_id": child_id,
+                    }
+                    if child_agent_query and has_tool_registry:
+                        llm_kwargs["tool_registry"] = {"agent_query": child_agent_query}
+
                     _llm_task: asyncio.Task = asyncio.get_event_loop().create_task(
-                        pipeline.llm_tool(
-                            query=task,
-                            history_id=child_id,
-                        ),
+                        pipeline.llm_tool(**llm_kwargs),
                         name=f"llm_tool_fan_out_{child_id}_{id(pipeline)}",
                     )
                     try:
@@ -816,7 +1024,7 @@ class Chat(PipelineBase):
         if is_parsing_think and current_think_buf:
             think_text = think_text + current_think_buf
         if think_text.strip():
-            parts.append(f"<Think>\n{think_text}\n</Think>")
+            parts.append(f"<Think>\n{_escape_for_jsx(think_text)}\n</Think>\n")
         for seg in self._content_segments:
             t = seg["type"]
             if t == "text":
@@ -1324,6 +1532,7 @@ class Chat(PipelineBase):
                 "\n---\n\n"
                 "## Behavior Requirements\n"
                 "\n"
+                "- **ALWAYS** wrap it in triple backticks with 'python' language identifier.\n"
                 "- **NEVER** call `llm_tool` without `tool_registry`\n"   
                 "- `tool_registry` `call` function **MUST** be created with `async def my_tool(**kwargs) -> Dict[str, Any]` and **NEVER** use direct lambda functions.\n"
                 "- `tool_registry` `call` function **MUST** return a plain `Dict[str, Any]`, **DO NOT** return `kwargs.get('value')`, list, string, or other type directly — use `{\"key\": value}` to wrap your data.\n"
@@ -1695,11 +1904,7 @@ class Chat(PipelineBase):
                 return "_".join(parts[1:-1])
         return _sha256_short("0")
 
-    def _escape_for_jsx(self, text: str) -> str:
-        escaped = html.escape(text, quote=True)          # &, <, >, ", '
-        escaped = escaped.replace("{", "&#123;").replace("}", "&#125;")
-        escaped = escaped.replace("[", "&#91;").replace("]", "&#93;")
-        return escaped
+
 
     async def _sync_message_to_db(self):
         if not self.tab_db or not self.tb or not self.branch_id:
@@ -1725,26 +1930,27 @@ class Chat(PipelineBase):
             query = branch_data.get("query")
             # Suppress intermediate DB writes during agent sub-task processing.
             # Only write the final synthesis to the database messages table when self._synthesis_done is True.
-            if self.attempt == 0 and self._agent_mode:
-                placeholder = _make_empty_model_output(self.model_name)
-                placeholder["content"] = (
-                    '<Tasker>'
-                    '<Spinner />'
-                    '<span className="shiny-text">Creating tasks</span>'
-                    '</Tasker>'
-                )
-                responses = json.dumps([placeholder])
-            elif self._agent_tasks and not self._synthesis_done:
-                placeholder = _make_empty_model_output(self.model_name)
-                placeholder["content"] = (
-                    f'<Tasker>'
-                    f'<Spinner />'
-                    f'<span className="flex-1 shiny-text truncate">{self._escape_for_jsx(self._agent_tasks[self._current_task_idx])}</span>'
-                    f'</Tasker>'
-                )
-                responses = json.dumps([placeholder])
-            else:
-                responses = json.dumps(branch_data.get("responses", []))
+            # if self.attempt == 0 and self._agent_mode:
+            #     placeholder = _make_empty_model_output(self.model_name)
+            #     placeholder["content"] = (
+            #         '<Tasker>'
+            #         '<Spinner />'
+            #         '<span className="shiny-text">Creating tasks</span>'
+            #         '</Tasker>'
+            #     )
+            #     responses = json.dumps([placeholder])
+            # elif self._agent_tasks and not self._synthesis_done:
+            #     placeholder = _make_empty_model_output(self.model_name)
+            #     placeholder["content"] = (
+            #         f'<Tasker>'
+            #         f'<Spinner />'
+            #         f'<span className="flex-1 shiny-text truncate">{self._escape_for_jsx(self._agent_tasks[self._current_task_idx])}</span>'
+            #         f'</Tasker>'
+            #     )
+            #     responses = json.dumps([placeholder])
+            # else:
+            #     responses = json.dumps(branch_data.get("responses", []))
+            responses = json.dumps(branch_data.get("responses", []))
             response_branch = int(branch_data.get("response_branch", 0))
             timestamp = int(time.time())
             
@@ -2645,11 +2851,22 @@ class Chat(PipelineBase):
                                                                                             await cancel_sentinel
                                                                                         except (asyncio.CancelledError, Exception):
                                                                                             pass
- 
-                                                                                agent_results.append({
+
+                                                                                entry = {
                                                                                     "agent_id": sub_agent_id,
                                                                                     "response": ans
-                                                                                })
+                                                                                }
+                                                                                # Recursive fan-out check for programmatic child
+                                                                                if isinstance(ans, dict) and ans.get("success") and ans.get("result") is not None:
+                                                                                    child_action = _parse_action_result(ans["result"])
+                                                                                    if child_action:
+                                                                                        has_single = child_action.get("next_branch") and child_action.get("next_tasks")
+                                                                                        has_multi  = bool(child_action.get("next_branches"))
+                                                                                        if has_single or has_multi:
+                                                                                            sub_results = await _fan_out_branch(self, child_action)
+                                                                                            entry["sub_branch_results"] = sub_results
+                                                                                agent_results.append(entry)
+ 
                                                                             except Exception as e:
                                                                                 logger.exception("Error executing sub-agent task: %s", task)
                                                                                 agent_results.append({
@@ -2767,13 +2984,8 @@ class Chat(PipelineBase):
                         except (asyncio.CancelledError, Exception):
                             pass
                 self.logs["messages"] = self.messages
-        #  Programmatic deferred code execution 
-        # When _code_deferred is True, end() saved the response_branch index
-        # before finalize() ran.  Now finalize() has flushed the parser and the
-        # complete content is available in model_output["content"].  Extract and
-        # run the code here, then inject feedback so the model can continue.
         if getattr(self, '_code_deferred', False) and self._programmatic_tool_calling and len(self._content_segments) > 0:            
-            code = _extract_code_from_response(self._content_segments[-1]["code"])
+            code = _extract_code_from_response(self.r["content"][self.branch_id]["responses"][-1]["content"])
             if code and code.strip():
                 logger.info(
                     "[%s] programmatic mode – running deferred code (%d chars)",
@@ -2961,12 +3173,8 @@ class Chat(PipelineBase):
                     self.__class__.__name__,
                 )
 
-        #  Programmatic tool calling mode: suppress native tools 
-        # tools are embedded in the system prompt — don't pass them as native schemas.
         if self._programmatic_tool_calling:
             self.args["tools"] = []
-            # Inject the previous code-execution result as a pair of messages so
-            # the model receives feedback on whether its last code worked.
             if self._code_exec_result is not None:
                 result = self._code_exec_result
                 if result.get("success"):
@@ -2986,7 +3194,6 @@ class Chat(PipelineBase):
                         else:
                             val_str = json.dumps(exec_return, default=str)
                         feedback_parts.append(f"Return value: {val_str}")
-                    # Append branch results as plain prose (recursive)
                     branch_results = result.get("branch_results")
                     if branch_results:
                         def _format_branch_results(results: list, indent: str = "  ") -> None:
@@ -3006,7 +3213,6 @@ class Chat(PipelineBase):
                                     feedback_parts.append(
                                         f"{indent}- Agent '{agent_id}' on task '{task}': {resp_str}"
                                     )
-                                # Recurse into sub-branch results
                                 sub = br.get("sub_branch_results")
                                 if sub:
                                     feedback_parts.append(f"{indent}  Sub-branch results:")
@@ -3019,7 +3225,7 @@ class Chat(PipelineBase):
                     error = result.get("error") or "Unknown error"
                     feedback_msg = f"Code execution failed.\nError:\n{error}"
                 logger.info("[%s] injecting code exec feedback: %s", self.__class__.__name__, feedback_msg)
-                self.messages.append({"role": "assistant", "content": self._content_segments[-1]["code"]})
+                self.messages.append({"role": "assistant", "content": self.r["content"][self.branch_id]["responses"][-1]["content"]})
                 self.messages.append({"role": "user", "content": feedback_msg})
                 if self._task_context_messages and self._task_context_messages[-1]["role"] == "assistant":
                     self._task_context_messages[-1]["content"] = feedback_msg
@@ -3027,7 +3233,7 @@ class Chat(PipelineBase):
         else:
             self.args["tools"] = self.tools
 
-        if self._synthesis_pending and not self._synthesis_done:
+        if self._synthesis_pending and not self._synthesis_done and self._current_task_idx >= len(self._agent_tasks)-1:
             logger.info("[%s] Executing synthesis step...", self.__class__.__name__)
             synthesis_query = (
                 f"Original user request: {self._original_query}\n\n"
@@ -3052,7 +3258,6 @@ class Chat(PipelineBase):
             self._synthesis_done = True
             self._synthesis_pending = False
             
-            # Reset state for the synthesis streaming attempt
             self._think_in_progress = False
             self._pending_text = ""
             self._consumed_parsed_len = 0
@@ -3067,14 +3272,12 @@ class Chat(PipelineBase):
 
         self.tool_calls = None
         self.last_response = ""
-        # Flush any buffered text from the previous attempt into a completed
-        # segment BEFORE resetting, so prior loop content is preserved.
         self._flush_pending_text()
         self._think_in_progress = False
         self._pending_text = ""
-        self._consumed_parsed_len = 0          # reset: new parser = new offset
-        self._serialized_native_tc_ids = set() # reset: new native tool calls incoming
-        self._queued_native_tcs = []           # reset: no deferred tool calls
+        self._consumed_parsed_len = 0 
+        self._serialized_native_tc_ids = set() 
+        self._queued_native_tcs = []
         self.parser = Parser(detect_tool_calls=self.detect_tool_calls, detect_code_blocks=True) # fresh parser for this attempt
         logger.info(
             "[%s] messages: %s tools: %s",
@@ -3083,7 +3286,6 @@ class Chat(PipelineBase):
             json.dumps(self.tools),
         )
     
-    # end [end of loop]
     async def end(self, **kwargs) -> None:
         self.content += self.last_response
         is_continue = False
@@ -3091,12 +3293,6 @@ class Chat(PipelineBase):
         if self.tool_calls:
             is_continue = True
 
-        #  Programmatic tool calling: defer code execution to start() 
-        # end() runs BEFORE finalize(), so the parser's pending buffer may still
-        # hold the closing ``` and the last few tokens.  We therefore do NOT run
-        # the code here.  Instead we set a flag so that start() of the next
-        # attempt can read the COMPLETE content (after finalize() has flushed the
-        # parser) and execute it there.
         if self._programmatic_tool_calling and not self.tool_calls and not self._synthesis_done and not getattr(self, "_hard_cancelled", False):
             try:
                 self._deferred_code_branch_idx = int(self.response_branch or 0)
@@ -3127,9 +3323,6 @@ class Chat(PipelineBase):
             and not (self._programmatic_tool_calling and self._code_exec_result and not self._code_exec_result.get("success"))
             and not getattr(self, "_hard_cancelled", False)
         ):
-            # In programmatic mode use the real code-execution output as the
-            # assistant content so downstream tasks / synthesis receive actual
-            # results, not the raw ```python ... ``` block.
             if self._programmatic_tool_calling and self._code_exec_result is not None:
                 _exec_r = self._code_exec_result
                 if _exec_r.get("success"):
@@ -3145,8 +3338,6 @@ class Chat(PipelineBase):
                 else:
                     _task_assistant_content = f"Code execution failed.\nError:\n{_exec_r.get('error') or 'Unknown error'}"
             else:
-                # For streaming responses, last_response is empty – read from the accumulated
-                # response dict instead (set by process_chunk / finalize).
                 _task_assistant_content = self.last_response or ""
                 if not _task_assistant_content:
                     try:
@@ -3165,7 +3356,6 @@ class Chat(PipelineBase):
                 "role": "assistant",
                 "content": _clean_assistant_content(_task_assistant_content),
             })
-
             self._current_task_idx += 1
             self.query = self._agent_tasks[self._current_task_idx]
             self.messages = []  # will be rebuilt in start()

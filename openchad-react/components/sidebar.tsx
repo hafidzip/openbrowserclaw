@@ -786,7 +786,7 @@ export default function Sidebar({
         "transition-[width] duration-200 ease-out group",
       )}>
       <div data-tauri-drag-region className="w-full absolute left-0 h-[50px] bg-transparent" />
-      <div className="flex items-center gap-2 pt-3">
+      <div className="flex items-center gap-2 pt-2">
         <div
           className={clsx(
             "relative left-1 h-8 w-8 rounded-md flex items-center justify-center text-zinc-800 dark:text-zinc-100 font-bold pointer-events-auto",
@@ -805,16 +805,16 @@ export default function Sidebar({
               }, 250);
             }}
             className={clsx(
-              "absolute z-20 top-2.5 right-2.5 h-8 w-8 inline-flex items-center justify-center rounded-xl hover:bg-[hsl(var(--hover))] transition-colors pointer-events-auto",
+              "absolute z-20 top-2 group/collapsed right-2.5 h-8 w-8 inline-flex items-center justify-center rounded-xl transition-colors pointer-events-auto",
               isCollapsedSidebar && "group-hover:opacity-100 opacity-0",
             )}
             aria-label="Sidebar"
           >
             <svg
-              className="h-4 w-4 text-zinc-600 dark:text-zinc-300"
+              className="h-4 w-4 text-zinc-600/50 dark:text-zinc-300/50 opacity-50 group-hover/collapsed:opacity-100"
               viewBox="0 0 24 24"
               fill="none"
-              stroke="hsl(var(--accent))"
+              stroke="hsl(var(--accent))" 
               strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"
@@ -830,9 +830,9 @@ export default function Sidebar({
       <div
         ref={tabContainerRef}
         className={clsx(
-          "pt-4 flex-shrink flex flex-col overflow-x-visible relative transform -translate-y-2 w-[calc(100%+10px)] pr-[10px]",
+          "flex-shrink flex flex-col overflow-x-visible relative transform -translate-y-2 w-[calc(100%+10px)] pr-[10px]",
           isTransitioning ? "overflow-y-visible" : "overflow-y-auto",
-          (isCollapsedSidebar || Object.keys(pinnedTabs).length > 0) ? "pt-2" : "pt-1"
+          (!isCollapsedSidebar) ? "pt-2" : "pt-1"
         )}>
         <div
           onClick={() => setShowSearchDialog(true)}

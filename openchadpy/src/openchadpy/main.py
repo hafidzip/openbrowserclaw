@@ -116,6 +116,7 @@ if os.path.isfile(_PROJECT_ROOT):
 # Add file logging to the root logger
 try:
     _log_file = os.path.join(_PROJECT_ROOT, "openchad.log")
+    open(_log_file, 'w').close()
     _file_handler = logging.FileHandler(_log_file, encoding="utf-8")
     _file_handler.setFormatter(logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
