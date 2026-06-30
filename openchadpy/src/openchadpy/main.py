@@ -276,6 +276,7 @@ async def scan_models(provider_id: Optional[str] = None):
 
 # Background startup tracker
 _plugin_watcher = None
+_task_watcher_task = None
 
 def find_available_port(host: str, start_port: int, max_attempts: int = 256) -> int:
     """Find an available port starting from start_port."""
@@ -365,6 +366,13 @@ async def _background_startup():
             model_providers_dir=MODEL_PROVIDERS_DIR,
         )
         tool_manager.export_all_tools(mcp_instance)
+        
+        # Phase 5: Task Watcher
+        startup_tracker.update_status("Initializing task watcher...", progress=95.0)
+        from .task_watcher import start_task_watcher
+        global _task_watcher_task
+        _task_watcher_task = asyncio.create_task(start_task_watcher(_PROJECT_ROOT, settings_manager))
+
         startup_tracker.update_status("Server Ready", is_ready=True)
         logger.info("Background startup complete")
     except Exception as e:
@@ -388,6 +396,15 @@ async def lifespan(app: FastAPI):
             await startup_task
         except asyncio.CancelledError:
             pass
+    global _task_watcher_task
+    if _task_watcher_task and not _task_watcher_task.done():
+        logger.info("Stopping task watcher...")
+        _task_watcher_task.cancel()
+        try:
+            await _task_watcher_task
+        except asyncio.CancelledError:
+            pass
+
     if _plugin_watcher:
         _plugin_watcher.stop()
     folder = os.path.join(_PROJECT_ROOT, "Workspaces", "Private")
