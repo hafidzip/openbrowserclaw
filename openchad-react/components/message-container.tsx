@@ -714,12 +714,12 @@ function MessageContainer({
     );
 
     const editingContainerCls = clsx(
-        "rounded-4xl bg-accent/5 border border-[hsl(var(--chat-border))] px-4 w-fit h-fit select-text relative",
+        "rounded-4xl bg-accent/5 border border-[hsl(var(--chat-border))] px-4 w-fit h-fit select-text relative overflow-hidden",
         isEditing
             ? "pb-17 pt-4 w-full max-w-none"
             : clsx((isExpanded
                 ? "py-2 pb-8"
-                : "py-2 max-h-[148px] overflow-hidden"), "w-fit 2xl:max-w-[500px] lg:max-w-[350px]")
+                : "py-2 max-h-[148px]"), "w-fit 2xl:max-w-[500px] lg:max-w-[350px]")
     );
 
     const activeResponseBranch = (typeof responseBranch === 'number' && responseBranch >= 0 && responseBranch < (responses?.length ?? 0)) ? responseBranch : 0;

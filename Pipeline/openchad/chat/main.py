@@ -1,3 +1,4 @@
+from typing import Union
 from anyio import Path
 from openchadpy.tool_base import ToolRegistry
 from openchadpy.pipeline_base import PipelineBase
@@ -125,6 +126,79 @@ def _clean_assistant_content(text: str) -> str:
     text = _RE_CODE_BLOCK.sub(lambda m: re.sub(r"<CodeBlock\b[^>]*>", "", m.group(0)).replace("</CodeBlock>", ""), text)
     return text.strip()
 
+
+def object_to_text_tree(root_id: str, data: Union[str, Dict[str, Any]], spaced: bool = True) -> str:
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError as e:
+            return f"Error parsing JSON: {e}"
+
+    if not isinstance(data, dict) or not data:
+        return "Empty or invalid tree structure."
+
+    def normalize_node(name: str, body: Any) -> Dict[str, Any]:
+        children_list = []
+
+        if isinstance(body, dict):
+            children_data = body.get("children")
+
+            if isinstance(children_data, dict):
+                for child_key, child_body in children_data.items():
+                    if isinstance(child_body, dict) and "name" in child_body:
+                        display_name = f"{child_key} ({child_body['name']})"
+                    else:
+                        display_name = child_key
+                    children_list.append(normalize_node(display_name, child_body))
+            elif isinstance(children_data, list):
+                for item in children_data:
+                    if isinstance(item, dict):
+                        for child_key, child_body in item.items():
+                            if isinstance(child_body, dict) and "name" in child_body:
+                                display_name = f"{child_key} ({child_body['name']})"
+                            else:
+                                display_name = child_key
+                            children_list.append(normalize_node(display_name, child_body))
+                    elif isinstance(item, str):
+                        children_list.append({"name": item, "children": []})
+
+        return {"name": name, "children": children_list}
+
+    def render_node(node: Dict[str, Any], prefix: str = "", is_last: bool = True, is_root: bool = False) -> List[str]:
+        lines = []
+        name = node["name"]
+
+        if is_root:
+            lines.append(f"{root_id} ({name})")
+            next_prefix = ""
+        else:
+            marker = "└── " if is_last else "├── "
+            lines.append(f"{prefix}{marker}{name}")
+            next_prefix = prefix + ("    " if is_last else "│   ")
+
+        children = node["children"]
+        count = len(children)
+
+        for i, child in enumerate(children):
+            is_child_last = (i == count - 1)
+            if spaced and is_root:
+                lines.append("│")
+            lines.extend(render_node(child, next_prefix, is_child_last, is_root=False))
+
+        return lines
+
+    final_output = []
+
+    if "name" in data and isinstance(data["name"], str):
+        normalized_root = normalize_node(data["name"], data)
+        final_output.extend(render_node(normalized_root, is_root=True))
+    else:
+        for root_name, root_body in data.items():
+            normalized_root = normalize_node(root_name, root_body)
+            final_output.extend(render_node(normalized_root, is_root=True))
+
+    return "\n".join(final_output)
+
 _RE_BACKTICK_FENCE = re.compile(
     r"```(?:[a-zA-Z0-9_+\-]*)?\r?\n(.*?)```",
     re.DOTALL,
@@ -132,16 +206,13 @@ _RE_BACKTICK_FENCE = re.compile(
 
 def _extract_code_from_response(text: str) -> str:
     """Extract executable Python code from a model response.
-
     The model may respond with:
     - Plain code (no backtick fences) — returned as-is after stripping MDX tags.
-    - One or more triple-backtick fenced blocks — the content of the first
+    - One or more triple-backtick fenced blocks — the content of the last
       Python (or language-unspecified) block is returned.
-
     MDX rendering wrappers (<Think>, <ToolCall/>, <CodeBlock>) are stripped
     before code extraction so that renderer artefacts do not confuse the
     extraction logic.
-
     NOTE: end() runs before finalize(), so the parser's pending buffer may
     still hold the closing ``` when this is called.  We handle both the
     complete-fence case (regex match) and the incomplete-fence case (opening
@@ -158,11 +229,10 @@ def _extract_code_from_response(text: str) -> str:
         text,
     )
     text = text.strip("\r\n")
-
     # 2. Try to extract code from a complete backtick fence (opening + closing).
     matches = _RE_BACKTICK_FENCE.findall(text)
     if matches:
-        raw_code = matches[0]
+        raw_code = matches[-1]
     else:
         # Fallback: the closing ``` may still be in the parser's pending buffer
         # (end() runs before finalize()).  Strip the opening fence and treat
@@ -178,10 +248,8 @@ def _extract_code_from_response(text: str) -> str:
             raw_code = re.sub(r"\n?```\s*$", "", raw_code, flags=re.DOTALL)
         else:
             raw_code = text
-
     # 3. Dedent to handle relative indentation correctly
     return textwrap.dedent(raw_code.strip("\r\n")).strip()
-
 
 def _parse_action_result(raw: Any) -> Optional[Dict[str, Any]]:
     """Normalise a sandbox return value into a plain ActionResult-shaped dict.
@@ -663,9 +731,11 @@ class Chat(PipelineBase):
     _agent_mode: bool
     current_agent_id: str | None
     _programmatic_tool_calling: bool
+    _frontend_prefix: str
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self._frontend_prefix = ""
         self._agent_mode = False
         self._programmatic_tool_calling = False
 
@@ -815,11 +885,11 @@ class Chat(PipelineBase):
                     
                     # 1. Agent Header
                     if depth == 0:
-                        lines.append(f"# Agent `{a_id}`")
+                        lines.append(f"# Agent `{a_id}` ({a_node.get("name")})")
                     elif depth == 1:
-                        lines.append(f"### `{a_id}`")
+                        lines.append(f"### `{a_id}` ({a_node.get("name")})")
                     else:
-                        lines.append(f"##### `{a_id}`")
+                        lines.append(f"##### `{a_id}` ({a_node.get("name")})")
                     lines.append("")
 
                     # 2. Skills
@@ -1206,12 +1276,15 @@ class Chat(PipelineBase):
                 _, skill_desc = get_skill_info(skill_path) if skill_path else ("", "No description available")
                 node_children = a_node.get("children", {})
                 tools = list(a_node.get("tools", []))
-                if node_children and "agent_query" not in tools:
+                
+                if _parse_bool(a_node.get("enableProgrammaticToolCalling")):
                     tools.append("agent_query")
+
                 tools_str = ", ".join(f'"{t}"' for t in sorted(tools))
                 lines = [
                     f"{indent}Node(",
-                    f"{indent}    name=\"{a_id}\",",
+                    f"{indent}    branch_id=\"{a_id}\",",
+                    f"{indent}    name=\"{a_node.get('name', a_id)}\",",
                     f"{indent}    skill=Skill(",
                     f"{indent}        path=\"{skill_path}\",",
                     f"{indent}        description=\"{skill_desc}\",",
@@ -1237,6 +1310,8 @@ class Chat(PipelineBase):
 
             tool_defs: List[str] = []
             for t_name in sorted(allowed_tools):
+                if t_name == "agent_query":
+                    continue
                 t_desc = "No description available"
                 for t in all_tools:
                     if isinstance(t, dict) and t.get("function", {}).get("name") == t_name:
@@ -1251,8 +1326,10 @@ class Chat(PipelineBase):
                     f"    ..."
                 )
             tools_code     = "\n\n".join(tool_defs)
-            tools_list_str = ", ".join(sorted(allowed_tools))
-
+            logger.info(f"[Chat] tools_code: {tools_code}")
+            tools_list_str = ", ".join(f'"{t}"' for t in sorted(agent_node.get("tools", [])))
+            skill_path = agent_node.get("skillPath", "")
+            _, skill_desc = get_skill_info(skill_path) if skill_path else ("", "No description available")
             _env_header = (
                 "## Environment\n"
                 f"- OS Information: `{os_info}`\n"
@@ -1306,6 +1383,7 @@ class Chat(PipelineBase):
                 "\n\n"
                 "@dataclass\n"
                 "class Node:\n"
+                "    branch_id: str\n"
                 "    name: str\n"
                 "    skill: Skill\n"
                 "    available_tools: List[str]\n"
@@ -1324,12 +1402,12 @@ class Chat(PipelineBase):
                 '    async def execute(self, task: str = "") -> "ActionResult":\n'
                 "        return await self.module.execute(task)\n"
                 "\n\n"
-                'def get_node(name: str) -> "Node":\n'
-                '    """BFS search for a node by name starting from the root tree."""\n'
+                'def get_node(branch_id: str) -> "Node":\n'
+                '    """BFS search for a node by branch_id starting from the root tree."""\n'
                 "    ...\n"
                 "\n\n"
-                'def get_children_node(node: Node, name: str) -> "Node":\n'
-                '    """Search for a children node by name, only search in node->children, non-recursive."""\n'
+                'def get_children_node(node: Node, branch_id: str) -> "Node":\n'
+                '    """Search for a children node by branch_id, only search in node->children, non-recursive."""\n'
                 "    ...\n"
                 "\n"
                 + (
@@ -1339,10 +1417,10 @@ class Chat(PipelineBase):
                     else ""
                 )
                 + "\ntree = Node(\n"
-                '    name="root",\n'
+                '    branch_id="root",\n'
                 '    skill=Skill(\n'
-                '        path="{skill_path}",\n'
-                '        description="{skill_desc}",\n'
+                f'        path="{skill_path}",\n'
+                f'        description="{skill_desc}",\n'
                 '    ),\n'
                 f'    available_tools=[{tools_list_str}],\n'
                 '    module_path="root/main.py",\n'
@@ -1532,31 +1610,37 @@ class Chat(PipelineBase):
                 "\n---\n\n"
                 "## Behavior Requirements\n"
                 "\n"
+                +
+                (
+                    f"- You're the `root`, you **MUST** decompose `Current Task` and delegate task(s) to `{self.current_agent_id}` (at least one) "
+                    if self.attempt == 0 else 
+                    ""
+                )
+                +
                 "- **ALWAYS** wrap it in triple backticks with 'python' language identifier.\n"
+                "- When delegating `next_tasks` you **MUST** delegate to your child nodes, **DO NOT** delegate to yourself or other child nodes (look at **Entry-point coroutine** logic).\n"
                 "- **NEVER** call `llm_tool` without `tool_registry`\n"   
+                +
+                (
+                    f"- **NEVER** fill `next_branch` with `{node_id}` it **MUST** be your children."
+                    if self.attempt == 0 and not allow_multiple else
+                    f"- **NEVER** include `{node_id}` in `next_branches` it **MUST** be your children."
+                )
+                +
                 "- `tool_registry` `call` function **MUST** be created with `async def my_tool(**kwargs) -> Dict[str, Any]` and **NEVER** use direct lambda functions.\n"
                 "- `tool_registry` `call` function **MUST** return a plain `Dict[str, Any]`, **DO NOT** return `kwargs.get('value')`, list, string, or other type directly — use `{\"key\": value}` to wrap your data.\n"
                 "- Use `llm_tool` to transform, summarize, analyze, classify, or structure output.\n"
-                + (
-                    f"- Read `tree = Node(...)` carefully, identify `{node_id}` children's tools and skill before populating their "
-                    "`next_branches`\n" if allow_multiple and self.attempt > 0
-                    else "`next_tasks` and `next_branch`\n" if (self.attempt == 0 or children)
-                    else ""
-                )
-                + (                    
-                    '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_branches={})` \u2014 `execute()` must never raise.\n'
-                    "- Return `ActionResult(result=result, next_branches=next_branches)`.\n"
-                    if allow_multiple and self.attempt > 0 else
-                    '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_tasks=[], next_branch=None)` \u2014 `execute()` must never raise.\n'
-                )
+                f"- Read `tree = Node(...)` carefully, identify `{node_id}` children's tools and skill before populating their ActionResult.\n"
+                '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}})` \u2014 `execute()` must never raise.\n'
                 + (
                     "- Return `ActionResult(result=result, next_tasks=next_tasks, next_branch=next_branch)`.\n"
                     if self.attempt == 0 or children else
                     "- Return `ActionResult(result=result, next_tasks=[], next_branch=None)`.\n"
                 )
             )
+            children_values = list(children.values()) if isinstance(children, dict) else children
             _available_branch = (
-                f"# Available `next_branch`: \n{''.join(f"- {child['name']}\n" for child in children or [{"name": self.current_agent_id}])}"
+                f"# Available `next_branch`: \n{''.join(f"- {child['name']}\n" for child in children_values or [{"name": self.current_agent_id}])}"
                 if self.attempt == 0 or children else 
                 ""
             )
@@ -1574,13 +1658,28 @@ class Chat(PipelineBase):
             self.prompt = re.sub(r"\n{3,}", "\n\n", raw_prompt).strip()
             import platform
             from datetime import datetime
+            
             os_info = f"{platform.system()} {platform.release()}"
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            children = agent_node.get("children")
+            children_values = list(children.values()) if isinstance(children, dict) else children
+            agent_tree_structure = object_to_text_tree(self.current_agent_id or "root", agent_node)
+            logger.info(f"Agent Tree Structure: \n {agent_tree_structure}")
             self.prompt += (
                 f"\n\n## Environment\n"
                 f"- OS Information: {os_info}\n"
-                f"- Current Date & Time: {now_str}"
+                f"- Current Date & Time: {now_str}\n"
+                f"\n\n---\n\n"
+                f"# Agents Tree Structure: \n ```text\n{agent_tree_structure}\n``` \n"
+                f"\n\n---\n\n"
             )
+
+            self.prompt += f"- Current Node: `{self.current_agent_id}` ({agent_node.get("name")})\n" if self.attempt > 0 else ""
+            self.prompt += f"- Available Next `agent_id` (Your child nodes): `{[child['name'] for child in children_values]}`\n" if self.attempt > 0 and children else ""
+            self.prompt += f"- **ALWAYS** check your child nodes and assign tasks to them when needed.\n"  if self.attempt > 0 and children else ""
+            self.prompt += f"- **ALWAYS** respond in (1-5) sentences, ensure it's concise and **MUST** avoid long outputs.\n"  if self.attempt > 0 else ""
+
+
 
         self.message_template[0]["content"] = self.prompt
         logger.info("[%s] _build_system_prompt: rebuilt for node='%s' attempt=%d",
@@ -1608,7 +1707,7 @@ class Chat(PipelineBase):
         if msg_template and len(msg_template) > 0 and "content" in msg_template[0]:
             content = msg_template[0]["content"]
             if "{{current_task}}" in content:
-                msg_template[0]["content"] = content.replace("{{current_task}}", (f"Create sub-tasks then delegate to `{self.current_agent_id}` to process this query:" if self.attempt == 0 else "") + f"{context}{self.query}")
+                msg_template[0]["content"] = content.replace("{{current_task}}", f"{context}{self.query}")
 
         self.messages = (
             msg_template
@@ -1807,6 +1906,7 @@ class Chat(PipelineBase):
             tasks = kwargs.get("tasks", [])
             captured_tasks.extend(tasks)
             return {"tasks": tasks, "status": "created"}
+        
 
         create_tasks_tool = ToolRegistry(
             call=_create_tasks_callback,
@@ -1815,8 +1915,12 @@ class Chat(PipelineBase):
                 "function": {
                     "name": "create_tasks",
                     "description": (
-                        "Analyze the user's request and break it down into a list of "
-                        "clear, sequential tasks."
+                        "Decompose the user request into one or more discrete, actionable tasks "
+                        "to be executed by sub-agents. Each task must be self-contained and "
+                        "achievable independently. Use a single task when the request is atomic; "
+                        "use multiple tasks when the request has sequential "
+                        "subtasks with distinct scopes. Avoid vague tasks — each must specify "
+                        "what to do, what to operate on, and the expected output or outcome."
                     ),
                     "parameters": {
                         "type": "object",
@@ -1824,7 +1928,7 @@ class Chat(PipelineBase):
                             "tasks": {
                                 "type": "array",
                                 "items": {"type": "string"},
-                                "description": "Ordered list of tasks to execute sequentially"
+                                "description": "a clear task(s) to instruct the agent"
                             }
                         },
                         "required": ["tasks"]
@@ -1833,8 +1937,7 @@ class Chat(PipelineBase):
             }
         )
 
-        # Temporarily clear agent context so llm_tool runs in single-step
-        # mode and returns the tool result directly.
+        
         old_agent = agent_ctx.get()
         agent_ctx.set(None)
         try:
@@ -1847,8 +1950,7 @@ class Chat(PipelineBase):
             llm_task = asyncio.get_event_loop().create_task(
                 self.llm_tool(
                     query=(
-                        "Analyze the following user request and break it down into clear, "
-                        "sequential tasks. Call the create_tasks tool with the list of tasks.\n"
+                        "Use `create_tasks` tool to analyze the following user request and decompose into task(s):"
                         f"{processed_query}"
                     ),
                     tool_registry={"create_tasks": create_tasks_tool},
@@ -2380,7 +2482,7 @@ class Chat(PipelineBase):
         )
 
         # Fallback: never write an empty string to the DB
-        model_output["content"] = rendered or "<div></div>"
+        model_output["content"] = f"{self._frontend_prefix}{rendered or "<div></div>"}"
         self.logs["content_segments_count"] = len(self._content_segments)
         self.logs["think_content_len"] = len(self._think_content)
         if self.tab_db and self.tb:
@@ -2548,6 +2650,7 @@ class Chat(PipelineBase):
     async def start(self, **kwargs) -> None:
         root_agent = getattr(self, "root_agent", None)
         logger.info(f"Root agent: {root_agent}")
+        
         if root_agent and self.event_emitter and not hasattr(self, "_root_heartbeat_task"):
             import time
             await self.event_emitter.emit("agent_heartbeat", {
@@ -2573,7 +2676,6 @@ class Chat(PipelineBase):
         if not self.messages:
             # Build history context: clean think/tool tags from assistant turns
             await self._build_initial_messages()
-            logger.info(f"System message: \n{self.prompt}")
             # Force task planning on first attempt when agent is set
             agent = agent_ctx.get()
             if agent and isinstance(agent, dict) and self.attempt == 0:
@@ -2984,8 +3086,21 @@ class Chat(PipelineBase):
                         except (asyncio.CancelledError, Exception):
                             pass
                 self.logs["messages"] = self.messages
-        if getattr(self, '_code_deferred', False) and self._programmatic_tool_calling and len(self._content_segments) > 0:            
-            code = _extract_code_from_response(self.r["content"][self.branch_id]["responses"][-1]["content"])
+        if getattr(self, '_code_deferred', False) and self._programmatic_tool_calling and len(self._content_segments) > 0:     
+            logger.info(f"System message: \n{self.r["content"][self.branch_id]["responses"][self.response_branch]["content"]}")
+            code = _extract_code_from_response(self.r["content"][self.branch_id]["responses"][self.response_branch]["content"])
+            
+            self.parser = Parser(detect_tool_calls=self.detect_tool_calls, detect_code_blocks=True)
+            self._content_segments = []
+            self._think_content = ""
+            self._think_in_progress = False
+            self.tool_calls = []
+            self._serialized_native_tc_ids = set()
+            self._queued_native_tcs = []
+            self._pending_text = ""
+
+            self.r["content"][self.branch_id]["responses"][self.response_branch]["content"] = ""
+
             if code and code.strip():
                 logger.info(
                     "[%s] programmatic mode – running deferred code (%d chars)",
@@ -3163,10 +3278,10 @@ class Chat(PipelineBase):
                         self.__class__.__name__,
                         (exec_result.get("error") or "")[:300], #pyrefly: ignore
                     )
-                    self._hard_cancelled = True
-                    if self.set_continue:
-                        self.set_continue(False)
-                    raise RuntimeError(f"Hard cancel: Code execution failed: {exec_result.get('error') or 'Unknown error'}")
+                    # self._hard_cancelled = True
+                    # if self.set_continue:
+                    #     self.set_continue(False)
+                    # raise RuntimeError(f"Hard cancel: Code execution failed: {exec_result.get('error') or 'Unknown error'}")
             else:
                 logger.info(
                     "[%s] deferred code: no extractable code in response",
@@ -3496,3 +3611,24 @@ class Chat(PipelineBase):
         logger.info("[%s] !!!!END_STOP!!!!", self.__class__.__name__)
         logger.info("[%s] !!!!TARGET TABLE!!!!", self.tb)
         
+
+        async def reset():
+            self.parser = Parser(detect_tool_calls=self.detect_tool_calls, detect_code_blocks=True)
+            self._content_segments = []
+            self._think_content = ""
+            self._think_in_progress = False
+            self.tool_calls = []
+            self._serialized_native_tc_ids = set()
+            self._queued_native_tcs = []
+            self._pending_text = ""
+                                        
+            idx = int(self.response_branch or 0)
+            if "content" in self.r and self.branch_id in self.r["content"]:
+                resps = self.r["content"][self.branch_id].get("responses", [])
+                if idx < len(resps):
+                    resps[idx]["content"] = "<div></div>"
+                    resps[idx]["tool_calls"] = None
+                    resps[idx]["raw_response"] = None
+            
+            # Sync cleared text to DB
+            await self._sync_message_to_db()

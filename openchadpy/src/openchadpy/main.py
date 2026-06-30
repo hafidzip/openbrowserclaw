@@ -1,3 +1,4 @@
+from openchadpy.context import max_retries_ctx
 from openchadpy.context import agent_ctx
 from aiortc import rtcrtptransceiver
 from mcp.types import JSONRPCMessage
@@ -622,6 +623,7 @@ async def handle_pytauri_chat(msg_id: str, body: Dict[str, Any], app_handle: App
         "app_name",
         "pipeline",
         "agent",
+        "max_retries"
     ]}
     agent_tree: Optional[Dict[str, Any]] = (await get_agent_tree_internal(agent_id=agent, workspace=workspace))
     agent_ctx.set(agent_tree)
@@ -698,45 +700,74 @@ async def handle_pytauri_chat(msg_id: str, body: Dict[str, Any], app_handle: App
                             "content": query
                         }
                     ]
-                logger.info(f"Stream {msg_id} starting chat with messages: {json.dumps(messages, default=str)}")
-                gen = await model_manager.chat(messages=copy.deepcopy(messages), model_id=requested_model, stream=True, **chat_kwargs)
-                assert hasattr(gen, "__aiter__"), "Expected async generator from model_manager.chat"
-                gen = cast(AsyncGenerator[Any, Any], gen)
-                async for chunk in gen:
-                    chunk_count += 1                    
-                    # Check if stream was stopped externally
-                    if not is_stream_active(msg_id):
-                        logger.info(f"Stream {msg_id} stopped externally after {chunk_count} chunks")
-                        is_continue[0] = False
-                        stopped = True
+                max_retries = body.get("max_retries", 99)
+                max_retries_ctx.set(max_retries)
+                retry_delay = 1.0
+                for attempt in range(max_retries):
+                    if pipeline and pipeline.cancel_event and pipeline.cancel_event.is_set():
                         break
-                    if chunk:
-                        # Run pipeline               
-                        process_chunk = None
-                        if pipeline: 
-                            try:
-                                process_chunk = await pipeline.process_chunk(chunk, **chat_kwargs)
-                            except Exception as e:
-                                if pipeline_name:
-                                    await pipeline_manager.record_error(pipeline_name, e, "process_chunk")
-                                pipeline = None # Disable pipeline on error
+                    try:
+                        logger.info(f"Stream {msg_id} starting chat with messages (attempt {attempt + 1}): {json.dumps(messages, default=str)}")
+                        gen = await model_manager.chat(messages=copy.deepcopy(messages), model_id=requested_model, stream=True, **chat_kwargs)
+                        assert hasattr(gen, "__aiter__"), "Expected async generator from model_manager.chat"
+                        gen = cast(AsyncGenerator[Any, Any], gen)
+                        async for chunk in gen:
+                            chunk_count += 1                    
+                            # Check if stream was stopped externally
+                            if not is_stream_active(msg_id):
+                                logger.info(f"Stream {msg_id} stopped externally after {chunk_count} chunks")
+                                is_continue[0] = False
                                 stopped = True
-                        process_chunk = chunk if not process_chunk else process_chunk
-                        if process_chunk is not None:
-                            if isinstance(process_chunk, dict):
-                                delta = process_chunk.get('choices', [{}])[0].get('delta', {})
-                                is_stop = delta.get('stop')
-                                if is_stop:                      
-                                    await event_emitter.emit(stream_event, {"response": process_chunk, "stream_end": False})
-                                    stopped = True
-                                    break
-                                is_force_stop = delta.get('force_stop')
-                                if is_force_stop:                      
-                                    await event_emitter.emit(stream_event, {"response": process_chunk, "stream_end": False})
-                                    stopped = True
-                                    is_continue[0] = False
-                                    break                       
-                        await event_emitter.emit(stream_event, {"response": process_chunk, "stream_end": False})
+                                break
+                            if chunk:
+                                # Run pipeline               
+                                process_chunk = None
+                                if pipeline: 
+                                    try:
+                                        process_chunk = await pipeline.process_chunk(chunk, **chat_kwargs)
+                                    except Exception as e:
+                                        if pipeline_name:
+                                            await pipeline_manager.record_error(pipeline_name, e, "process_chunk")
+                                        pipeline = None # Disable pipeline on error
+                                        stopped = True
+                                process_chunk = chunk if not process_chunk else process_chunk
+                                if process_chunk is not None:
+                                    if isinstance(process_chunk, dict):
+                                        delta = process_chunk.get('choices', [{}])[0].get('delta', {})
+                                        is_stop = delta.get('stop')
+                                        if is_stop:                      
+                                            await event_emitter.emit(stream_event, {"response": process_chunk, "stream_end": False})
+                                            stopped = True
+                                            break
+                                        is_force_stop = delta.get('force_stop')
+                                        if is_force_stop:                      
+                                            await event_emitter.emit(stream_event, {"response": process_chunk, "stream_end": False})
+                                            stopped = True
+                                            is_continue[0] = False
+                                            break                       
+                                await event_emitter.emit(stream_event, {"response": process_chunk, "stream_end": False})
+                        # Successfully finished streaming without exceptions
+                        break
+                    except Exception as e:
+                        is_mid_stream = "MidStreamFallbackError" in type(e).__name__ or "MidStreamFallbackError" in str(e)
+                        is_retryable = is_mid_stream or "RateLimitError" in type(e).__name__ or "APIError" in type(e).__name__ or "provider_unavailable" in str(e)
+                        if is_retryable and attempt < max_retries - 1:
+                            logger.warning(
+                                f"Stream {msg_id} failed with {type(e).__name__} (attempt {attempt + 1}/{max_retries}). "
+                                f"Clearing current partial response and retrying..."
+                            )
+                            if pipeline:
+                                try:
+                                    await pipeline.reset()
+                                except Exception as reset_err:
+                                    logger.error(f"Error resetting pipeline state: {reset_err}", exc_info=True)
+                            
+                            await asyncio.sleep(retry_delay * (attempt + 1))
+                            chunk_count = 0
+                            stopped = False
+                            continue
+                        raise
+
                 if pipeline:
                     await pipeline.end(**chat_kwargs)
                     pipeline.attempt += 1

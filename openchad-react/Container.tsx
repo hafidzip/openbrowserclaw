@@ -139,7 +139,7 @@ export default function Container({ Apps }: { Apps: Project }) {
   const [mounted, setMounted] = useState(false);
   const [isCreateTask, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: false });
   const [, setAnimateExit] = useState(false);
-  const [selectedAgent, setSelectedAgent] = useState<IAgent | null>(null);
+  const [selectedAgent, setSelectedAgent] = useDatabaseImpl<IAgent>("selected-agent", { initialValue: { name: null, id: null } });
   const [taskInterval, setTaskInterval] = useDatabaseImpl<ScheduleInterval>("taskInterval", { initialValue: 'once' });
   const composerRef = useRef<HTMLTextAreaElement>(null);
   const [isSwitchWorkspace, setIsSwitchWorkspace] = useGlobal('isSwitchWorkspace', { initialValue: false });
@@ -1177,76 +1177,73 @@ export default function Container({ Apps }: { Apps: Project }) {
                   })
                 ]
               });
+              if (taskInterval !== 'disabled') {
+                const branch = sha256("0").slice(0, 32);
+                const tbRaw = "msg_" + branch + "_0";
+                // Note: do NOT pre-hash tbRaw — the backend hashes it as
+                // generateIdFromString(tab_id + "/" + tb), matching MessageContainer's useDatabase.
+                const branchId = sha256(branch).slice(0, 32);
+                const branchIndex = 0;
+                const activeId = taskId + "_response_" + branchId + "_0_" + branchIndex;
 
+                const initTb = generateIdFromString(taskId + "/" + "message_state");
 
+                let initialValue = {
+                  title: { _v: taskId },
+                  activeId: { _v: activeId },
+                  errorMsg: { _v: "" },
+                  initialized: { _v: true },
+                  isStreaming: { _v: true },
+                  context: { _v: "" },
+                  dontStop: { _v: true },
+                }
 
-              const branch = sha256("0").slice(0, 32);
-              const tbRaw = "msg_" + branch + "_0";
-              // Note: do NOT pre-hash tbRaw — the backend hashes it as
-              // generateIdFromString(tab_id + "/" + tb), matching MessageContainer's useDatabase.
-              const branchId = sha256(branch).slice(0, 32);
-              const branchIndex = 0;
-              const activeId = taskId + "_response_" + branchId + "_0_" + branchIndex;
-
-              const initTb = generateIdFromString(taskId + "/" + "message_state");
-
-              let initialValue = {
-                title: { _v: value },
-                activeId: { _v: activeId },
-                errorMsg: { _v: "" },
-                initialized: { _v: true },
-                isStreaming: { _v: true },
-                context: { _v: "" },
-                dontStop: { _v: true },
-              }
-
-              await pyInvoke("sqlite", {
-                db, table: initTb, command: 'sync_table', data: initialValue
-              });
-              let errorlog: string | null = null;
-              if (selectedAgent?.id && value.trim().length > 0) {
-                try {
-                  const streamRes = await pyInvoke("v1/chat/completions", {
-                    id: activeId,
-                    query: value,
-                    stream: true,
-                    agent: selectedAgent?.id,
-                    tab_id: taskId,
-                    branch_id: branchId,
-                    index: branchIndex,
-                    response_branch: 0,
-                    tb: tbRaw,
-                    workspace: db,
-                    app_name: "",
-                    pipeline: settings["Others/app_settings/string.pipeline"]?.value || "openchad/chat"
-                  });
-                  if (streamRes && typeof streamRes === 'object' && Symbol.asyncIterator in streamRes) {
-                    for await (const _ of streamRes as any) { /* consume stream */ }
+                await pyInvoke("sqlite", {
+                  db, table: initTb, command: 'sync_table', data: initialValue
+                });
+                let errorlog: string | null = null;
+                if (selectedAgent?.id && value.trim().length > 0) {
+                  try {
+                    const streamRes = await pyInvoke("v1/chat/completions", {
+                      id: activeId,
+                      query: value,
+                      stream: true,
+                      agent: selectedAgent?.id,
+                      tab_id: taskId,
+                      branch_id: branchId,
+                      index: branchIndex,
+                      response_branch: 0,
+                      tb: tbRaw,
+                      workspace: db,
+                      app_name: "",
+                      pipeline: settings["Others/app_settings/string.pipeline"]?.value || "openchad/chat"
+                    });
+                    if (streamRes && typeof streamRes === 'object' && Symbol.asyncIterator in streamRes) {
+                      for await (const _ of streamRes as any) { /* consume stream */ }
+                    }
+                  } catch (error) {
+                    errorlog = JSON.stringify(error);
+                  } finally {
+                    await pyInvoke("sqlite", {
+                      db, table: initTb, command: 'sync_table', data: {
+                        ...initialValue,
+                        ...(errorlog && { errorMsg: errorlog }),
+                        isStreaming: { _v: false },
+                        activeId: { _v: "" }
+                      }
+                    });
                   }
-                } catch (error) {
-                  errorlog = JSON.stringify(error);
-                } finally {
+                } else {
                   await pyInvoke("sqlite", {
                     db, table: initTb, command: 'sync_table', data: {
                       ...initialValue,
-                      ...(errorlog && { errorMsg: errorlog }),
+                      errorMsg: { _v: "No Agent Selected" },
                       isStreaming: { _v: false },
                       activeId: { _v: "" }
                     }
                   });
                 }
-              } else {
-                await pyInvoke("sqlite", {
-                  db, table: initTb, command: 'sync_table', data: {
-                    ...initialValue,
-                    errorMsg: { _v: "No Agent Selected" },
-                    isStreaming: { _v: false },
-                    activeId: { _v: "" }
-                  }
-                });
               }
-
-
             }}
             width={1920}
             height={1080}

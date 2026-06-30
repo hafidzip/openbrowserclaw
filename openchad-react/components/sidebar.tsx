@@ -794,7 +794,7 @@ export default function Sidebar({
           )}>
           <ProjectIcon />
         </div>
-        <Aspan isCollapsed={isCollapsedSidebar} className="text-lg opacity-0 text-zinc-900 dark:text-gray-200 font-funnel">{projectName}</Aspan>
+        <Aspan isCollapsed={isCollapsedSidebar} className="text-lg opacity-0 text-zinc-900 dark:text-gray-200 font-funnel flex items-center gap-1.5">{projectName} <span className="text-xs font-medium font-mono border relative top-[1px] p-[1px] rounded-full px-2">claw</span></Aspan>
         <div className="ml-auto pointer-events-none">
           <button
             onClick={() => {

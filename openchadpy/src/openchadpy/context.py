@@ -8,3 +8,4 @@ agent_ctx:ContextVar[Optional[Dict[str, Any]]] = ContextVar("agent", default=Non
 workspace_ctx: ContextVar[Optional[str]] = ContextVar("workspace", default="global")
 tab_id_ctx: ContextVar[Optional[str]] = ContextVar("tab_id", default="global")
 model_id_ctx: ContextVar[Optional[str]] = ContextVar("model_id", default=None)
+max_retries_ctx: ContextVar[int] = ContextVar("max_retries", default=99)

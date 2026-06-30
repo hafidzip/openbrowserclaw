@@ -12,6 +12,7 @@ import { ArrowDown } from "lucide-react";
 import { generateIdFromString, useAvailableAgents, useGlobal, type IAgent } from "../index";
 import type { SelectionMode } from "./composer";
 import { MenuBar } from "openchad-react/utils/state";
+import { useDatabaseImpl } from "./useDatabase";
 
 export interface MessageState {
     title: string | null;
@@ -31,11 +32,13 @@ export default function DefaultPage(AppInfo: AppInfo) {
     const msgBottomRef = useRef<HTMLDivElement>(null);
     const [scrollContainerRef] = useElementSize<HTMLDivElement>();
     const [model, setModel] = AppInfo.useModel();
-    const [selectedAgent, setSelectedAgent] = AppInfo.useAgent();
-    const [selectionMode] = useState<SelectionMode>('agent');
-    const { agents: availableAgents, isLoading: isAgentsLoading } = useAvailableAgents();
     const tabId = AppInfo.tabId;
     const appId = AppInfo.appId;
+    const [selectedAgent, setSelectedAgent] = useDatabaseImpl<IAgent>(`selected-agent-${tabId}`, { initialValue: { name: null, id: null } });
+    const [selectionMode] = useState<SelectionMode>('agent');
+    const { agents: availableAgents, isLoading: isAgentsLoading } = useAvailableAgents();
+    const availableAgentsRef = useRef(availableAgents);
+    availableAgentsRef.current = availableAgents;
     const activeId = AppInfo.useActiveTabId();
     const [messageState, setMessageState, { ready }] = AppInfo.useTabDatabase<MessageState>("message_state", {
         initialValue: {
@@ -48,6 +51,8 @@ export default function DefaultPage(AppInfo: AppInfo) {
             context: "",
         },
     });
+    const readyRef = useRef(ready);
+    readyRef.current = ready;
     const messageStateRef = useRef(messageState);
     messageStateRef.current = messageState;
     const { pyInvoke } = usePython();
@@ -73,6 +78,70 @@ export default function DefaultPage(AppInfo: AppInfo) {
     const isInitialized = messageState.initialized || loadedMessages.length > 0;
 
     const [pendingMessage, setPendingMessage] = useState<{ query: string, childBranchId: string } | null>(null);
+    const [loadAgentFromTask, setLoadAgentFromTask] = useState(false);
+    const loadAgentFromTaskRef = useRef(loadAgentFromTask);
+    loadAgentFromTaskRef.current = loadAgentFromTask;
+
+    async function syncAgentFromTask() {
+        const oldData: any = await pyInvoke('sqlite', {
+            db: workspaceRef.current ?? "global",
+            command: "query",
+            sql: `SELECT * FROM tasks WHERE id = ?`,
+            params: [tabId],
+        });
+        if (oldData && oldData.data[0] && availableAgentsRef.current) {
+            try {
+                const data = JSON.parse(oldData.data[0].metadata);
+                if (data.agent) {
+                    setSelectedAgent({ id: data.agent, name: availableAgentsRef.current.find((a) => a.id === data.agent)?.name ?? null });
+                }
+            } catch (e) {
+                console.error(e);
+            }
+        }
+    }
+
+    useEffect(() => {
+        if (!loadAgentFromTask && availableAgents.length > 0) {
+            setLoadAgentFromTask(true);
+            (async () => {
+                await syncAgentFromTask()
+            })()
+        }
+    }, [loadAgentFromTask, availableAgents])
+
+    useEffect(() => {
+        if (selectedAgent.id && loadAgentFromTaskRef.current) {
+            (async () => {
+                const oldData: any = await pyInvoke('sqlite', {
+                    db: workspaceRef.current ?? "global",
+                    command: "query",
+                    sql: `SELECT * FROM tasks WHERE id = ?`,
+                    params: [tabId],
+                });
+                if (oldData && oldData.data[0]) {
+                    try {
+                        const data = JSON.parse(oldData.data[0].metadata);
+                        await pyInvoke('sqlite', {
+                            db: workspaceRef.current ?? "global",
+                            command: "execute",
+                            sql: `INSERT OR REPLACE INTO tasks (id, metadata) VALUES (?, ?)`,
+                            params: [tabId, JSON.stringify({
+                                icon: data.icon,
+                                query: data.query,
+                                interval: data.interval,
+                                agent: selectedAgent.id,
+                                timestamp: Date.now(),
+                            })],
+                        });
+                    } catch (e) {
+                        console.error(e);
+                    }
+                }
+            })()
+        }
+    }, [selectedAgent]);
+
 
     useEffect(() => {
         if (pendingMessage) {
@@ -174,6 +243,12 @@ export default function DefaultPage(AppInfo: AppInfo) {
                     });
                     if (oldData && oldData.data[0]) {
                         try {
+                            if (readyRef.current) {
+                                setMessageState(prev => ({
+                                    ...prev,
+                                    title: newTitle,
+                                }));
+                            }
                             const data = JSON.parse(oldData.data[0].metadata);
                             await pyInvoke('sqlite', {
                                 db: workspaceRef.current ?? "global",
@@ -195,8 +270,10 @@ export default function DefaultPage(AppInfo: AppInfo) {
             })();
         };
         window.addEventListener('tab-update', tabUpdate);
+        window.addEventListener('agent-update', syncAgentFromTask);
         return () => {
             window.removeEventListener('tab-update', tabUpdate);
+            window.removeEventListener('agent-update', syncAgentFromTask);
         };
     }, []);
 
@@ -357,7 +434,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
 
             const chainRows = Array.isArray(chainRowsRaw) ? chainRowsRaw : (chainRowsRaw?.data || []);
 
-            if (!chainRows || chainRows.length === 0) {                
+            if (!chainRows || chainRows.length === 0) {
                 setLoadedMessages([]);
                 setHasMore(false);
                 return;
@@ -732,7 +809,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
 
         const messagesTable = generateIdFromString(tabId + "/messages");
         const branchesTable = generateIdFromString(tabId + "/conversation_branches");
-        
+
         let tauriUnlistenMessages: (() => void) | undefined;
         let tauriUnlistenBranches: (() => void) | undefined;
 
@@ -965,7 +1042,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
                                             const nextMsgIndex = lastMsg ? lastMsg.msg_index + 1 : 0;
                                             const targetTable = `tb_${nextParentId}_0_${nextMsgIndex}`;
                                             return (
-                                                <div 
+                                                <div
                                                     key="empty-container"
                                                     id={AppInfo.tabId + "_empty_message_container"}
                                                     data-branch-id={sha256(nextParentId + "_0").slice(0, 32)}
@@ -995,7 +1072,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
                                                     "rounded-4xl bg-accent/5 border border-[hsl(var(--chat-border))] px-4 select-text relative",
                                                     "py-2 max-h-[148px] overflow-hidden",
                                                     "w-fit 2xl:max-w-[500px] lg:max-w-[350px]"
-                                                    )}>
+                                                )}>
                                                     <span key="display">
                                                         <QueryContent query={pendingMessage.query} />
                                                     </span>

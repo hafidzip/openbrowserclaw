@@ -695,7 +695,10 @@ const TabRow = memo((
             shortcut: null,
             children: null,
             separator: false,
-            trigger: () => handleSaveAgent(m.id ?? ""),
+            trigger: () => {
+                handleSaveAgent(m.id ?? "")
+                window.dispatchEvent(new CustomEvent('agent-update'));
+            },
         }));
     }, [availableModels, handleSaveAgent]);
 
@@ -1170,13 +1173,13 @@ export default function Tasks({
             if (openInTab) {
                 addTab({
                     uuid: id,
-                    title: tab.title,
+                    title: id,
                     iconOverride: tab.icon || "AlarmClockCheck",
                     layout: "single",
                     childrenProps: {
                         [id]: {
                             icon: tab.icon || "AlarmClockCheck",
-                            title: null,
+                            title: id,
                             appname: "default",
                             data: { dontStop: true }
                         }

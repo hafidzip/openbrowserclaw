@@ -11,7 +11,7 @@ import { Button, Spinner } from './ui'
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip'
 import { TooltipProvider } from '@radix-ui/react-tooltip'
 import type { Model } from '../utils/utils'
-import { useAvailableAgents, type IAgent } from '../index'
+import { useAvailableAgents, useAvailableModels, type IAgent } from '../index'
 import { LucideIcons } from 'openchad-react/utils/state'
 import { useGlobal } from './useGlobal'
 
@@ -191,7 +191,7 @@ const ModelItem = memo(function ModelItem({ model, onUnload }: ModelItemProps) {
     </div>
   )
 })
-const TabIcon = memo(({ iconVal }: { iconVal: string | undefined }) => {
+const AgentIcon = memo(({ iconVal }: { iconVal: string | undefined | null }) => {
   if (
     typeof iconVal === "string" &&
     (iconVal.startsWith("/") ||
@@ -199,10 +199,13 @@ const TabIcon = memo(({ iconVal }: { iconVal: string | undefined }) => {
       iconVal.startsWith("data:") ||
       /\.(png|jpg|jpeg|ico|svg|webp)$/i.test(iconVal))
   ) {
-    return <img src={iconVal} className="w-5 h-5 object-contain rounded-sm" alt="" />;
+    return <img src={iconVal} className="w-4 h-4 object-contain rounded-sm shrink-0" alt="" />;
   }
-  const Icon = (LucideIcons as any)[iconVal as string] || LucideIcons.Compass;
-  return <Icon className="w-4 h-4" />;
+  if (typeof iconVal === "string" && iconVal) {
+    const Icon = (LucideIcons as any)[iconVal] || LucideIcons.Compass;
+    return <Icon className="w-4 h-4 shrink-0" />;
+  }
+  return <Bot size={14} className="shrink-0 opacity-60" />;
 });
 
 export function plainToBlocks(text: string): ContentBlock[] {
@@ -391,10 +394,10 @@ export default function Composer({
 
   // ─── Model selection state ──────────────────────────────────────────────────
   const { pyInvoke } = usePython()
+  const { models: availableModels, isLoading: isScanning } = useAvailableModels()
   const [modelDropOpen, setModelDropOpen] = useState(false)
   const [agentDropOpen, setAgentDropOpen] = useState(false)
   const [intervalDropOpen, setIntervalDropOpen] = useState(false)
-  const [availableModels, setAvailableModels] = useState<Model[]>([])
   const [modelSearch, setModelSearch] = useState('')
   const [agentSearch, setAgentSearch] = useState('')
   const [isRecording] = useGlobal(`isRecording-${name}`, { initialValue: false });
@@ -432,34 +435,61 @@ export default function Composer({
   const [, setOpen] = useGlobal('showAgentsDialog', { initialValue: false });
   const debouncedModelSearch = useDebounce(modelSearch, MODEL_DEBOUNCE_MS)
   const debouncedAgentSearch = useDebounce(agentSearch, MODEL_DEBOUNCE_MS)
-  const [isScanning, setIsScanning] = useState(false)
 
   // ─── Agent selection state ────────────────────────────────────────────────
   const { agents: availableAgents, isLoading: isAgentsLoading } = useAvailableAgents()
 
   useEffect(() => {
-    if (!modelDropOpen) return
-    setIsScanning(true)
-    setModelSearch('')
-    let cancelled = false
-      ; (async () => {
-        try {
-          const res: any = await pyInvoke<{ data?: Record<string, unknown> }>('file', {
-            command: 'read',
-            filename: 'config.json',
-            base_dir: 'python',
-          })
-          if (cancelled) return
-          const config = res?.data?.content as string | undefined
-          if (!config) return
-          setAvailableModels(parseModelsFromConfig(config))
-          setIsScanning(false)
-        } catch (e) {
-          if (!cancelled) console.error('Failed to load models:', e)
-        }
-      })()
-    return () => { cancelled = true }
-  }, [modelDropOpen, pyInvoke])
+    console.log("[Composer] Model validation check:", {
+      isScanning,
+      modelId: model?.id,
+      modelName: model?.name,
+      availableCount: availableModels.length,
+      availableModels: availableModels.map(m => m.id)
+    });
+    if (isScanning) return;
+    if (!model?.id) return;
+    if (availableModels.length === 0) {
+      console.log("[Composer] Available models list is empty, skipping validation.");
+      setModel?.({ name: null, id: null });
+      return;
+    }
+    const foundIndex = availableModels.findIndex(m => m.id === model.id);
+    console.log("[Composer] Model validation index check:", { foundIndex });
+    if (foundIndex === -1) {
+      console.warn("[Composer] Model NOT found in available models! Resetting model to null.");
+      setModel?.({ name: null, id: null });
+    }
+  }, [availableModels, isScanning, model, setModel]);
+
+  useEffect(() => {
+    console.log("[Composer] Agent validation check:", {
+      isAgentsLoading,
+      agentId: agent?.id,
+      agentName: agent?.name,
+      agentsCount: availableAgents.length,
+      agents: availableAgents.map(a => a.id)
+    });
+    if (isAgentsLoading) return;
+    if (!agent?.id) return;
+    if (availableAgents.length === 0) {
+      console.log("[Composer] Agents list is empty, skipping validation.");
+      setAgent?.({ name: null, id: null });
+      return;
+    }
+    const foundIndex = availableAgents.findIndex(a => a.id === agent.id);
+    console.log("[Composer] Agent validation index check:", { foundIndex });
+    if (foundIndex === -1) {
+      console.warn("[Composer] Agent NOT found in available agents! Resetting agent to null.");
+      setAgent?.({ name: null, id: null });
+    }
+  }, [availableAgents, isAgentsLoading, agent, setAgent]);
+
+  useEffect(() => {
+    if (modelDropOpen) {
+      setModelSearch('')
+    }
+  }, [modelDropOpen])
 
   const unloadModel = useCallback(async (id: string) => {
     await pyInvoke('v1/models/unload', { model_id: id })
@@ -515,9 +545,7 @@ export default function Composer({
     return filteredAgents.map(a => ({
       content: (
         <div className="flex items-center w-full gap-2">
-          {a.icon
-            ? <TabIcon iconVal={a.icon} />
-            : <Bot size={14} className="shrink-0 opacity-60" />}
+          <AgentIcon iconVal={a.icon} />
           <span>{a.name}</span>
         </div>
       ),
@@ -942,12 +970,14 @@ export default function Composer({
   }), [isExpanded, maxHeight, isRecording])
 
   const plusCls = useMemo(() => clsx(
+    "pointer-events-auto",
     isExpanded ? bottomExpanded : centerY,
     'focus:outline-none h-5 w-5 absolute flex items-center justify-center opacity-70 hover:opacity-100 transition-opacity',
     small ? 'scale-[0.75] left-2' : 'left-3',
   ), [isExpanded, bottomExpanded, centerY, small])
 
   const sendCls = useMemo(() => clsx(
+    "pointer-events-auto",
     isExpanded ? bottomSend : centerY,
     isEmpty ? 'opacity-25 dark:opacity-50' : 'opacity-100',
     'absolute h-9 w-9 bg-accent text-accent-foreground rounded-full flex items-center justify-center',
@@ -955,12 +985,14 @@ export default function Composer({
   ), [isExpanded, bottomSend, centerY, isEmpty, small])
 
   const stopCls = useMemo(() => clsx(
+    "pointer-events-auto",
     isExpanded ? bottomSend : centerY,
     'absolute h-9 w-9 bg-black/10 dark:bg-[hsl(var(--float))] text-accent rounded-full flex items-center justify-center',
     small ? 'scale-[0.75] origin-right right-2' : 'right-3',
   ), [isExpanded, bottomSend, centerY, small])
 
   const micCls = useMemo(() => (isRecording: boolean) => clsx(
+    "pointer-events-auto",
     isExpanded ? bottomExpanded : centerY,
     'h-5 w-5 absolute flex items-center justify-center z-10',
     small ? 'scale-[0.75] right-10' : 'right-14',
@@ -1034,7 +1066,7 @@ export default function Composer({
         {(showModelSelection || showInterval) && (
           <TooltipProvider>
             <div className={clsx(
-              'absolute flex right-20 bottom-0 h-full gap-1',
+              'absolute flex right-20 bottom-0 h-full gap-1 pointer-events-none',
               isExpanded ? 'items-end pb-4' : 'items-center'
             )}>
               {showModelSelection && (
@@ -1050,7 +1082,7 @@ export default function Composer({
                       content={modelDropdownContent}
                       align="end"
                     >
-                      <button className='bg-accent/5 text-xs p-2 rounded-xl flex items-center gap-1 justify-center w-32 overflow-hidden cursor-pointer'>
+                      <button className='pointer-events-auto bg-accent/5 text-xs p-2 rounded-xl flex items-center gap-1 justify-center w-32 overflow-hidden cursor-pointer'>
                         {truncateModel(model?.name)} <ChevronDown className='w-3 h-3 relative top-0.5 shrink-0' />
                       </button>
                     </Dropdown>
@@ -1067,8 +1099,8 @@ export default function Composer({
                       content={agentDropdownContent}
                       align="end"
                     >
-                      <button className='bg-accent/5 text-xs p-2 rounded-xl flex items-center gap-1 justify-center w-32 overflow-hidden cursor-pointer'>
-                        {agent?.icon ? <TabIcon iconVal={agent.icon} /> : <Drama size={14} className="shrink-0 opacity-60" />}
+                      <button className='pointer-events-auto bg-accent/5 text-xs p-2 rounded-xl flex items-center gap-1 justify-center w-32 overflow-hidden cursor-pointer'>
+                        {agent?.icon ? <AgentIcon iconVal={agent.icon} /> : <Drama size={14} className="shrink-0 opacity-60" />}
                         <span className='truncate'>{agent?.name ?? 'Select Agent'}</span>
                         <ChevronDown className='w-3 h-3 relative top-0.5 shrink-0' />
                       </button>
@@ -1096,14 +1128,14 @@ export default function Composer({
                   }))}
                   align="end"
                 >
-                  <button className='bg-accent text-accent-foreground text-xs p-2 pl-3 rounded-xl flex items-center gap-1 justify-center w-fit overflow-hidden cursor-pointer'>
+                  <button className='pointer-events-auto bg-accent text-accent-foreground text-xs p-2 pl-3 rounded-xl flex items-center gap-1 justify-center w-fit overflow-hidden cursor-pointer'>
                     {interval ?? "once"}
                     <Tooltip>
                       <TooltipTrigger>
                         <Info className='text-gray-500' size={12} />
                       </TooltipTrigger>
                       <TooltipContent className='bg-accent-foreground text-accent'>
-                        <p>{INTERVAL_OPTIONS.find(o => o.value === (interval ?? "once"))?.label}. {(interval !== null && interval !== "once" && interval !== "infinite") && "The task is re-scheduled only after completion."}</p>
+                        <p>{INTERVAL_OPTIONS.find(o => o.value === (interval ?? "once"))?.label}. {(interval !== null && interval !== "once" && interval !== "infinite" && interval !== "disabled") && "The task is re-scheduled only after finish."}</p>
                       </TooltipContent>
                     </Tooltip>
                   </button>

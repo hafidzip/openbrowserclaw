@@ -1,3 +1,4 @@
+from typing import Union
 from openchadpy.context import agent_ctx
 import json
 import logging
@@ -69,7 +70,77 @@ def _parse_bool(val: Any) -> bool:
         return val.lower() == "true"
     return False
 
+def object_to_text_tree(root_id: str, data: Union[str, Dict[str, Any]], spaced: bool = True) -> str:
+    if isinstance(data, str):
+        try:
+            data = json.loads(data)
+        except json.JSONDecodeError as e:
+            return f"Error parsing JSON: {e}"
 
+    if not isinstance(data, dict) or not data:
+        return "Empty or invalid tree structure."
+
+    def normalize_node(name: str, body: Any) -> Dict[str, Any]:
+        children_list = []
+
+        if isinstance(body, dict):
+            children_data = body.get("children")
+
+            if isinstance(children_data, dict):
+                for child_key, child_body in children_data.items():
+                    if isinstance(child_body, dict) and "name" in child_body:
+                        display_name = f"{child_key} ({child_body['name']})"
+                    else:
+                        display_name = child_key
+                    children_list.append(normalize_node(display_name, child_body))
+            elif isinstance(children_data, list):
+                for item in children_data:
+                    if isinstance(item, dict):
+                        for child_key, child_body in item.items():
+                            if isinstance(child_body, dict) and "name" in child_body:
+                                display_name = f"{child_key} ({child_body['name']})"
+                            else:
+                                display_name = child_key
+                            children_list.append(normalize_node(display_name, child_body))
+                    elif isinstance(item, str):
+                        children_list.append({"name": item, "children": []})
+
+        return {"name": name, "children": children_list}
+
+    def render_node(node: Dict[str, Any], prefix: str = "", is_last: bool = True, is_root: bool = False) -> List[str]:
+        lines = []
+        name = node["name"]
+
+        if is_root:
+            lines.append(f"{root_id} ({name})")
+            next_prefix = ""
+        else:
+            marker = "└── " if is_last else "├── "
+            lines.append(f"{prefix}{marker}{name}")
+            next_prefix = prefix + ("    " if is_last else "│   ")
+
+        children = node["children"]
+        count = len(children)
+
+        for i, child in enumerate(children):
+            is_child_last = (i == count - 1)
+            if spaced and is_root:
+                lines.append("│")
+            lines.extend(render_node(child, next_prefix, is_child_last, is_root=False))
+
+        return lines
+
+    final_output = []
+
+    if "name" in data and isinstance(data["name"], str):
+        normalized_root = normalize_node(data["name"], data)
+        final_output.extend(render_node(normalized_root, is_root=True))
+    else:
+        for root_name, root_body in data.items():
+            normalized_root = normalize_node(root_name, root_body)
+            final_output.extend(render_node(normalized_root, is_root=True))
+
+    return "\n".join(final_output) 
 
 class PipelineBase:
     stream: bool
@@ -288,20 +359,23 @@ class PipelineBase:
                         fname, skill_desc = get_skill_info(skill_path) if skill_path else ("", "No description available")
                         node_children = a_node.get("children", {})
                         node_tools = list(a_node.get("tools", []))
-                        if node_children and "agent_query" not in node_tools:
+
+                        if _parse_bool(a_node.get("enableProgrammaticToolCalling")):
                             node_tools.append("agent_query")
+                            
                         tools_str = ", ".join(f'"{t}"' for t in sorted(node_tools))
                         module_name = a_id.replace("-", "_")
                         node_lines = [
                             f"{indent}Node(",
-                            f'{indent}    name="{a_id}",',
+                            f'{indent}    branch_id="{a_id}",',
+                            f'{indent}    name="{a_node.get("name", a_id)}",',
                             f"{indent}    skill=Skill(",
                             f'{indent}        path="{skill_path}",',
                             f'{indent}        description="{skill_desc}",',
                             f"{indent}    ),",
                             f"{indent}    available_tools=[{tools_str}],",
                             f'{indent}    module_path="{a_id}/main.py",',
-                            f'{indent}    module_name="{module_name}",',
+                            f'{indent}    module_name="{a_node.get("name") if a_node.get("name") else module_name}",',
                         ]
                         if node_children:
                             node_lines.append(f"{indent}    children=[")
@@ -331,6 +405,8 @@ class PipelineBase:
 
                     tool_defs = []
                     for t_name in sorted(allowed_tools):
+                        if t_name == "agent_query":
+                            continue
                         t_desc = "No description available"
                         for t in all_tools:
                             if isinstance(t, dict) and t.get("function", {}).get("name") == t_name:
@@ -346,7 +422,7 @@ class PipelineBase:
                         )
                         tool_defs.append(tool_def)
                     tools_code = "\n\n".join(tool_defs)
-                    tools_list_str = ", ".join(sorted(allowed_tools))
+                    tools_list_str = ", ".join(f'"{t}"' for t in sorted(agent_node.get("tools", [])))
 
                     _env_header = (
                         "## Environment\n"
@@ -401,6 +477,7 @@ class PipelineBase:
                         "\n\n"
                         "@dataclass\n"
                         "class Node:\n"
+                        "    branch_id: str\n"
                         "    name: str\n"
                         "    skill: Skill\n"
                         "    available_tools: List[str]\n"
@@ -419,12 +496,12 @@ class PipelineBase:
                         '    async def execute(self, task: str = "") -> "ActionResult":\n'
                         "        return await self.module.execute(task)\n"
                         "\n\n"
-                        'def get_node(name: str) -> "Node":\n'
-                        '    """BFS search for a node by name starting from the root tree."""\n'
+                        'def get_node(branch_id: str) -> "Node":\n'
+                        '    """BFS search for a node by branch_id starting from the root tree."""\n'
                         "    ...\n"
                         "\n\n"
-                        'def get_children_node(node: Node, name: str) -> "Node":\n'
-                        '    """Search for a children node by name, only search in node->children, non-recursive."""\n'
+                        'def get_children_node(node: Node, branch_id: str) -> "Node":\n'
+                        '    """Search for a children node by branch_id, only search in node->children, non-recursive."""\n'
                         "    ...\n"
                         "\n"
                         +
@@ -611,32 +688,30 @@ class PipelineBase:
                         "## Behavior Requirements\n"
                         "\n"
                         "- **ALWAYS** wrap it in triple backticks with 'python' language identifier.\n"
+                        "- When delegating `next_tasks` you **MUST** delegate to your child nodes, **DO NOT** delegate to yourself or other child nodes (look at **Entry-point coroutine** logic).\n"
+                        +
+                        (
+                            f"- **NEVER** fill `next_branch` with `{current_agent_id}` it **MUST** be your children."
+                            if not allow_multiple else
+                            f"- **NEVER** include `{current_agent_id}` in `next_branches` it **MUST** be your children."
+                        )
+                        +
                         "- **NEVER** call `llm_tool` without `tool_registry`\n"   
                         "- `tool_registry` `call` function **MUST** be created with `async def my_tool(**kwargs) -> Dict[str, Any]` and **NEVER** use direct lambda functions.\n"
                         "- `tool_registry` `call` function **MUST** return a plain `Dict[str, Any]`, **DO NOT** return `kwargs.get('value')`, list, string, or other type directly — use `{\"key\": value}` to wrap your data.\n"
                         "- Use `llm_tool` to transform, summarize, analyze, classify, or structure output.\n"
+                        f"- Read `tree = Node(...)` carefully, identify `{current_agent_id}` children's tools and skill before populating their ActionResult.\n"
+                        '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}})` \u2014 `execute()` must never raise.\n'
                         +
-                        (
-                            f"- Read `tree = Node(...)` carefully, identify `{current_agent_id}` children's tools and skill before populating "
-                            "`next_branches`\n" if allow_multiple else "`next_tasks` and `next_branch`\n"
-                            if children else 
-                            ''
-                        )
-                        +
-                        (
-                            '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_branches={})` — `execute()` must never raise.\n'
-                            "- Return `ActionResult(result=result, next_branches=next_branches)`.\n"
-                            if allow_multiple else
-                            '- Wrap the **entire** body in `try/except`: on any exception, return `ActionResult(result={task: {"error": str(e)}}, next_tasks=[], next_branch=None)` — `execute()` must never raise.\n'                            
-                        ) +
                         (
                             "- Return `ActionResult(result=result, next_tasks=next_tasks, next_branch=next_branch)`.\n"
                             if children else
                             "- Return `ActionResult(result=result, next_tasks=[], next_branch=None)`.\n"
                         )
                     )
+                    children_values = list(children.values()) if isinstance(children, dict) else children
                     _available_branch = (
-                        f"# Available `next_branch`: \n" + "".join(f"- {child['name']}\n" for child in children or [{"name": current_agent_id}])
+                        f"# Available `next_branch`: \n" + "".join(f"- {child['name']}\n" for child in children_values or [{"name": current_agent_id}])
                         if self.attempt == 0 or children else 
                         ""
                     )
@@ -655,11 +730,11 @@ class PipelineBase:
                     def format_agent(a_id: str, a_node: dict, depth: int) -> str:
                         lines = []
                         if depth == 0:
-                            lines.append(f"# Agent `{a_id}`")
+                            lines.append(f"# Agent `{a_id}` ({a_node.get("name")})")
                         elif depth == 1:
-                            lines.append(f"### `{a_id}`")
+                            lines.append(f"### `{a_id}` ({a_node.get("name")})")
                         else:
-                            lines.append(f"##### `{a_id}`")
+                            lines.append(f"##### `{a_id}` ({a_node.get("name")})")
                         lines.append("")
 
                         skill_path = a_node.get("skillPath")
@@ -737,11 +812,21 @@ class PipelineBase:
                     from datetime import datetime as _datetime
                     os_info = f"{platform.system()} {platform.release()}"
                     now_str = _datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    children = agent_node.get("children")
+                    children_values = list(children.values()) if isinstance(children, dict) else children
+
                     context += (
                         f"\n\n## Environment\n"
                         f"- OS Information: {os_info}\n"
                         f"- Current Date & Time: {now_str}"
+                        f"\n\n---\n\n"
+                        f"# Agents Tree Structure: \n ```text\n{object_to_text_tree(current_agent_id, agent_node)}\n```\n"
+                        f"\n\n---\n\n"
                     )
+                    context += f"- Current Node: `{current_agent_id}` ({agent_node.get("name")})\n"
+                    context += f"- Available Next `agent_id` (Your child nodes): `{[child['name'] for child in children_values]}`\n" if children else ""
+                    context += f"- **ALWAYS** check your child nodes and assign tasks to them when needed.\n"  if children else ""
+                    context += f"- **ALWAYS** respond in (1-5) sentences, ensure it's concise and **MUST** avoid long outputs.\n"                                        
 
         if tools:
             chat_kwargs["tools"] = tools
@@ -810,12 +895,11 @@ class PipelineBase:
                             logger.info("[llm_tool] cancel_event set – aborting before model call")
                             return {}
                         response = await self.model_manager.text_chat(
-                            messages=messages,
-                            model_id=model_id,
-                            stream=False,
-                            **chat_kwargs,
-                        )
-                        
+                                    messages=messages,
+                                    model_id=model_id,
+                                    stream=False,
+                                    **chat_kwargs
+                                )
                         assert isinstance(response, dict), f"Expected dict, got {type(response)}"
                         logger.info(f"[llm_tool] query {query}")
                         logger.info(f"[llm_tool] response {type(response)}, {json.dumps(response)}")
@@ -940,7 +1024,15 @@ class PipelineBase:
                             messages.append(message)
                             for call_id, result in results.items():
                                 if isinstance(result, dict):
-                                    content_str = json.dumps(result)
+                                    try:
+                                        content_str = json.dumps(result)
+                                    except TypeError:
+                                        def default_serializer(o):
+                                            if hasattr(o, "__dataclass_fields__"):
+                                                from dataclasses import asdict
+                                                return asdict(o)
+                                            return str(o)
+                                        content_str = json.dumps(result, default=default_serializer)
                                 else:
                                     content_str = str(result)
                                     
@@ -965,6 +1057,9 @@ class PipelineBase:
                     await heartbeat_task
                 except asyncio.CancelledError:
                     pass
+
+    async def reset(self):
+            pass
 
     async def run_code(self, code: str, task: str) -> Dict[str, Any]:
         try:

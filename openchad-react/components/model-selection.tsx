@@ -148,6 +148,7 @@ export default function ModelSelection({
         if (!model?.id) return;
         if (availableModels.length === 0) {
             console.log("[ModelSelection] Available models list is empty, skipping validation.");
+            setModel({ name: null, id: null });
             return;
         }
         const foundIndex = availableModels.findIndex(m => m.id === model.id);
@@ -170,6 +171,7 @@ export default function ModelSelection({
         if (!agent?.id) return;
         if (agents.length === 0) {
             console.log("[ModelSelection] Agents list is empty, skipping validation.");
+            setAgent?.({ name: null, id: null });
             return;
         }
         const foundIndex = agents.findIndex(a => a.id === agent.id);

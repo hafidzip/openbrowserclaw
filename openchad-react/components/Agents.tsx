@@ -243,6 +243,7 @@ export default function Agents({
         const tab = tabsRef.current.find((t: any) => t.id === id);
         if (tab) {
             setShowDialog(false)
+            setTaskDialog(false)
             addTab({
                 uuid: id,
                 title: tab.name,
@@ -269,6 +270,7 @@ export default function Agents({
     const allSelected = tabs.length > 0 && selectedIds.size === tabs.length;
     const isEmpty = tabs.length === 0;
     const [, setShowDialog] = useGlobal('showAgentsDialog', { initialValue: false })
+    const [, setTaskDialog] = useGlobal('overlay-create-task', { initialValue: false })
     const { SetActive } = useSnapshot(TabInfo);
 
     const resetAddForm = useCallback(() => {
@@ -302,6 +304,7 @@ export default function Agents({
                 payload: {}
             });
             setShowDialog(false)
+            setTaskDialog(false)
             addTab({
                 uuid: id,
                 title: name,
