@@ -6,6 +6,11 @@
     "webview-*",
     "temp-zorder-*"
   ],
+  "remote": {
+    "urls": [
+      "http://localhost:**"
+    ]
+  },
   "permissions": [
     "core:default",
     "core:webview:default",

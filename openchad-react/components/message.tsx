@@ -247,6 +247,7 @@ const CodeBlock: FC<{ id?: string, children?: ReactNode }> = memo(({ id, childre
   const [, setShowCodeDialog] = useGlobal('showCodeDialog', { initialValue: false });
   const [, setCodeLanguage] = useGlobal('codeLanguage', { initialValue: "text" });
   const [, setCodeId] = useGlobal('codeId', { initialValue: "" });
+  const [, setPrevCode] = useGlobal('prevCode', { initialValue: "" });
   const [, setCode] = useGlobal('code', { initialValue: "" });
   const isStreaming = activeId === msgId;
 
@@ -270,6 +271,7 @@ const CodeBlock: FC<{ id?: string, children?: ReactNode }> = memo(({ id, childre
         key={`code-div-${msgId}-${id}`}
         onPointerDown={() => {
           if (id) {
+            setPrevCode(codeString);
             setCode(codeString);
             setCodeId(`code-div-${msgId}-${id}`);
             setCodeLanguage(language);

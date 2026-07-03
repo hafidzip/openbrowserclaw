@@ -1,3 +1,5 @@
+from __future__ import annotations
+from openchadpy.context import fields_ctx
 import inspect
 import json
 import logging
@@ -6,6 +8,7 @@ from typing import Any, Dict, List, Literal, Callable, Optional, Awaitable, Unio
 from .context import workspace_ctx, tab_id_ctx, model_id_ctx
 from .database import Database
 if TYPE_CHECKING:
+    from .code_sandbox import CodeSandbox
     from .model_manager import ModelManager
     from .tool_manager import ToolManager
     from .settings import Settings
@@ -51,6 +54,19 @@ class ToolBase(ABC):
     settings_manager: Optional["Settings"]
     event_emitter: Optional["EventEmitter"]
     mcp_manager: Optional["MCPManager"]
+    code_sandbox: Optional["CodeSandbox"]
+
+    def get_field(self, name: str) -> Any:
+        f = fields_ctx.get()
+        # Fast path: field is at the top level (already-scoped context).
+        val = f.get(name, None)
+        if val is None and self.name:
+            # Fallback: fields are nested under the tool name,
+            # e.g. {'delegate': {'Target Agent': '...'}}
+            tool_fields = f.get(self.name, {})
+            if isinstance(tool_fields, dict):
+                val = tool_fields.get(name, None)
+        return val
 
     async def llm_tool(
         self,

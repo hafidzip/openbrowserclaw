@@ -1329,13 +1329,18 @@
   // 
   ['log', 'warn', 'error', 'info', 'debug'].forEach(method => {
     const orig = console[method].bind(console);
-    console[method] = (...args) => {
+    console[method] = async (...args) => {
       const msg = {
         type: method,
         text: args.map(a => (typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' '),
         timestamp: Date.now(),
       };
       window.__page._consoleMessages.push(msg);
+      const label = await window.__TAURI__.webview.getCurrentWebview().label;
+      await window.__TAURI__.event.emit('update_console', {
+        target: label,
+        msg: msg
+      });
       _emit('console', msg);
       orig(...args);
     };

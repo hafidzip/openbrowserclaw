@@ -1,7 +1,13 @@
 use std::{
     borrow::Cow,
+    collections::HashMap,
     env, fs,
+    net::TcpListener,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex,
+    },
 };
 
 use pyo3::{
@@ -27,9 +33,11 @@ use tauri::{
         config::{CapabilityEntry, FrontendDist},
         platform::Target,
     },
-    webview::NewWindowResponse,
-    AppHandle, Assets, Config, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewBuilder, WebviewUrl,
+    webview::{DownloadEvent, NewWindowResponse},
+    AppHandle, Assets, Config, Emitter, Manager, PhysicalPosition, PhysicalSize, WebviewBuilder,
+    WebviewUrl,
 };
+use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_prevent_default::Flags;
 
 type TauriContext = tauri::Context<Runtime>;
@@ -321,23 +329,43 @@ pub fn builder_factory(
     _args: &Bound<'_, PyTuple>,
     _kwargs: Option<&Bound<'_, PyDict>>,
 ) -> PyResult<tauri::Builder<Runtime>> {
+    // Read CDP port from env var set by Python (python/main.py).
+    // Falls back to 9222 if not set.
+    // let cdp_port: u16 = env::var("OPENCHAD_CDP_PORT")
+    //     .ok()
+    //     .and_then(|s| s.parse().ok())
+    //     .unwrap_or(9222);
+
+    // Enable WebView2 remote-debugging so Python Playwright can connect via CDP.
+    // Always enabled — this is the agent's native browser control channel.
+    // {
+    //     let arg = format!("--remote-debugging-port={cdp_port}");
+    //     // Append to any existing value so we don't overwrite other WebView2 flags.
+    //     let existing = env::var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS").unwrap_or_default();
+    //     let new_val = if existing.is_empty() {
+    //         arg
+    //     } else {
+    //         format!("{existing} {arg}")
+    //     };
+    //     // SAFETY: single-threaded at this point (before Tauri runtime starts)
+    //     unsafe { env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", new_val) };
+    // }
+
     let prevent_plugin = tauri_plugin_prevent_default::Builder::new()
         .with_flags(Flags::RELOAD)
         .build();
 
     Ok(tauri::Builder::default()
+        .manage(CdpRegistry(Mutex::new(HashMap::new())))
+        .plugin(tauri_plugin_playwright::init())
         .plugin(prevent_plugin)
         .on_page_load(|webview, payload| {
             if payload.event() != tauri::webview::PageLoadEvent::Finished {
                 return;
             }
-            // injection.js is embedded at compile time and runs first,
-            // then the inline Tauri event-bridge script runs after it.
-            static INJECTION_JS: &str = include_str!("scripts/injection.js");
 
             let script = format!(
-                "{}\n{}",
-                INJECTION_JS,
+                "{}",
                 r#"(async () => {
                     const _emitLocation = async (url) => {
                         const label = await window.__TAURI__.webview.getCurrentWebview().label;
@@ -501,7 +529,8 @@ pub fn builder_factory(
         })
         .invoke_handler(tauri::generate_handler![
             eval_in_webview,
-            create_webview
+            create_webview,
+            get_cdp_ports
         ]))
 }
 #[tauri::command]
@@ -526,6 +555,31 @@ struct CreateWebviewArgs {
     user_agent: Option<String>,
 }
 
+pub const WRY_DEFAULT_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
+
+pub fn find_free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .expect("failed to bind")
+        .local_addr()
+        .expect("no local addr")
+        .port()
+}
+
+pub struct CdpRegistry(pub Mutex<HashMap<String, u16>>);
+
+#[tauri::command]
+async fn get_cdp_ports(app: AppHandle) -> HashMap<String, u16> {
+    app.state::<CdpRegistry>().0.lock().unwrap().clone()
+}
+
+const POPUP_CLOSE_SCRIPT: &str = r#"
+(function () {
+window.close = function () {
+    window.__TAURI__.window.getCurrentWindow().close()
+};
+})();
+"#;
+
 #[tauri::command]
 async fn create_webview(app: AppHandle, args: CreateWebviewArgs) -> Result<(), String> {
     let url_str = args.url.as_deref().unwrap_or("about:blank");
@@ -549,7 +603,11 @@ async fn create_webview(app: AppHandle, args: CreateWebviewArgs) -> Result<(), S
 
     #[cfg(target_os = "windows")]
     let ext_path: Option<PathBuf> = env::var_os("OPENCHAD_EXTENSION_PATH").map(PathBuf::from);
-
+    let registry = app.state::<CdpRegistry>();
+    let mut ports = registry.0.lock().unwrap();
+    let port = *ports
+        .entry(label.to_string())
+        .or_insert_with(find_free_port);
     {
         let data_dir: PathBuf = app
             .path()
@@ -559,20 +617,27 @@ async fn create_webview(app: AppHandle, args: CreateWebviewArgs) -> Result<(), S
             .join(label);
 
         builder = builder.data_directory(data_dir);
+        builder = builder.additional_browser_args(&format!(
+            "--remote-debugging-port={port} {WRY_DEFAULT_ARGS}"
+        ));
+    }
 
-        #[cfg(target_os = "windows")]
-        if let Some(path) = ext_path {
-            builder = builder
-                .browser_extensions_enabled(true)
-                .extensions_path(path);
-        }
+    #[cfg(target_os = "windows")]
+    if let Some(path) = ext_path {
+        builder = builder
+            .browser_extensions_enabled(true)
+            .extensions_path(path);
     }
 
     #[cfg(target_os = "macos")]
     {
-        // data_store_identifier is the official replacement for data_directory
-        // on WKWebView. Requires macOS ≥ 14; silently does nothing on older.
         builder = builder.data_store_identifier(label_to_store_id(label));
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+    if args.label.starts_with("webview-agent-") {
+        static INJECTION_JS: &str = include_str!("scripts/injection.js");
+        builder = builder.initialization_script(INJECTION_JS);
     }
 
     if let Some(ua) = &args.user_agent {
@@ -582,9 +647,60 @@ async fn create_webview(app: AppHandle, args: CreateWebviewArgs) -> Result<(), S
         builder = builder.incognito(true);
     }
 
-    builder = builder.on_new_window(move |url, _features| {
+    builder = builder.on_new_window(move |url, features| {
+        // OAuth/"sign in with X" popups call window.open(url, name, "width=..,height=..")
+        // and need window.opener alive so postMessage back to the opener works.
+        // Plain target="_blank" links don't pass explicit dimensions - that's the split.
+        if features.size().is_some() {
+            static POPUP_COUNTER: AtomicU64 = AtomicU64::new(0);
+            let popup_label = format!("popup-{}", POPUP_COUNTER.fetch_add(1, Ordering::Relaxed));
+            let popup = tauri::WebviewWindowBuilder::new(
+                &app_for_handler,
+                &popup_label,
+                WebviewUrl::External("about:blank".parse().unwrap()),
+            )
+            .window_features(features)
+            .title(url.as_str())
+            .initialization_script(POPUP_CLOSE_SCRIPT)
+            .build();
+
+            match popup {
+                Ok(window) => return NewWindowResponse::Create { window },
+                Err(e) => eprintln!("popup creation failed, falling back to tab: {e}"),
+            }
+        }
         let _ = app_for_handler.emit("browser:open-new-tab", url.to_string());
         NewWindowResponse::Deny
+    });
+
+    builder = builder.on_download(move |webview, event| {
+        match event {
+            DownloadEvent::Requested { url, destination } => {
+                let suggested = destination
+                    .file_name()
+                    .map(|f| f.to_string_lossy().to_string())
+                    .unwrap_or_default();
+
+                let picked = webview
+                    .app_handle()
+                    .dialog()
+                    .file()
+                    .set_file_name(&suggested)
+                    .blocking_save_file();
+
+                match picked {
+                    Some(path) => {
+                        *destination = path.into_path().unwrap();
+                    }
+                    None => return false, // user cancelled -> abort download
+                }
+            }
+            DownloadEvent::Finished { url, path, success } => {
+                println!("downloaded {} to {:?}, success: {}", url, path, success);
+            }
+            _ => (),
+        }
+        true
     });
 
     parent_window

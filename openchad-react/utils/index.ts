@@ -45,6 +45,7 @@ export async function createWebview(
         }
 
         w = await Webview.getByLabel(label);
+        window.dispatchEvent(new CustomEvent('update_cdp_ports'))
         if (!w) throw new Error(`Webview "${label}" not found after creation`);
         return w;
     } catch (e){

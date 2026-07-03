@@ -195,6 +195,12 @@ class ToolManager:
             python_path = str(Path(project_dir).resolve())
             if python_path not in sys.path:
                 sys.path.insert(0, python_path)
+        # Ensure pipelines directory is importable (so tools can import pipelines)
+        pipelines_dir = os.environ.get("OPENCHAD_PIPELINES_DIR")
+        if pipelines_dir:
+            pipelines_path = str(Path(pipelines_dir).resolve())
+            if pipelines_path not in sys.path:
+                sys.path.insert(0, pipelines_path)
         try:
             spec = importlib.util.spec_from_file_location(module_name, tool_path)
             if spec is None or spec.loader is None:
@@ -226,11 +232,22 @@ class ToolManager:
 
     def unload_tool(self, tool_name: str) -> bool:
         """
-        Unregister and unload a tool by its declared name.
+        Unregister and unload a tool by its declared name, plugin_key, or storage_key.
         Args:
-            tool_name: Value of ``tool_instance.name`` as stored in the registry.
+            tool_name: Declared name, plugin_key (publisher/plugin), or storage_key (publisher_plugin).
         """
         tool = self.loaded_tools.get(tool_name)
+        
+        # If not found, try to resolve from plugin_key / storage_key
+        if tool is None:
+            storage_key = re.sub(r"[:/\\]", "_", tool_name)
+            target_module_name = f"tool_{storage_key}"
+            for t_name, m_name in list(self._tool_module_name.items()):
+                if m_name == target_module_name:
+                    tool_name = t_name
+                    tool = self.loaded_tools.get(tool_name)
+                    break
+
         if tool is None:
             logger.warning(f"Cannot unload: tool '{tool_name}' not found")
             return False
@@ -246,9 +263,17 @@ class ToolManager:
         logger.info(f"Unloaded tool: '{tool_name}'")
         return True
     
+    def get_tool_by_storage_key(self, storage_key: str) -> Optional[ToolBase]:
+        """Retrieve a loaded tool by its storage key (publisher_plugin)."""
+        target_module_name = f"tool_{storage_key}"
+        for t_name, m_name in self._tool_module_name.items():
+            if m_name == target_module_name:
+                return self.loaded_tools.get(t_name)
+        return None
+
     async def reload_tool(self, tool_name: str) -> bool:
         """
-        Hot-reload a tool by its declared name.
+        Hot-reload a tool by its declared name, plugin_key, or storage_key.
         The storage_key (``publisher_plugin``) is reconstructed from the module
         name that was recorded at load time so we can re-locate the file without
         re-scanning the directory.
@@ -284,8 +309,16 @@ class ToolManager:
             sys.modules.pop(mod, None)
         if stale:
             logger.debug(f"Purged {len(stale)} stale module(s) for '{tool_name}'")
-        # Unload live instance
-        self.unload_tool(tool_name)
+
+        # Unload any tool currently loaded under this storage_key
+        target_module_name = f"tool_{storage_key}"
+        old_tool_names = [
+            t_name for t_name, m_name in list(self._tool_module_name.items())
+            if m_name == target_module_name
+        ]
+        for old_name in old_tool_names:
+            self.unload_tool(old_name)
+
         # Load fresh copy
         return await self.load_tool(storage_key)
     
@@ -404,7 +437,7 @@ class ToolManager:
             py_type = type_map.get(meta.get("type", "string"), "Any")
             param_parts.append(f"{param_name}: Optional[{py_type}] = None")
         params_str = ", ".join(param_parts)
-        fn_name    = tool.name
+        fn_name    = re.sub(r"\W|^(?=\d)", "_", tool.name)
         source = (
             f"async def {fn_name}({params_str}):\n"
             f"    return await _execute(**{{k: v for k, v in locals().items() if v is not None}})\n"
@@ -418,11 +451,21 @@ class ToolManager:
         }
         exec(compile(source, f"<mcp_tool:{fn_name}>", "exec"), namespace)  # noqa: S102
         fn           = namespace[fn_name]
+        fn.__name__  = tool.name  # set __name__ back to original name for FastMCP registration
         fn.__doc__   = tool.description
         fn.__module__ = __name__
         return fn
     
     # Introspection helpers
+    def has_tool(self, tool_name: str) -> bool:
+        """Check if a tool exists by its name (either loaded locally or in MCP)."""
+        if tool_name in self.loaded_tools:
+            return True
+        mcp = self.managers.get("mcp_manager")
+        if mcp and hasattr(mcp, "has_tool"):
+            return mcp.has_tool(tool_name)
+        return False
+
     def get_tool(self, tool_name: str) -> Optional[ToolBase]:
         """Return a tool instance by its declared name, or None."""
         return self.loaded_tools.get(tool_name)

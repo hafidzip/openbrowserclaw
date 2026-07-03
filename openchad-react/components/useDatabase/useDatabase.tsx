@@ -93,6 +93,8 @@ interface IDatabase {
     _lastModified: number;
     // Track subscription count
     _subscriptionCount: number;
+    // Track if first fetch has completed
+    _ready: boolean;
 }
 
 const database = proxy<Record<string, IDatabase>>({});
@@ -153,7 +155,6 @@ export function useDatabaseImplBase<T = Record<string, unknown>>(
     initialValue?: T
 ): UseDatabaseReturn<T> {
     const dbKey = `${databaseName}.${tb}`;
-    const [ready, setReady] = useState(false)
     if (!initialValues[dbKey] && typeof initialValue !== "undefined") {
         initialValues[dbKey] = initialValue;
     }
@@ -325,8 +326,8 @@ export function useDatabaseImplBase<T = Record<string, unknown>>(
                     }
                 }
             }
+            database[`${databaseName}.${tb}`]._ready = true;
         }
-        if (!ready) setReady(true)
     }
     function deepEqual(obj1: any, obj2: any): boolean {
         if (obj1 === obj2) return true;
@@ -437,6 +438,7 @@ export function useDatabaseImplBase<T = Record<string, unknown>>(
             _isArray: arrayMode,
             _lastModified: Date.now(),
             _subscriptionCount: 0,
+            _ready: false,
             query: async (sql: string) => {
                 const result = await request({ db: databaseName, command: "query", sql });
                 // If the query is a modifying command, refresh the table data
@@ -555,7 +557,7 @@ export function useDatabaseImplBase<T = Record<string, unknown>>(
         setUserData,
         {
             query: snap.query,
-            ready: isStreamReady && ready
+            ready: isStreamReady && snap._ready
         }
     ] as const;
 }

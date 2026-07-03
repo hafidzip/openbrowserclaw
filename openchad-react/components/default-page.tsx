@@ -171,32 +171,6 @@ export default function DefaultPage(AppInfo: AppInfo) {
     }, [activeId]);
 
     useEffect(() => {
-        if (title) return;
-        const _t = messageState.title;
-        if (mounted && _t && typeof currentTab?.childrenProps !== "undefined") {
-            AppInfo.setTitle(_t);
-        }
-    }, [messageState.title, title, mounted]);
-
-    useEffect(() => {
-        if (!ready) return;
-        if (!messageStateRef.current.dontStop) {
-            if (messageStateRef.current.activeId) {
-                (async () => {
-                    await pyInvoke("v1/chat/stop", { id: messageStateRef.current.activeId });
-                })();
-            }
-            if (messageStateRef.current.isStreaming) {
-                setMessageState(prev => ({
-                    ...prev,
-                    activeId: "",
-                    isStreaming: false,
-                }));
-            }
-        }
-    }, [ready]);
-
-    useEffect(() => {
         if (activeId == tabId) {
             scrollToBottom('instant');
             setJustOpen(false);
@@ -244,6 +218,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
                     if (oldData && oldData.data[0]) {
                         try {
                             if (readyRef.current) {
+                                console.log("newtitle", newTitle)
                                 setMessageState(prev => ({
                                     ...prev,
                                     title: newTitle,
@@ -1038,14 +1013,14 @@ export default function DefaultPage(AppInfo: AppInfo) {
                                         {(() => {
                                             const rootParent = sha256("0").slice(0, 32);
                                             const lastMsg = loadedMessages[0];
-                                            const nextParentId = lastMsg ? lastMsg.childBranchId : rootParent;
+                                            const nextParentId = lastMsg ? (lastMsg.childBranchId + "_" + (lastMsg.siblingIndex ?? 0)) : rootParent;
                                             const nextMsgIndex = lastMsg ? lastMsg.msg_index + 1 : 0;
-                                            const targetTable = `tb_${nextParentId}_0_${nextMsgIndex}`;
+                                            const targetTable = `tb_${nextParentId}_${nextMsgIndex}`;
                                             return (
                                                 <div
                                                     key="empty-container"
                                                     id={AppInfo.tabId + "_empty_message_container"}
-                                                    data-branch-id={sha256(nextParentId + "_0").slice(0, 32)}
+                                                    data-branch-id={sha256(nextParentId).slice(0, 32)}
                                                     data-branch-index={0}
                                                     data-tb={targetTable}
                                                     data-last-valid-index={lastMsg ? lastMsg.msg_index : ""}

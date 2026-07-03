@@ -4,7 +4,9 @@ import type { UseFileReturn } from "../components/useFile";
 import type { UseFolderReturn } from "../components/useFolder";
 import type { UseGlobalReturn } from "../components/useGlobal/useGlobal";
 import type { SettingItem } from "../components/useSettings";
-import { IAgent } from "openchad-react";
+import type { IAgent } from "openchad-react";
+import { Webview } from "@tauri-apps/api/webview";
+import { Window as TauriWindow } from "@tauri-apps/api/window";
 
 export interface Model {
     id?: string | null;
@@ -27,6 +29,10 @@ export function sanitizeTauriEvent(event: string): string {
 }
 
 export interface AppInfo {
+    mainWindowRef: React.RefObject<TauriWindow | null>;
+    mainWebviewRef: React.RefObject<Webview | null>;
+    allRef: React.RefObject<Webview[] | null>;
+    emptyRef: React.RefObject<Webview | null>;
     appname: string;
     useWorkspace: () => {
         workspace: string;

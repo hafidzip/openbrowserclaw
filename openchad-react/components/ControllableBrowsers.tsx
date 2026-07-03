@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo, memo } from "react";
-import { MessageCircleWarning, Plus, Trash2 } from "lucide-react";
+import { Check, Copy, MessageCircleWarning, Plus, Trash2 } from "lucide-react";
 import { Checkbox } from "./ui/checkbox";
 import { ScrollArea } from "./ui/scroll-area";
 import { Table, TableBody, TableCell, TableRow } from "./ui/table";
@@ -44,6 +44,14 @@ const TabRow = memo(({ tab, isSelected, onToggle, onOpen, onDelete }: {
         e.stopPropagation();
         onDelete(tab.uuid);
     }, [tab.uuid, onDelete]);
+    const [copied, setCopied] = useState(false);
+
+    const handleCopy = useCallback((e: React.MouseEvent) => {
+        e.stopPropagation(); // Prevents triggering any row-level clicks
+        navigator.clipboard.writeText(tab.uuid);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 750);
+    }, [tab.uuid]);
 
     return (
         <TableRow className="border-accent/5 hover:bg-accent/5 transition-colors cursor-pointer h-12 group">
@@ -52,6 +60,18 @@ const TabRow = memo(({ tab, isSelected, onToggle, onOpen, onDelete }: {
             </TableCell>
             <TableCell onClick={handleOpen} className="w-8 text-xs text-muted-foreground">
                 <TabIcon iconVal={tab.icon} />
+            </TableCell>
+            <TableCell className="max-w-[50px]" onClick={handleOpen} >
+                <div className="flex items-center gap-2">
+                    <span className="truncate text-xs text-gray-500">{truncate(tab.uuid) || "-1"}</span>
+                    <div onClick={handleCopy}>
+                        {copied ? (
+                            <Check className="w-3.5 h-3.5 text-green-500 shrink-0" />
+                        ) : (
+                            <Copy className="w-3.5 h-3.5 shrink-0 text-muted-foreground hover:text-foreground" />
+                        )}
+                    </div>
+                </div>
             </TableCell>
             <TableCell onClick={handleOpen} className="max-w-[200px] truncate font-medium">
                 {truncate(tab.name) || "Untitled"}
@@ -217,7 +237,7 @@ export default function ControllableBrowsers({
                 </div>
                 <div className="flex items-center text-xs opacity-50 gap-1">
                     <MessageCircleWarning size={10} />
-                    <span>These browsers can be controlled by an agent{ !(window as any).IS_LINUX && <>, each with an isolated browser profile</>}, and remain active in the background.</span>
+                    <span>These browsers can be controlled by an agent{!(window as any).IS_LINUX && <>, each with an isolated browser profile</>}, and remain active in the background.</span>
                 </div>
                 <div className="flex-1" />
                 {!isAdding && (

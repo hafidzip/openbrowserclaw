@@ -1131,8 +1131,10 @@ export default function Composer({
                   <button className='pointer-events-auto bg-accent text-accent-foreground text-xs p-2 pl-3 rounded-xl flex items-center gap-1 justify-center w-fit overflow-hidden cursor-pointer'>
                     {interval ?? "once"}
                     <Tooltip>
-                      <TooltipTrigger>
-                        <Info className='text-gray-500' size={12} />
+                      <TooltipTrigger asChild>
+                        <span className='inline-flex items-center cursor-help'>
+                          <Info className='text-gray-500' size={12} />
+                        </span>
                       </TooltipTrigger>
                       <TooltipContent className='bg-accent-foreground text-accent'>
                         <p>{INTERVAL_OPTIONS.find(o => o.value === (interval ?? "once"))?.label}. {(interval !== null && interval !== "once" && interval !== "infinite" && interval !== "disabled") && "The task is re-scheduled only after finish."}</p>

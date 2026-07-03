@@ -17,7 +17,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { uuidv4 } from "./utils";
 import { AsyncMutex } from "./components/Mutex/mutex";
 import { Dropdown, type DropdownMenuItemProps } from "./components/dropdown";
-import { AgentNode, AgentNodeEditor } from "./AgentNodeEditor";
+import { type AgentNode, AgentNodeEditor } from "./AgentNodeEditor";
 
 function generateIdFromString(input: string): string {
     /**

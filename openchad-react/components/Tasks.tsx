@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
-import { Plus, Trash2, Edit2, Check, X, ChevronDown, Clock, Repeat, Calendar, Mic, Video, Volume2, FileText, File as FileIcon, FileCode, PowerOff } from "lucide-react";
+import { Plus, Trash2, Edit2, Check, X, ChevronDown, Clock, Repeat, Calendar, Mic, Video, Volume2, FileText, File as FileIcon, FileCode, PowerOff, Terminal } from "lucide-react";
 import { Checkbox } from "./ui/checkbox";
 import { ScrollArea } from "./ui/scroll-area";
 import { Table, TableBody, TableCell, TableRow } from "./ui/table";
-import { usePython } from "./usePython";
+import { usePython, usePythonEvent } from "./usePython";
 import { formatTaskTime, LucideIcons, addTab, TabInfo, TabState, deleteTabWithGroupSelection } from "../utils/state";
 import { Spinner } from "./ui/spinner";
 import clsx from "clsx";
@@ -12,11 +12,13 @@ import { useDatabaseImpl } from "./useDatabase";
 import { generateIdFromString, useAvailableAgents, useSnapshot } from "../index";
 import { Button } from "./ui";
 import type { Model } from "../utils/utils";
-import { parseModelsFromConfig, INTERVAL_OPTIONS, ScheduleInterval } from "./composer";
+import {  INTERVAL_OPTIONS } from "./composer";
+import type { ScheduleInterval } from "./composer";
 import { Dropdown } from "./dropdown";
 import { renderToStaticMarkup } from "react-dom/server";
 import { open } from "@tauri-apps/plugin-dialog";
-import Record, { RecordComponentRef } from "./record";
+import Record from "./record";
+import type { RecordComponentRef } from "./record";
 import { ensureTextAfter, ensureTextBefore, placeCaret, plainToBlocks, blocksToPlain, MIME_MAP } from "./composer";
 
 const CODE_EXTS = new Set(['js', 'jsx', 'ts', 'tsx', 'py', 'java', 'c', 'cpp', 'h', 'css', 'html', 'json', 'xml', 'yaml', 'yml', 'go', 'rs', 'php', 'rb']);
@@ -196,7 +198,13 @@ const IntervalBadge = memo(({ value }: { value: string | undefined }) => {
         label = "Infinite";
         Icon = Repeat;
         colorClasses = "border-emerald-500/20 bg-emerald-500/10 text-emerald-500 dark:text-emerald-400";
-    } else if (val === "1h") {
+    }
+    else if (val === "once") {
+        label = "Run Once";
+        Icon = Terminal;
+        colorClasses = "border-emerald-500/20 bg-emerald-500/10 text-emerald-500 dark:text-emerald-400";
+    }
+    else if (val === "1h") {
         label = "Hourly";
         Icon = Clock;
         colorClasses = "border-amber-500/20 bg-amber-500/10 text-amber-500 dark:text-amber-400";
@@ -232,7 +240,7 @@ const IntervalBadge = memo(({ value }: { value: string | undefined }) => {
 
 
 const TabRow = memo((
-    { tab, isSelected, onToggle, onOpen, onDelete, availableModels, onUpdateTab, workspace }: {
+    { tab, isSelected, onToggle, onOpen, onDelete, availableModels, onUpdateTab, workspace, stopStreamingTask }: {
         tab: any;
         isSelected: boolean;
         onToggle: (id: string) => void;
@@ -241,6 +249,7 @@ const TabRow = memo((
         availableModels: Model[];
         onUpdateTab: (id: string, updatedFields: Partial<any>) => void;
         workspace?: string | null;
+        stopStreamingTask: (id: string) => Promise<void>;
     }
 ) => {
     const handleToggle = useCallback(() => onToggle(tab.id), [tab.id, onToggle]);
@@ -433,6 +442,11 @@ const TabRow = memo((
     }, [tab.agent, tab.id, onUpdateTab]);
 
     const handleSaveInterval = useCallback((newInterval: ScheduleInterval) => {
+        if (newInterval === "disabled") {
+            (async () => {
+                await stopStreamingTask(tab.id)
+            })()
+        }
         if (newInterval !== tab.interval) {
             onUpdateTab(tab.id, { interval: newInterval });
         }
@@ -797,7 +811,7 @@ const TabRow = memo((
                                     className="max-w-none min-w-44"
                                 >
                                     <button className="flex items-center gap-1 hover:bg-accent/5 px-2 py-1 rounded text-[11px] truncate font-medium border border-accent/10 hover:border-accent/25 transition-all text-left bg-background/50 bg-accent/5">
-                                        <span className="truncate max-w-[120px]">{availableModels.find(m => m.id === tab.agent)?.name || tab.agent || "Select Agent"}</span>
+                                        <span className="truncate max-w-[120px]">{availableModels.find(m => m.id === tab.agent)?.name || "Select Agent"}</span>
                                         <ChevronDown className="w-3 h-3 text-muted-foreground shrink-0" />
                                     </button>
                                 </Dropdown>
@@ -807,7 +821,7 @@ const TabRow = memo((
                                     content={INTERVAL_OPTIONS.map(opt => ({
                                         content: (
                                             <div className="flex items-center gap-1.5 text-xs py-0.5">
-                                                <span>{opt.label}</span>
+                                                <span className="capitalize">{opt.value}</span>{opt.value !== "disabled" && <span className="text-gray-500 dark:text-gray-400">- {opt.label}</span>}
                                             </div>
                                         ),
                                         trigger: () => handleSaveInterval(opt.value)
@@ -925,7 +939,7 @@ const TabRow = memo((
                             className="max-w-none min-w-44"
                         >
                             <button className="flex items-center gap-1 hover:bg-accent/5 px-2 py-1 rounded text-xs truncate max-w-full font-medium border border-accent/10 hover:border-accent/25 transition-all text-left">
-                                <span className="truncate flex-1">{availableModels.find(m => m.id === tab.agent)?.name || tab.agent || "Select Agent"}</span>
+                                <span className="truncate flex-1">{availableModels.find(m => m.id === tab.agent)?.name || "Select Agent"}</span>
                                 <ChevronDown className="w-3 h-3 text-muted-foreground shrink-0" />
                             </button>
                         </Dropdown>
@@ -937,7 +951,7 @@ const TabRow = memo((
                             content={INTERVAL_OPTIONS.map(opt => ({
                                 content: (
                                     <div className="flex items-center gap-1.5 text-xs py-0.5">
-                                        <span>{opt.label}</span>
+                                        <span className="capitalize">{opt.value}</span>{opt.value !== "disabled" && <span className="text-gray-500 dark:text-gray-400">- {opt.label}</span>}
                                     </div>
                                 ),
                                 trigger: () => handleSaveInterval(opt.value)
@@ -980,6 +994,7 @@ export default function Tasks({
     const [, setChatId] = useGlobal<string | null>('chatId', { initialValue: null })
     const { pyInvoke } = usePython();
     const { agents, isLoading } = useAvailableAgents()
+
 
 
     const handleUpdateTab = useCallback(async (id: string, updatedFields: Partial<any>) => {
@@ -1104,6 +1119,38 @@ export default function Tasks({
                 : new Set(tabsRef.current.map((t: any) => t.id))
         );
     }, []);
+    const handleStopStreamingTask = useCallback(async (id: string) => {
+        const db = workspace ?? "global";
+        const initTb = generateIdFromString(id + "/" + "message_state");
+        const res = await pyInvoke("sqlite", {
+            db: db,
+            table: initTb,
+            command: "query",
+            sql: `SELECT id, _v FROM ${initTb} WHERE id IN ('isStreaming', 'activeId')`
+        });
+        const rows = res?.data ?? (Array.isArray(res) ? res : []);
+        if (Array.isArray(rows)) {
+            let isStreaming = false;
+            let activeId = "";
+            rows.forEach((row: any) => {
+                let val = row._v;
+                if (typeof val === 'string') {
+                    try {
+                        val = JSON.parse(val);
+                    } catch { }
+                }
+                if (row.id === 'isStreaming') {
+                    isStreaming = !!val;
+                } else if (row.id === 'activeId') {
+                    activeId = String(val || "");
+                }
+            });
+            if (isStreaming && activeId) {
+                await pyInvoke("v1/chat/stop", { id: activeId });
+            }
+        }
+    }, [workspace, pyInvoke])
+    
     //  Delete 
     const handleDelete = useCallback(async (id?: string) => {
         const ids = id ? [id] : Array.from(selectedIds);
@@ -1114,34 +1161,7 @@ export default function Tasks({
             for (const i of ids) {
                 try {
                     await deleteTabWithGroupSelection(i);
-                    const initTb = generateIdFromString(i + "/" + "message_state");
-                    const res = await pyInvoke("sqlite", {
-                        db: db,
-                        table: initTb,
-                        command: "query",
-                        sql: `SELECT id, _v FROM ${initTb} WHERE id IN ('isStreaming', 'activeId')`
-                    });
-                    const rows = res?.data ?? (Array.isArray(res) ? res : []);
-                    if (Array.isArray(rows)) {
-                        let isStreaming = false;
-                        let activeId = "";
-                        rows.forEach((row: any) => {
-                            let val = row._v;
-                            if (typeof val === 'string') {
-                                try {
-                                    val = JSON.parse(val);
-                                } catch { }
-                            }
-                            if (row.id === 'isStreaming') {
-                                isStreaming = !!val;
-                            } else if (row.id === 'activeId') {
-                                activeId = String(val || "");
-                            }
-                        });
-                        if (isStreaming && activeId) {
-                            await pyInvoke("v1/chat/stop", { id: activeId });
-                        }
-                    }
+                    await handleStopStreamingTask(i);
                 } catch (e) {
                     console.error("Failed to check/stop task", i, e);
                 }
@@ -1197,6 +1217,48 @@ export default function Tasks({
     }, [setOpen]);
     const handleDeleteRow = useCallback((id: string) => handleDelete(id), [handleDelete]);
     const handleDeleteSelected = useCallback(() => handleDelete(), [handleDelete]);
+
+    const handleDisableSelected = useCallback(async () => {
+        const ids = Array.from(selectedIds);
+        if (ids.length === 0) return;
+        try {
+            const db = workspace ?? "global";
+            for (const id of ids) {
+                try {
+                    await handleStopStreamingTask(id);
+                    const tab = tabsRef.current.find(t => t.id === id);
+                    if (!tab) continue;
+                    const newMetadata = {
+                        icon: tab.icon || 'AlarmClockCheck',
+                        query: tab.query,
+                        agent: tab.agent,
+                        timestamp: tab.timestamp || Date.now(),
+                        interval: "disabled"
+                    };
+                    await pyInvoke("sqlite", {
+                        db,
+                        command: "execute",
+                        sql: "UPDATE tasks SET metadata = ? WHERE id = ?",
+                        params: [JSON.stringify(newMetadata), id]
+                    });
+                } catch (e) {
+                    console.error("Failed to disable task", id, e);
+                }
+            }
+            setTabs(prev => prev.map(t => ids.includes(t.id) ? { ...t, interval: "disabled" } : t));
+            setSelectedIds(new Set());
+        } catch (e) {
+            console.error("Failed to disable selected tasks", e);
+        }
+    }, [selectedIds, workspace, pyInvoke, handleStopStreamingTask]);
+
+    usePythonEvent('task_disabled', async ({ workspace, task_id }: any) => {
+        handleUpdateTab(task_id, {
+            interval: "disabled"
+        });
+    })
+
+
     //  Render 
     const allSelected = tabs.length > 0 && selectedIds.size === tabs.length;
     const isEmpty = tabs.length === 0;
@@ -1253,6 +1315,7 @@ export default function Tasks({
                                     onDelete={handleDeleteRow}
                                     availableModels={agents}
                                     onUpdateTab={handleUpdateTab}
+                                    stopStreamingTask={handleStopStreamingTask}
                                     workspace={workspace}
                                 />
                             ))
@@ -1275,6 +1338,7 @@ export default function Tasks({
             )}>
                 <span>{selectedIds.size} Selected</span>
                 <div className="flex-1 flex justify-end gap-2">
+                    <button onClick={handleDisableSelected} className="p-2 border border-[hsl(var(--chat-border))] rounded-full w-20">Disable</button>
                     <button onClick={handleDeleteSelected} className="p-2 border border-[hsl(var(--chat-border))] rounded-full w-20">Delete</button>
                 </div>
             </div>

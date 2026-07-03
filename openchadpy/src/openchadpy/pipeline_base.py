@@ -430,7 +430,6 @@ class PipelineBase:
                         f"- Current Date & Time: `{now_str}`\n"
                         f"- Current Node: `{current_agent_id if self.attempt > 0 else 'root'}`\n"
                         f"- Current Python Version: `{sys.version.split()[0]}`\n"
-                        "- Current Task: `{{current_task}}`\n"
                     )
                     _main_py_block = (
                         "# ./main.py\n\n"
@@ -537,10 +536,6 @@ class PipelineBase:
                         "from main import ToolRegistry, ActionResult, get_node, get_children_node\n"
                         "from typing import Any, Dict, List, Optional, Tuple, Union, Set\n"
                         "\n"
-                        'initial_task = """\n'
-                        "{{current_task}}\n"
-                        '"""\n'
-                        "\n"
                         "async def llm_tool(\n"
                         "    query: str,\n"
                         "    tool_registry: Optional[Dict[str, ToolRegistry]] = None,\n"
@@ -550,6 +545,10 @@ class PipelineBase:
                         "    `tool_registry`, and returns a dict containing the model's response text and\n"
                         "    any tool-use results.\n"
                         '    """\n'
+                        "    ...\n"
+                        "\n"
+                        'def initial_task() -> str:\n'
+                        f'    """return initial task for {current_agent_id}."""\n'
                         "    ...\n"
                         "\n"
                         "# Tools\n"
@@ -563,7 +562,7 @@ class PipelineBase:
                         '    """\n'
                         "    results: List[Dict[str, Any]] = []\n"
                         + f'    node = get_node("{current_agent_id}")\n'
-                        "    data: ActionResult = await node.execute(initial_task)\n"
+                        "    data: ActionResult = await node.execute(initial_task())\n"
                         "    results.append(data.result)\n"
                         "    # (parent_node, branch_id, task)\n"
                         "    queue: deque[tuple] = deque()\n"
@@ -888,7 +887,11 @@ class PipelineBase:
                     # Grab the cancel event (may be None when llm_tool is called
                     # without a full pipeline context, e.g. from tests).
                     _cancel_ev = getattr(self, "cancel_event", None)
-                    
+                    # Accumulate every tool result so the delegate/agent_query
+                    # caller can inspect them even if the LLM's text summary
+                    # omits raw values (e.g. file paths, URLs).
+                    _accumulated_tool_results: list = []
+
                     while True:
                         # ── Cancel check before each LLM call ─────────────────
                         if _cancel_ev and _cancel_ev.is_set():
@@ -976,6 +979,17 @@ class PipelineBase:
                                     return exec_result
 
                             if multi_step:
+                                if _accumulated_tool_results:
+                                    lines = ["\n\n----\n## Tool Results"]
+                                    for entry in _accumulated_tool_results:
+                                        tool_name = entry.get("tool", "tool")
+                                        res = entry.get("result", {})
+                                        try:
+                                            res_str = json.dumps(res)
+                                        except Exception:
+                                            res_str = str(res)
+                                        lines.append(f"- **{tool_name}**: `{res_str}`")
+                                    final_content = final_content + "\n".join(lines)
                                 await _save_history(query, final_content)
                                 return final_content
                             else:
@@ -1017,6 +1031,12 @@ class PipelineBase:
                                     else:
                                         return {}
                                 results[call_id] = result
+                                # Track result for structured return.
+                                _accumulated_tool_results.append({
+                                    "tool": fn_name,
+                                    "call_id": call_id,
+                                    "result": result,
+                                })
                             
                             if not multi_step:
                                 return results[next(iter(results))] if len(results) == 1 else results

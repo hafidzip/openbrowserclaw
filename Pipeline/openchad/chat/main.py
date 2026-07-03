@@ -2,10 +2,13 @@ from typing import Union
 from anyio import Path
 from openchadpy.tool_base import ToolRegistry
 from openchadpy.pipeline_base import PipelineBase
-from openchadpy.context import agent_ctx, model_id_ctx
+from openchadpy.context import agent_ctx, model_id_ctx, fields_ctx
 from openchadpy.main import get_agent_tree_internal
 import asyncio
-from parser import Parser
+try:
+    from parser import Parser
+except (ImportError, ValueError):
+    from .parser import Parser
 from typing import Any, Dict, List, Optional, Tuple
 import hashlib
 import logging
@@ -363,11 +366,14 @@ def _create_agent_query_tool(pipeline: "Chat", agent_node: dict) -> ToolRegistry
             if sub_agent_tree:
                 old_agent = agent_ctx.get()
                 old_model = model_id_ctx.get()
+                old_fields = fields_ctx.get()
                 
                 agent_ctx.set({sub_agent_id: sub_agent_tree})
                 sub_model = sub_agent_tree.get("model")
+                fields_ctx.set(json.loads(sub_agent_tree.get("toolValues", "{}")))
                 if sub_model:
                     model_id_ctx.set(sub_model)
+
                 
                 try:
                     sub_agent_query = _create_agent_query_tool(pipeline, sub_agent_tree) if sub_agent_tree.get("children") else None
@@ -437,6 +443,7 @@ def _create_agent_query_tool(pipeline: "Chat", agent_node: dict) -> ToolRegistry
                                     if has_single or has_multi:
                                         sub_results = await _fan_out_branch(pipeline, child_action)
                                         entry["sub_branch_results"] = sub_results
+                            logger.info(f"[agent result] {sub_agent_id}: {entry}")
                             agent_results.append(entry)
                         except Exception as e:
                             logger.exception("Error executing sub-agent task: %s", task)
@@ -447,6 +454,7 @@ def _create_agent_query_tool(pipeline: "Chat", agent_node: dict) -> ToolRegistry
                 finally:
                     agent_ctx.set(old_agent)
                     model_id_ctx.set(old_model)
+                    fields_ctx.set(old_fields)
             else:
                 agent_results.append({
                     "agent_id": sub_agent_id,
@@ -495,8 +503,11 @@ async def _fan_out_single_branch(
     # Swap agent_ctx / model_id_ctx to the child node for the duration.
     old_agent = agent_ctx.get()
     old_model = model_id_ctx.get()
+    old_fields = fields_ctx.get()
+    
     agent_ctx.set({child_id: child_node})
     child_model = child_node.get("model")
+    fields_ctx.set(json.loads(child_node.get("toolValues", "{}")))
     if child_model:
         model_id_ctx.set(child_model)
 
@@ -610,6 +621,7 @@ async def _fan_out_single_branch(
                                 # so the recursive call resolves grandchildren
                                 # from child_node["children"].
                                 sub_results = await _fan_out_branch(pipeline, child_action)
+                                logger.info(f"[sub branch result] {child_id}: \n {sub_results}")
                                 entry["sub_branch_results"] = sub_results
 
                 branch_results.append(entry)
@@ -619,6 +631,7 @@ async def _fan_out_single_branch(
     finally:
         agent_ctx.set(old_agent)
         model_id_ctx.set(old_model)
+        fields_ctx.set(old_fields)
 
     logger.info(
         "[_fan_out_single_branch] completed %d branch tasks for '%s'",
@@ -1336,7 +1349,6 @@ class Chat(PipelineBase):
                 f"- Current Date & Time: `{now_str}`\n"
                 f"- Current Node: `{node_id}`\n"
                 f"- Current Python Version: `{sys.version.split()[0]}`\n"
-                "- Current Task: `{{current_task}}`\n"
             )
             _main_py_block = (
                 "# ./main.py\n\n"
@@ -1458,10 +1470,6 @@ class Chat(PipelineBase):
                 "from main import ToolRegistry, ActionResult, get_node, get_children_node\n"
                 "from typing import Any, Dict, List, Optional, Tuple, Union, Set\n"
                 "\n"
-                'initial_task = """\n'
-                "{{current_task}}\n"
-                '"""\n'
-                "\n"
                 "async def llm_tool(\n"
                 "    query: str,\n"
                 "    tool_registry: Optional[Dict[str, ToolRegistry]] = None,\n"
@@ -1473,6 +1481,10 @@ class Chat(PipelineBase):
                 '    """\n'
                 "    ...\n"
                 "\n"
+                'def initial_task() -> str:\n'
+                f'    """return initial task for {node_id}."""\n'
+                "    ...\n"
+                "\n"                
                 "# Tools\n"
                 + tools_code + "\n"
                 "\n"
@@ -1484,7 +1496,7 @@ class Chat(PipelineBase):
                 '    """\n'
                 "    results: List[Dict[str, Any]] = []\n"
                 + f'    node = get_node("{node_id}")\n'
-                "    data: ActionResult = await node.execute(initial_task)\n"
+                "    data: ActionResult = await node.execute(initial_task())\n"
                 "    results.append(data.result)\n"
                 "    # (parent_node, branch_id, task)\n"
                 "    queue: deque[tuple] = deque()\n"
@@ -1678,9 +1690,7 @@ class Chat(PipelineBase):
             self.prompt += f"- Available Next `agent_id` (Your child nodes): `{[child['name'] for child in children_values]}`\n" if self.attempt > 0 and children else ""
             self.prompt += f"- **ALWAYS** check your child nodes and assign tasks to them when needed.\n"  if self.attempt > 0 and children else ""
             self.prompt += f"- **ALWAYS** respond in (1-5) sentences, ensure it's concise and **MUST** avoid long outputs.\n"  if self.attempt > 0 else ""
-
-
-
+            
         self.message_template[0]["content"] = self.prompt
         logger.info("[%s] _build_system_prompt: rebuilt for node='%s' attempt=%d",
                     self.__class__.__name__, self.current_agent_id, self.attempt)
@@ -1704,11 +1714,6 @@ class Chat(PipelineBase):
             else:
                 cleaned_history.append(turn)
         msg_template = copy.deepcopy(self.message_template)
-        if msg_template and len(msg_template) > 0 and "content" in msg_template[0]:
-            content = msg_template[0]["content"]
-            if "{{current_task}}" in content:
-                msg_template[0]["content"] = content.replace("{{current_task}}", f"{context}{self.query}")
-
         self.messages = (
             msg_template
             + cleaned_history
@@ -1825,7 +1830,7 @@ class Chat(PipelineBase):
                     f"You are analyzing a chunk of the file: {file_path.name}\n"
                     f"Chunk {i + 1} of {len(chunks)}:\n"
                     f"```\n{chunk}\n```\n\n"
-                    f"User request: {query}\n\n"
+                    f"User request: {query_val}\n\n"
                     f"Extract all information, key functions, classes, definitions, or context "
                     f"from this chunk that is relevant to the user request. "
                     f"Call the extract_information tool with the extracted information."
@@ -1867,7 +1872,7 @@ class Chat(PipelineBase):
                     "type": "function",
                     "function": {
                         "name": "analyze_text",
-                        "description": "Read and analyze the content of a file, return structured relevant information.",
+                        "description": "Read and analyze the content of a text file (), return structured relevant information.",
                         "parameters": {
                             "type": "object",
                             "properties": {
@@ -2893,9 +2898,11 @@ class Chat(PipelineBase):
                                                             if sub_agent_tree:
                                                                 old_agent = agent_ctx.get()
                                                                 old_model = model_id_ctx.get()
+                                                                old_fields = fields_ctx.get()
                                                                 
                                                                 agent_ctx.set({sub_agent_id: sub_agent_tree})
                                                                 sub_model = sub_agent_tree.get("model")
+                                                                fields_ctx.set(json.loads(sub_agent_tree.get("toolValues", "{}")))
                                                                 if sub_model:
                                                                     model_id_ctx.set(sub_model)
                                                                 
@@ -2967,15 +2974,18 @@ class Chat(PipelineBase):
                                                                                         if has_single or has_multi:
                                                                                             sub_results = await _fan_out_branch(self, child_action)
                                                                                             entry["sub_branch_results"] = sub_results
+                                                                                logger.info(f"[agent result] {sub_agent_id}: \n {entry}")
                                                                                 agent_results.append(entry)
  
                                                                             except Exception as e:
                                                                                 logger.exception("Error executing sub-agent task: %s", task)
+                                                                                logger.info(f"[agent result error]: \n {str(e)}")
                                                                                 agent_results.append({
                                                                                     "agent_id": sub_agent_id,
                                                                                     "response": f"Error: {str(e)}"
                                                                                 })
                                                                         else:
+                                                                            logger.info(f"[agent result error]: Error: Agent query schema not found.")
                                                                             agent_results.append({
                                                                                 "agent_id": sub_agent_id,
                                                                                 "response": "Error: Agent query schema not found."
@@ -2983,7 +2993,9 @@ class Chat(PipelineBase):
                                                                 finally:
                                                                     agent_ctx.set(old_agent)
                                                                     model_id_ctx.set(old_model)
+                                                                    fields_ctx.set(old_fields)
                                                             else:
+                                                                logger.info(f"[agent result error]: Error: Agent '{sub_agent_id}' not found.")
                                                                 agent_results.append({
                                                                     "agent_id": sub_agent_id,
                                                                     "response": f"Error: Agent '{sub_agent_id}' not found."

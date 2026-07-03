@@ -26,13 +26,16 @@ import {
   Check,
   AlertTriangle,
   AlertCircle,
-  Code2
+  Code2,
+  Pencil
 } from 'lucide-react'
 import { ref, useFolder, useTheme, type AppInfo, Dropdown, useAvailableModels, uuidv4, usePythonEvent, useGlobal } from 'openchad-react'
 import clsx from 'clsx'
-import { Model } from './utils'
+import type { Model } from './utils'
 import { MenuBar } from './utils/state'
 import { open } from '@tauri-apps/plugin-dialog';
+import { invoke } from '@tauri-apps/api/core'
+import { revealItemInDir } from '@tauri-apps/plugin-opener'
 
 
 
@@ -152,7 +155,7 @@ const SearchableDropdown = React.memo(function SearchableDropdown({
   value,
   onChange,
   placeholder = "Select...",
-  className = "w-70",
+  className = "w-70 max-h-50",
   themeStyles,
   triggerClassName = "",
   onOpenChange,
@@ -270,7 +273,7 @@ const ArrayFieldEditor = React.memo(function ArrayFieldEditor({
   type,
   themeStyles,
   items,
-  placeholder
+  placeholder,
 }: ArrayFieldEditorProps) {
   const list: any[] = useMemo(() => {
     if (Array.isArray(value)) return value;
@@ -763,6 +766,7 @@ interface AgentEditorProps {
   agents: Record<string, AgentNode>
   availableModels: Model[]
   modelsLoading: boolean
+  pyInvoke: (cmd: string, args?: Record<string, any>) => Promise<any>
   handleUpdateAgentProperty: (id: string, fields: Partial<AgentNode>, isTextField?: boolean) => void
   availableTools: { name: string; description: string; source: 'internal' | 'mcp' }[]
   handleAddAgent: (parentId: string) => void
@@ -778,6 +782,7 @@ const AgentEditor = ({
   availableModels,
   modelsLoading,
   handleUpdateAgentProperty,
+  pyInvoke,
   availableTools,
   handleAddAgent,
   handleDeleteAgent,
@@ -798,6 +803,12 @@ const AgentEditor = ({
   const [copiedId, setCopiedId] = useState(false);
   const [copiedErrors, setCopiedErrors] = useState(false);
   const [copiedWarnings, setCopiedWarnings] = useState(false);
+
+  const [, setShowCodeDialog] = useGlobal('showCodeDialog', { initialValue: false });
+  const [, setCodeLanguage] = useGlobal('codeLanguage', { initialValue: "text" });
+  const [, setCodeId] = useGlobal('codeId', { initialValue: "" });
+  const [, setPrevCode] = useGlobal('prevCode', { initialValue: "" });
+  const [, setCode] = useGlobal('code', { initialValue: "" });
 
   const handleCopyAllErrors = () => {
     const text = (agents[selected].errors || []).join('\n')
@@ -973,7 +984,7 @@ const AgentEditor = ({
     <div className="flex flex-col gap-1.5">
       <label className="text-xs font-semibold flex items-center gap-1" style={{ color: themeStyles.mutedFg }}>
         <div className='flex items-center gap-1'>
-          <Code2 size={14}/>
+          <Code2 size={14} />
           <span>Programmatic Tool Calling</span>
         </div>
         <TooltipProvider>
@@ -999,7 +1010,7 @@ const AgentEditor = ({
           }}
         >
           <span
-            className="absolute top-0.5 w-4 h-4 rounded-full shadow transition-all duration-200"
+            className="absolute top-[1px] w-4 h-4 rounded-full shadow transition-all duration-200"
             style={{
               background: agents[selected].enableProgrammaticToolCalling ? '#fff' : themeStyles.mutedFg,
               left: agents[selected].enableProgrammaticToolCalling ? '17px' : '2px',
@@ -1063,10 +1074,11 @@ const AgentEditor = ({
         <div
           ref={dropZoneRef}
           onClick={async () => {
-            setSkillPath(await open({
+            const path = await open({
               defaultPath: ((window as any).PROJECT_ROOT as string) + "/SKILLS",
               filters: [{ name: "Skill Files", extensions: ["md"] }]
-            }))
+            });
+            if (path) setSkillPath(path)
           }}
           className={[
             "flex flex-col items-center justify-center w-48 h-36 relative group",
@@ -1075,6 +1087,68 @@ const AgentEditor = ({
               ? "border-accent bg-accent/10 scale-105"
               : "border-accent bg-accent/5 hover:bg-accent/10 hover:border-accent/80"
           ].join(' ')}>
+          <button
+            type="button"
+            onClick={async (e) => {
+              e.stopPropagation();
+
+              // 1. Safe extraction with optional chaining
+              const selectedAgent = agents?.[selected];
+              const rawPath = selectedAgent?.skillPath;
+
+              if (!rawPath) {
+                console.error("Skill path is undefined for the selected agent.");
+                return;
+              }
+
+              // 2. Normalize path: Convert all Windows backslashes (\) to forward slashes (/)
+              const normalizedPath = rawPath.replace(/\\/g, '/');
+
+              // 3. Extract folder and filename safely
+              const pathParts = normalizedPath.split('/');
+              let skillFilename = pathParts.pop() || '';
+              const skillFolder = pathParts.join('/');
+
+              // 4. Gracefully append '.md' if the path didn't include an extension
+              if (skillFilename && !skillFilename.includes('.')) {
+                skillFilename += '.md';
+              }
+
+              // 5. Execute the file read inside a safe try-catch wrapper
+              try {
+                if (!skillFolder || !skillFilename) {
+                  throw new Error(`Malformed path structure. Folder: "${skillFolder}", File: "${skillFilename}"`);
+                }
+
+
+                const fileRes = await pyInvoke('file', {
+                  command: 'read',
+                  filename: skillFilename,
+                  base_dir: skillFolder
+                }) as any;
+
+                const fileContent = fileRes?.data?.content;
+
+                if (fileContent !== undefined && fileContent !== null) {
+                  setPrevCode(fileContent);
+                  setCode(fileContent);
+                  setCodeId(`editable: ${selected}`); // Retain original raw path structure for identification
+                  setCodeLanguage("markdown");
+                  setShowCodeDialog(true);
+                }
+
+              } catch (error) {
+                // Graceful error handling prevents application crashes if backend fails
+                console.error("An error occurred while trying to read the skill file:", error);
+                // Optional: Add a user-facing notification alert/toast here if your UI supports it
+              }
+            }
+            }
+            className="absolute top-2 right-10 p-1 rounded-full bg-gray-500/10 hover:bg-amber-500/20 text-gray-400 hover:text-amber-400 transition-all opacity-0 group-hover:opacity-100"
+            title="Edit skill"
+          >
+            <Pencil size={14} />
+          </button>
           <button
             type="button"
             onClick={(e) => {
@@ -1091,20 +1165,37 @@ const AgentEditor = ({
             {skillPath.split(/[\\/]/).pop()}
           </p>
           <p
-            className="text-[10px] text-gray-400 dark:text-gray-500 truncate max-w-full mt-1.5 cursor-help"
+            onClick={(e)=>{
+              e.stopPropagation()
+              revealItemInDir(skillPath)
+            }}
+            className="hover:underline cursor-pointer text-xs text-gray-400 dark:text-gray-500 truncate max-w-full mt-1.5 cursor-help"
             title={skillPath}
           >
-            {skillPath}
+            {(() => {
+              if (skillPath.length <= 24) return skillPath;
+              const sliceStart = skillPath.length - 21;
+              const nextSlash = skillPath.indexOf('/', sliceStart);
+              const nextBackslash = skillPath.indexOf('\\', sliceStart);
+              const firstSep = (nextSlash !== -1 && nextBackslash !== -1)
+                ? Math.min(nextSlash, nextBackslash)
+                : (nextSlash !== -1 ? nextSlash : nextBackslash);
+              if (firstSep !== -1 && firstSep - sliceStart < 8) {
+                return '...' + skillPath.substring(firstSep);
+              }
+              return '...' + skillPath.slice(-21);
+            })()}
           </p>
         </div>
       ) : (
         <div
           ref={dropZoneRef}
           onClick={async () => {
-            setSkillPath(await open({
+            const path = await open({
               defaultPath: ((window as any).PROJECT_ROOT as string) + "/SKILLS",
               filters: [{ name: "Skill Files", extensions: ["md"] }]
-            }))
+            });
+            if (path) setSkillPath(path)
           }}
           className={[
             "flex flex-col items-center justify-center w-48 h-36",
@@ -1188,7 +1279,7 @@ const AgentEditor = ({
           </span>
           <div className="flex flex-col gap-2">
             {toolFields[tName].map((field: any, idx: number) => {
-              const fieldKey = `${tName}-${field.name}-${idx}`;
+              const fieldKey = `${tName}-${field.name}-${idx}-${field.value?.type ?? ''}-${JSON.stringify(field.value?.items ?? null)}-${field.value?.placeholder ?? ''}`;
               const currentValue = (agents[selected].toolValues?.[tName]?.[field.name]) ?? '';
               const type = field.value?.type;
 
@@ -1291,7 +1382,7 @@ const AgentEditor = ({
                       value={currentValue}
                       onChange={(e) => updateValue(e.target.value)}
                       placeholder={field.value?.placeholder || ""}
-                      className="p-1.5 rounded-lg border outline-none"
+                      className="p-1.5 text-xs rounded-lg border outline-none"
                       style={{
                         background: themeStyles.muted,
                         borderColor: themeStyles.border,
@@ -1333,7 +1424,7 @@ const AgentEditor = ({
           }}
         >
           <span
-            className="absolute top-0.5 w-4 h-4 rounded-full shadow transition-all duration-200"
+            className="absolute top-[1px] w-4 h-4 rounded-full shadow transition-all duration-200"
             style={{
               background: agents[selected].allowMultiple ? '#fff' : themeStyles.mutedFg,
               left: agents[selected].allowMultiple ? '17px' : '2px',
@@ -1421,6 +1512,8 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
 
   //  Core state 
   const [agents, setAgents, { ready }] = useTabDatabase<Record<string, AgentNode>>("agents", { initialValue: INITIAL_AGENTS })
+  const agentsRef = useRef(agents)
+  agentsRef.current = agents
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>('1')
   const [hoveredAgentId, setHoveredAgentId] = useState<string | null>(null)
   const [runningAgents, setRunningAgents] = useState<Record<string, boolean>>({})
@@ -1456,7 +1549,13 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
     };
   }, []);
   const [availableTools, setAvailableTools] = useState<{ name: string; description: string; source: 'internal' | 'mcp' }[]>([])
+
+  const availableToolsRef = useRef(availableTools)
+  availableToolsRef.current = availableTools
+
   const [tools] = useFolder('Tools')
+  const toolsRef = useRef(tools)
+  toolsRef.current = tools
   const [toolFields, setToolFields] = useState<Record<string, any[]>>({})
   const { models: availableModels, isLoading: modelsLoading } = useAvailableModels()
   const { workspace } = useWorkspace()
@@ -1478,9 +1577,30 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
         }
       })()
     };
+    const codeBlockSaved = async (event: Event) => {
+      const { codeId, code } = (event as CustomEvent).detail;
+      if (codeId && typeof code === "string") {
+        const _id = codeId.replace(/^editable\: /, "");
+        const skillPath = agentsRef.current?.[_id]?.skillPath;
+        if (skillPath) {
+          const normalizedPath = skillPath.replace(/\\/g, '/');
+          const pathParts = normalizedPath.split('/');
+          let skillFilename = pathParts.pop() || '';
+          const skillFolder = pathParts.join('/');
+          await pyInvoke('file', {
+            command: 'write',
+            filename: skillFilename,
+            base_dir: skillFolder,
+            content: code,
+          }) as any;
+        }
+      }
+    }
     window.addEventListener('tab-update', tabUpdate);
+    window.addEventListener('code-block-saved', codeBlockSaved)
     return () => {
       window.removeEventListener('tab-update', tabUpdate);
+      window.removeEventListener('code-block-saved', codeBlockSaved)
     }
   }, [])
 
@@ -1531,97 +1651,113 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
     }
   }, [activeTabId, availableModels, modelsLoading])
 
-  useEffect(() => {
-    if (!tools || tools.length === 0) return
+  const loadAllToolFields = async () => {
+    const fieldsPaths = toolsRef.current.filter(p => p.endsWith('/fields.ts'))
+    const newToolFields: Record<string, any[]> = {}
 
-    const loadAllToolFields = async () => {
-      const fieldsPaths = tools.filter(p => p.endsWith('/fields.ts'))
-      const newToolFields: Record<string, any[]> = {}
+    await Promise.all(fieldsPaths.map(async (fieldsPath) => {
+      try {
+        const folderParts = fieldsPath.split('/')
+        folderParts.pop()
+        const toolFolder = folderParts.join('/')
+        const dirName = folderParts[folderParts.length - 1]
 
-      await Promise.all(fieldsPaths.map(async (fieldsPath) => {
-        try {
-          const folderParts = fieldsPath.split('/')
-          folderParts.pop()
-          const toolFolder = folderParts.join('/')
-          const dirName = folderParts[folderParts.length - 1]
-
-          let toolName = dirName
-          const manifestPath = `${toolFolder}/manifest.json`
-          const hasManifest = tools.includes(manifestPath)
-          if (hasManifest) {
-            const manifestRes = await pyInvoke('file', {
-              command: 'read',
-              filename: manifestPath,
-              base_dir: 'Tools'
-            }) as any
-            if (manifestRes?.data?.content) {
-              const manifest = JSON.parse(manifestRes.data.content)
-              if (manifest.name) {
-                toolName = manifest.name
-              }
-            }
-          }
-
-          const fieldsRes = await pyInvoke('file', {
+        let toolName = dirName
+        const manifestPath = `${toolFolder}/manifest.json`
+        const hasManifest = toolsRef.current.includes(manifestPath)
+        if (hasManifest) {
+          const manifestRes = await pyInvoke('file', {
             command: 'read',
-            filename: fieldsPath,
+            filename: manifestPath,
             base_dir: 'Tools'
           }) as any
-
-          if (fieldsRes?.data?.content) {
-            const content = fieldsRes.data.content
-            const parsed = parseFields(content)
-            if (parsed && parsed.length > 0) {
-              newToolFields[toolName] = parsed
+          if (manifestRes?.data?.content) {
+            const manifest = JSON.parse(manifestRes.data.content)
+            if (manifest.name) {
+              toolName = manifest.name
             }
           }
-        } catch (e) {
-          console.error('Failed to load fields for', fieldsPath, e)
         }
-      }))
 
-      setToolFields(newToolFields)
-    }
+        const fieldsRes = await pyInvoke('file', {
+          command: 'read',
+          filename: fieldsPath,
+          base_dir: 'Tools'
+        }) as any
 
+        if (fieldsRes?.data?.content) {
+          const content = fieldsRes.data.content
+          const parsed = parseFields(content)
+          if (parsed && parsed.length > 0) {
+            newToolFields[toolName] = parsed
+          }
+        }
+      } catch (e) {
+        console.error('Failed to load fields for', fieldsPath, e)
+      }
+    }))
+
+    setToolFields(newToolFields)
+  }
+
+  useEffect(() => {
+    if (!tools || tools.length === 0) return
     loadAllToolFields()
   }, [tools, pyInvoke])
 
-  useEffect(() => {
-    const fetchTools = async () => {
-      try {
-        const [toolsRes, mcpToolsRes] = await Promise.all([
-          pyInvoke('tools').catch(() => ({ tools: [] })),
-          pyInvoke('mcp_tool').catch(() => ({ tools: [] }))
-        ]) as [any, any]
+  const fetchTools = async () => {
+    try {
+      const [toolsRes, mcpToolsRes] = await Promise.all([
+        pyInvoke('tools').catch(() => ({ tools: [] })),
+        pyInvoke('mcp_tool').catch(() => ({ tools: [] }))
+      ]) as [any, any]
 
-        const list: typeof availableTools = []
-        if (toolsRes && Array.isArray(toolsRes.tools)) {
-          toolsRes.tools.forEach((t: any) => {
-            if (t?.function?.name) {
-              list.push({
-                name: t.function.name,
-                description: t.function.description || 'No description',
-                source: 'internal'
-              })
-            }
-          })
-        }
-        if (mcpToolsRes && Array.isArray(mcpToolsRes.tools)) {
-          mcpToolsRes.tools.forEach((t: any) => {
-            if (t?.function?.name) {
-              list.push({
-                name: t.function.name,
-                description: t.function.description || 'No description',
-                source: 'mcp'
-              })
-            }
-          })
-        }
-        setAvailableTools(list)
-      } catch (e) {
-        console.error('Error fetching tools:', e)
+      const list: typeof availableTools = []
+      if (toolsRes && Array.isArray(toolsRes.tools)) {
+        toolsRes.tools.forEach((t: any) => {
+          if (t?.function?.name) {
+            list.push({
+              name: t.function.name,
+              description: t.function.description || 'No description',
+              source: 'internal'
+            })
+          }
+        })
       }
+      if (mcpToolsRes && Array.isArray(mcpToolsRes.tools)) {
+        mcpToolsRes.tools.forEach((t: any) => {
+          if (t?.function?.name) {
+            list.push({
+              name: t.function.name,
+              description: t.function.description || 'No description',
+              source: 'mcp'
+            })
+          }
+        })
+      }
+      setAvailableTools(list)
+      return list
+    } catch (e) {
+      console.error('Error fetching tools:', e)
+      return null;
     }
+  }
+
+  usePythonEvent("tools_reloaded", async () => {
+    const tools = await fetchTools()
+    await loadAllToolFields()
+    if (agentsRef.current && tools) {
+      Object.entries(agentsRef.current).forEach(([key, value]) => {
+        handleUpdateAgentProperty(key, {
+          tools: value.tools.filter((t: any) => {
+            return tools.some((at: any) => at.name === t)
+          })
+        })
+      })
+    }
+  })
+
+  useEffect(() => {
     fetchTools()
   }, [pyInvoke])
 
@@ -2729,7 +2865,6 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
           >
             <Redo2 size={16} />
           </button>
-
         </div>
       </div>
 
@@ -2743,6 +2878,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
 
           {selectedAgentId && agents[selectedAgentId] ? (
             <AgentEditor
+              pyInvoke={pyInvoke}
               availableModels={availableModels}
               modelsLoading={modelsLoading}
               selected={selectedAgentId}

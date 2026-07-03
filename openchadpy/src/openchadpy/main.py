@@ -1,3 +1,7 @@
+from openchadpy.context import fields_ctx
+from openchadpy.context import pipeline_ctx
+from openchadpy.context import console_messages
+from openchadpy.context import cdp_ports
 from openchadpy.context import max_retries_ctx
 from openchadpy.context import agent_ctx
 from aiortc import rtcrtptransceiver
@@ -327,7 +331,8 @@ async def _background_startup():
             tool_manager=tool_manager,
             settings_manager=settings_manager,
             mcp_manager=mcp_manager,
-            event_emitter=event_emitter
+            event_emitter=event_emitter,
+            code_sandbox=code_sandbox
         )
         startup_tracker.update_status("Initializing core systems...", progress=0.0)
         await asyncio.gather(
@@ -583,7 +588,7 @@ async def _setup_pipeline(
         del chat_kwargs["tool_choice"]
     return pipeline, chat_kwargs 
 
-async def handle_pytauri_chat(msg_id: str, body: Dict[str, Any], app_handle: AppHandle):
+async def handle_pytauri_chat(msg_id: str, body: Dict[str, Any]):
     """
     Handle chat completion for PyTauri with event-based streaming.
     This runs as a background task and emits events to the frontend.
@@ -616,6 +621,10 @@ async def handle_pytauri_chat(msg_id: str, body: Dict[str, Any], app_handle: App
             agent_node = agent_tree.get(current_agent_id)
             if agent_node:
                 agent_model_id = agent_node.get("model", None)
+                model_id_ctx.set(agent_model_id)
+                fields = json.loads(agent_node.get("toolValues", "{}"))
+                fields_ctx.set(fields)
+                logger.info(f"Fields: {fields}")
                 logger.info("!!!AGENT_MODEL_ID: %s", agent_model_id)
 
     requested_model = agent_model_id if agent_model_id else body.get("model", "")    
@@ -663,6 +672,7 @@ async def handle_pytauri_chat(msg_id: str, body: Dict[str, Any], app_handle: App
         set_continue=lambda v: is_continue.__setitem__(0, v),
         cancel_event=cancel_event,
     )
+    pipeline_ctx.set(pipeline)
     workspace_ctx.set(workspace)
     tab_id_ctx.set(tab_id)
     model_id_ctx.set(requested_model)
@@ -916,6 +926,27 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
                     return {'result': 'ok'}
                 except Exception as e:  
                     return {'error': str(e)}
+            case 'update_cdp_ports':
+                updated = request.get("cdp_ports")
+                if not updated:
+                    return {'error': 'No cdp ports provided'}
+                if not isinstance(updated, dict):
+                    return {'error': 'cdp_ports must be a dict'}
+                if not all(isinstance(k, str) and isinstance(v, int) for k, v in updated.items()):
+                    return {'error': 'cdp_ports must be a dict[str, int]'}
+                cdp_ports.clear()
+                cdp_ports.update(updated)
+                return {'result': 'ok'}
+            case 'get_console_messages':
+                return {"messages": console_messages}
+            case 'update_console':
+                msg = request.get("msg")
+                label = request.get("target")
+                if label:
+                    if label not in console_messages:
+                        console_messages[label] = []
+                    console_messages[label].append(msg)
+                return {'result': 'ok'}
             case 'eval': 
                 script = request.get("script")
                 label = request.get("label")
@@ -998,7 +1029,7 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
                     return {"error": "Missing 'id' parameter"}
                 # Start chat processing in background
                 # Fire and forget - results will be streamed via events
-                asyncio.create_task(handle_pytauri_chat(msg_id, request, app_handle))
+                asyncio.create_task(handle_pytauri_chat(msg_id, request))
                 return {"status": "processing", "id": msg_id, "stream_end": False}
             case "v1/chat/stop":
                 target_id = request.get("id")
@@ -1501,6 +1532,9 @@ async def chat_endpoint_api(request: Request):
                 agent_node = agent_tree.get(current_agent_id)
                 if agent_node:
                     agent_model_id = agent_node.get("model", None)
+                    model_id_ctx.set(agent_model_id)
+                    fields_ctx.set(json.loads(agent_node.get("toolValues", "{}")))
+                    raise
 
         requested_model = agent_model_id if agent_model_id else data.get("model")       
         if not model_manager.is_loaded(requested_model):
@@ -1568,6 +1602,7 @@ async def chat_endpoint_api(request: Request):
             set_continue=lambda v: is_continue.__setitem__(0, v),
             cancel_event=cancel_event,
         )
+        pipeline_ctx.set(pipeline)
         workspace_ctx.set(workspace)
         tab_id_ctx.set(tab_id)
         model_id_ctx.set(requested_model)
@@ -1936,6 +1971,8 @@ async def handle_ws_chat(msg_id: str, body: dict, send_func: Callable[[dict], Aw
             agent_node = agent_tree.get(current_agent_id)
             if agent_node:
                 agent_model_id = agent_node.get("model", None)
+                model_id_ctx.set(agent_model_id)
+                fields_ctx.set(json.loads(agent_node.get("toolValues", "{}")))
 
     requested_model = agent_model_id if agent_model_id else body.get("model", "")     
     files = body.get("files", [])
@@ -1987,6 +2024,7 @@ async def handle_ws_chat(msg_id: str, body: dict, send_func: Callable[[dict], Aw
         set_continue=lambda v: is_continue.__setitem__(0, v),
         cancel_event=cancel_event,
     )
+    pipeline_ctx.set(pipeline)
     workspace_ctx.set(workspace)
     tab_id_ctx.set(tab_id)
     model_id_ctx.set(requested_model)

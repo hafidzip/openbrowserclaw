@@ -10,6 +10,7 @@ dependencies = [
     "litellm>=1.88.0",
     "huggingface_hub",
     "llama-cpp-python>=0.3.30",
+    "playwright>=1.49.0",
 ]
 
 [tool.uv.sources]

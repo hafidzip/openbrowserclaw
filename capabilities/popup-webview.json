@@ -1,0 +1,21 @@
+{
+  "identifier": "popup-webview",
+  "description": "Allow popup webviews to close window",
+  "windows": [
+    "main",
+    "popup-*"
+  ],
+  "webviews": [
+    "popup-*"
+  ],
+  "remote": {
+    "urls": [
+      "https://**",
+      "http://**"
+    ]
+  },
+  "permissions": [
+    "core:event:default",
+    "core:window:allow-close"
+  ]
+}

@@ -1,0 +1,1 @@
+**ALWAYS** use `create_image` tool if user explicitly ask for image generation.

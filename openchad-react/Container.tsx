@@ -4,7 +4,7 @@ import Topbar from './components/topbar'
 import clsx from 'clsx'
 import { AnimatePresence, motion, type Variants } from "motion/react"
 import { useFileImpl } from './components/useFile'
-import { ArrowLeftRight, Copy, GitBranch, Globe, HardDrive, Key, Minus, Plus, Search, Settings, X, type LucideIcon } from 'lucide-react'
+import { ArrowLeftRight, Check, Copy, GitBranch, Globe, HardDrive, Key, Minus, Plus, Search, Settings, X, type LucideIcon } from 'lucide-react'
 import useElementSize from './components/hooks/useElementSize'
 import { Button } from './components/ui/button'
 import uuidv4 from './utils/uuid'
@@ -29,7 +29,7 @@ import { useSettings } from './components/useSettings'
 import { Dropdown } from './components/dropdown'
 import { invoke } from '@tauri-apps/api/core';
 import { Dialog as DialogUI, DialogContent, DialogHeader, DialogTitle } from "./components/ui/dialog"
-import { Editor, OnMount } from "monaco";
+import { Editor, type OnMount } from "monaco";
 import type * as Monaco from 'monaco-editor';
 import { Toaster } from "./components/ui/sonner"
 
@@ -101,17 +101,18 @@ const composerVariants: Variants = {
     ? { opacity: [1, 1, 0], scale: 0.85, transition: { duration: 0.3, ease: 'easeOut' } }
     : { opacity: 0, transition: { duration: 0 } }
 };
-import { AsyncLock, generateIdFromString, IAgent, useMenuBar } from './index'
-import { cursorPosition, getCurrentWindow, PhysicalPosition, PhysicalSize } from '@tauri-apps/api/window'
+import { AsyncLock, generateIdFromString, type IAgent, useMenuBar } from './index'
+import { cursorPosition, getCurrentWindow, PhysicalPosition, PhysicalSize, Window as TauriWindow } from '@tauri-apps/api/window'
 import Bar from './Bar'
 import { getAllWebviews, getCurrentWebview, Webview } from '@tauri-apps/api/webview'
 import type { ControllableBrowser } from './components/ControllableBrowsers'
 import { isRegistered, register, unregister } from '@tauri-apps/plugin-global-shortcut'
 import { getCurrentWebviewWindow, WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import Chat from './components/chat'
-import Composer, { ScheduleInterval } from './components/composer'
+import Composer, { type ScheduleInterval } from './components/composer'
 import { toast } from 'sonner'
 import { createWebview } from './utils'
+import TaskBarAgent from './TaskBarAgent'
 
 export default function Container({ Apps }: { Apps: Project }) {
   if (Apps.defaultTab.tabs.length === 0) {
@@ -123,6 +124,8 @@ export default function Container({ Apps }: { Apps: Project }) {
   (window as any).defaultIconRegistry = Apps.iconRegistry;
   (window as any).defaultSize = Apps.size || [50, 50, 50, 50, 50];
   const { pyInvoke, isStreamReady } = usePython();
+  const pyInvokeRef = useRef(pyInvoke);
+  pyInvokeRef.current = pyInvoke
   const { settings } = useSettings();
   const [startupStatus] = useState<any>(null);
   const [test, , { folders }] = useFolderImpl('Workspaces');
@@ -150,27 +153,24 @@ export default function Container({ Apps }: { Apps: Project }) {
   const [showCustomEndpointDialog, setShowCustomEndpointDialog] = useGlobal('showCustomEndpointDialog', { initialValue: false });
   const [showCodeDialog, setShowCodeDialog] = useGlobal('showCodeDialog', { initialValue: false });
   const [codeLanguage, setCodeLanguage] = useGlobal('codeLanguage', { initialValue: "text" });
+  const [prevCode, setPrevCode] = useGlobal('prevCode', { initialValue: "" });
   const [code, setCode] = useGlobal('code', { initialValue: "" });
   const [codeId] = useGlobal('codeId', { initialValue: "" });
+  const [isSaved, setIsSaved] = useState(false);
+  const [focus, setFocus] = useGlobal('focusOnApp', { initialValue: false })
+  const focusRef = useRef(focus)
+  focusRef.current = focus
   const codeIdRef = useRef(codeId);
   codeIdRef.current = codeId;
 
   const editorRef = useRef<Monaco.editor.IStandaloneCodeEditor | null>(null);
   const lastCodeUpdateRef = useRef<number>(0);
   const codeUpdateTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const codeDataRef = useRef<string | null>(null);
+  const reparentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleMount: OnMount = (editor) => {
     editorRef.current = editor;
   };
-
-  useEffect(() => {
-    const editor = editorRef.current;
-    if (!editor) return;
-
-    const lineCount = editor.getModel()?.getLineCount() ?? 0;
-    editor.revealLine(lineCount, 1); // 1 = ScrollType.Immediate
-  }, [code]);
 
 
   const [, setMobileSettingsDropdown] = useGlobal('mobileSettingsDropdown', { initialValue: false });
@@ -190,6 +190,11 @@ export default function Container({ Apps }: { Apps: Project }) {
   const [intializeBrowser, setInitializeBrowser] = useState(false);
   const isFirstSave = useRef(true);
   const [MenuBar, setMenuBar] = useMenuBar();
+
+  const emptyRef = useRef<Webview | null>(null)
+  const allRef = useRef<Webview[] | null>(null)
+  const mainWindowRef = useRef<TauriWindow | null>(null)
+  const mainWebviewRef = useRef<Webview | null>(null)
 
   useEffect(() => {
     (async () => {
@@ -224,8 +229,9 @@ export default function Container({ Apps }: { Apps: Project }) {
     if (!ready) return;
 
     (async () => {
-      const all = await getAllWebviews();
-      const win = await getCurrentWindow();
+      if (!allRef.current) allRef.current = await getAllWebviews();
+      if (!mainWindowRef.current) mainWindowRef.current = await getCurrentWindow();
+      if (!mainWebviewRef.current) mainWebviewRef.current = await getCurrentWebview();
 
       // Convert the Record object into an array of [uuid, browserData] pairs
       const browserEntries = Object.entries(browsers);
@@ -240,26 +246,24 @@ export default function Container({ Apps }: { Apps: Project }) {
 
       browserEntries.forEach(async ([uuid, browser]) => {
         const label = `webview-${uuid}`;
-
-        if (!all.find((wv) => wv.label === label)) {
+        const size = await mainWebviewRef.current?.size()
+        const position = await mainWebviewRef.current?.position()
+        if (!allRef.current?.find((wv) => wv.label === label)) {
           console.log(browser);
           const w = await createWebview(label, {
             url: browser.url || 'about:blank',
-            width: 100,
-            height: 100,
-            x: 100,
-            y: 100,
+            width: size?.width,
+            height: size?.height,
+            x: position?.x,
+            y: position?.y,
           });
 
           if (w) {
-            await w.once('tauri://created', async () => {
-              await w.hide();
-              current += 1;
+            current += 1;
 
-              if (current === target) {
-                setInitializeBrowser(true);
-              }
-            });
+            if (current === target) {
+              setInitializeBrowser(true);
+            }
 
             await w.once('tauri://error', (e) => {
               console.error(`Webview "${label}" failed to create:`, e);
@@ -303,28 +307,31 @@ export default function Container({ Apps }: { Apps: Project }) {
           }
         }
       });
+
+      
     })();
   }, [browsers, ready]);
 
   useEffect(() => {
     if (!mounted) return;
     (async () => {
-      const all = await getAllWebviews();
-      if (!all.find((wv) => wv.label === 'webview-empty')) {
-        const main = await getCurrentWebview()
-        const position = await main.position();
-        const size = await main.size();
-        const win = await getCurrentWindow();
+      if (!allRef.current) allRef.current = await getAllWebviews();
+      if (!mainWindowRef.current) mainWindowRef.current = await getCurrentWindow();
+      if (!mainWebviewRef.current) mainWebviewRef.current = await getCurrentWebview();
+
+      if (!allRef.current.find((wv) => wv.label === 'webview-empty')) {
+        const position = await mainWebviewRef.current.position();
+        const size = await mainWebviewRef.current.size();
         await AsyncLock.acquire();
-        const empty = new Webview(win, 'webview-empty', {
+        emptyRef.current = new Webview(mainWindowRef.current, 'webview-empty', {
           url: 'about:blank',
           width: size.width,
           height: size.height,
           x: position.x,
           y: position.y
         })
-        await empty.once('tauri://created', async () => {
-          await main.reparent(win)
+        await emptyRef.current.once('tauri://created', async () => {
+          await mainWebviewRef.current!.reparent(mainWindowRef.current!)
           AsyncLock.release()
         })
       }
@@ -334,8 +341,8 @@ export default function Container({ Apps }: { Apps: Project }) {
   useEffect(() => {
     if (!mounted) return;
     (async () => {
-      const all = await getAllWebviews();
-      const win = await getCurrentWindow()
+      if (!allRef.current) allRef.current = await getAllWebviews();
+      if (!mainWindowRef.current) mainWindowRef.current = await getCurrentWindow();
       const webwin = await getCurrentWebviewWindow();
       webwin.onDragDropEvent((event) => {
         if (event.event == "tauri://drag-drop") {
@@ -343,67 +350,17 @@ export default function Container({ Apps }: { Apps: Project }) {
           window.dispatchEvent(new CustomEvent('drag_drop', { detail: event.payload }));
         }
       })
-      win.onFocusChanged(async ({ payload: focused }) => {
+      mainWindowRef.current.onFocusChanged(async ({ payload: focused }) => {
         window.dispatchEvent(new CustomEvent('mainFocusChanged', { detail: focused }));
       });
-      win.onMoved(() => {
+      mainWindowRef.current.onMoved(() => {
         window.dispatchEvent(new CustomEvent('mainOnMove'));
       })
-      win.onResized(() => {
+      mainWindowRef.current.onResized(() => {
         window.dispatchEvent(new CustomEvent('mainOnResize'));
       })
     })()
   }, [mounted])
-
-  useEffect(() => {
-    if (!mounted) return;
-    const scale = window.devicePixelRatio ?? 1
-    const cleanups: (() => void)[] = []
-    let isCursorInside = false
-    let isPollInFlight = false
-    const pollCursor = async () => {
-      if (isPollInFlight) return
-      const container = vieweportRef.current
-      if (!container) return
-      isPollInFlight = true
-      try {
-        const rect = container.getBoundingClientRect()
-        const mainWin = await getCurrentWindow();
-        // Only fetch cursor position + window position; scaleFactor is cached from init
-        const [pos, cursor] = await Promise.all([
-          mainWin.innerPosition(),
-          cursorPosition()
-        ])
-
-        const minX = pos.x + rect.left * scale
-        const maxX = pos.x + rect.right * scale
-        const minY = pos.y + rect.top * scale
-        const maxY = pos.y + rect.bottom * scale
-
-        const inside = cursor.x >= minX && cursor.x <= maxX && cursor.y >= minY && cursor.y <= maxY
-        if (inside && !isCursorInside) {
-          isCursorInside = true
-          window.dispatchEvent(new CustomEvent('mainCursorEnter', {
-            detail: { x: cursor.x, y: cursor.y }
-          }))
-        } else if (!inside && isCursorInside) {
-          isCursorInside = false
-          window.dispatchEvent(new CustomEvent('mainCursorLeave', {
-            detail: { x: cursor.x, y: cursor.y }
-          }))
-        }
-      } catch (e) {
-        console.error("[Webview] Failed to poll cursor position:", e)
-      } finally {
-        isPollInFlight = false
-      }
-    }
-    const cursorInterval = setInterval(pollCursor, 250)
-    cleanups.push(() => clearInterval(cursorInterval))
-
-    return () => cleanups.forEach(fn => fn())
-  }, [mounted])
-
 
   usePythonEvent('eval', async (data) => {
     if (data.label !== 'main') {
@@ -413,6 +370,12 @@ export default function Container({ Apps }: { Apps: Project }) {
           script: data.script,
         });
       })
+    }
+  });
+
+  usePythonEvent('update_console', async (data) => {
+    if (data.target !== 'main') {
+      await pyInvoke("update_console", data);
     }
   });
 
@@ -576,6 +539,10 @@ export default function Container({ Apps }: { Apps: Project }) {
   function AppInfoProps(appname: string, tabId: string, appId: string) {
     return {
       appname,
+      mainWindowRef,
+      mainWebviewRef,
+      allRef,
+      emptyRef,
       useWorkspace: () => {
         const { workspace, setWorkspace } = useSnapshot(Workspace);
         return { workspace: workspace ?? "global", setWorkspace };
@@ -970,6 +937,15 @@ export default function Container({ Apps }: { Apps: Project }) {
         event.preventDefault();
         // TODO
       }
+      // Block F12
+      if (event.key === 'F12') {
+        event.preventDefault();
+      }
+      // Block Ctrl+Shift+I (Windows/Linux) or Cmd+Option+I (Mac)
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && (event.key === 'I' || event.key === 'i')) {
+        console.warn("Ctrl+Shift+I or Cmd+Option+I pressed")
+        event.preventDefault();
+      }
     }
     function onKeyUp(event: KeyboardEvent) {
       KeyState.setKey(event.key.toLowerCase(), false);
@@ -993,13 +969,13 @@ export default function Container({ Apps }: { Apps: Project }) {
       const data = (e as CustomEvent).detail;
       const editor = editorRef.current;
       if (data.codeId === codeIdRef.current && data.code && editor) {
-        codeDataRef.current = data.code;
         const now = Date.now();
         const elapsed = now - lastCodeUpdateRef.current;
 
         const applyUpdate = () => {
           lastCodeUpdateRef.current = Date.now();
-          setCode(codeDataRef.current!);
+          setCode(data.code);
+          setPrevCode(data.code);
           const lineCount = editor.getModel()?.getLineCount() ?? 0;
           editor.revealLine(lineCount, 1); // 1 = ScrollType.Immediate
         };
@@ -1019,14 +995,53 @@ export default function Container({ Apps }: { Apps: Project }) {
       }
     }
 
+    const updateCdpPorts = async () => {
+      await AsyncLock.acquire();
+      allRef.current = await getAllWebviews();
+      AsyncLock.release();
+      if (mainWebviewRef.current && mainWindowRef.current) {
+        const _mv = mainWebviewRef.current;
+        const _mw = mainWindowRef.current;
+        if (reparentTimerRef.current) {
+          clearTimeout(reparentTimerRef.current);
+        }
+        reparentTimerRef.current = setTimeout(async () => {
+          await AsyncLock.acquire();
+          await _mv.reparent(_mw);
+          reparentTimerRef.current = null;
+          AsyncLock.release();
+        }, 100);
+      }
+
+      console.warn("update_cdp_ports")
+      const cdp_ports = await invoke('get_cdp_ports');
+      console.warn("cdp_ports", cdp_ports);
+      if (pyInvokeRef.current) {
+        await pyInvokeRef.current("update_cdp_ports", {
+          cdp_ports
+        })
+      }
+    }
+
+    const onFocusApp = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (target && !target.closest('.browser-tab') && !target.closest('.resize-handle') ) {
+        setFocus(false);
+      }
+    }
+
     // true = capture phase → fires before ANY child handler
+    window.addEventListener('mousemove', onFocusApp);
     window.addEventListener('contextmenu', blockContextMenu);
+    window.addEventListener('update_cdp_ports', updateCdpPorts);
     document.addEventListener('code-block-update', onCodeUpdate);
     document.addEventListener("keydown", onKeyDown);
     document.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
     return () => {
+      window.removeEventListener('mousemove', onFocusApp);
       window.removeEventListener('contextmenu', blockContextMenu);
+      window.removeEventListener('update_cdp_ports', updateCdpPorts);
       document.removeEventListener('code-block-update', onCodeUpdate);
       document.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("keyup", onKeyUp);
@@ -1093,20 +1108,81 @@ export default function Container({ Apps }: { Apps: Project }) {
         style={{ '--toast-z-index': '2147483647' } as React.CSSProperties}
       />
       <DialogUI open={showCodeDialog} onOpenChange={setShowCodeDialog}>
-        <DialogContent className="max-w-[90vw] w-[90vw] h-[90vh] flex flex-col pb-4">
+        <DialogContent
+          onKeyDown={(e) => {
+            if (e.key.toLowerCase() === 's' && e.ctrlKey && editorRef.current && codeId.startsWith('editable')) {
+              const c = editorRef.current.getValue();
+              setPrevCode(c);
+              setIsSaved(true);
+              setTimeout(() => setIsSaved(false), 2000);
+              window.dispatchEvent(new CustomEvent('code-block-saved', {
+                detail: {
+                  codeId: codeId,
+                  code: c,
+                }
+              }))
+            }
+          }}
+          onEscapeKeyDown={(event) => {
+            event.preventDefault();
+          }} className="max-w-[90vw] w-[90vw] h-[90vh] flex flex-col pb-4">
           <DialogHeader>
             <DialogTitle></DialogTitle>
           </DialogHeader>
-          <div className=" p-4 w-full h-full overflow-auto rounded-lg">
-            <Editor onMount={handleMount} className="w-full h-full font-mono" theme="vs-dark" language={codeLanguage} options={{
-              maxTokenizationLineLength: 500,
-              scrollBeyondLastLine: false,
-              occurrencesHighlight: 'off',
-              renderValidationDecorations: 'off',
-              codeLens: false,
-              inlayHints: { enabled: 'off' },
-              hover: { enabled: false },
-            }} value={code} />
+          <div className=" p-4 w-full h-full overflow-auto rounded-lg flex flex-col">
+            {codeId.startsWith('editable') && <div className='absolute left-6 top-6 z-10'>
+              <div onClick={(e) => {
+                if (!editorRef.current) return;
+                const c = editorRef.current.getValue();
+                setPrevCode(c);
+                setIsSaved(true);
+                setTimeout(() => setIsSaved(false), 2000);
+                window.dispatchEvent(new CustomEvent('code-block-saved', {
+                  detail: {
+                    codeId: codeId,
+                    code: c,
+                  }
+                }))
+              }} className='flex items-center gap-2 cursor-pointer pointer-events-auto select-none overflow-hidden'>
+                <AnimatePresence mode='wait' initial={false}>
+                  {isSaved ? (
+                    <motion.div
+                      key='saved'
+                      className='flex items-center gap-2'
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -6 }}
+                      transition={{ duration: 0.18 }}
+                    >
+                      <Check className='w-3.5 h-3.5 text-green-400' strokeWidth={2.5} />
+                      <span className='text-green-400 text-sm font-medium'>Saved</span>
+                    </motion.div>
+                  ) : (
+                    <motion.div
+                      key='unsaved'
+                      className={clsx(
+                        'flex items-center gap-2 transition-all'
+                      )}
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: prevCode == code ? 0 : 1, y: 0 }}
+                      exit={{ opacity: 0, y: -6 }}
+                      transition={{ duration: 0.18 }}
+                    >
+                      <div className='w-3 h-3 rounded-full bg-accent' />
+                      <span className='text-gray-500 dark:text-gray-400 text-sm'>Unsaved</span>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
+              </div>
+            </div>}
+            <Editor
+              onChange={(v) => {
+                if (codeId.startsWith('editable')) setCode(v || "");
+              }} onMount={handleMount} className="w-full flex-1 font-mono border pt-2" theme="vs-dark" language={codeLanguage} options={{
+                scrollBeyondLastLine: false,
+                mouseWheelZoom: true,
+                wordWrap: 'on',
+              }} value={prevCode} />
           </div>
         </DialogContent>
       </DialogUI>
@@ -1177,7 +1253,7 @@ export default function Container({ Apps }: { Apps: Project }) {
                   })
                 ]
               });
-              if (taskInterval !== 'disabled') {
+              if (taskInterval !== 'disabled' && taskInterval !== 'once') {
                 const branch = sha256("0").slice(0, 32);
                 const tbRaw = "msg_" + branch + "_0";
                 // Note: do NOT pre-hash tbRaw — the backend hashes it as
@@ -1548,14 +1624,7 @@ export default function Container({ Apps }: { Apps: Project }) {
                     }
                   },
                 ]}>
-                <div onPointerDown={async () => {
-                  if (isTauri) {
-                    await AsyncLock.run(async () => {
-                      const mw = await getCurrentWebview()
-                      await mw.reparent(await getCurrentWindow())
-                    })
-                  }
-                }} className='hover:bg-[hsl(var(--hover))] border border-transparent hover:border-[hsl(var(--chat-border))] p-1 rounded-lg z-10'>
+                <div className='hover:bg-[hsl(var(--hover))] border border-transparent hover:border-[hsl(var(--chat-border))] p-1 rounded-lg z-10'>
                   <Settings className='w-5 h-5' />
                 </div>
               </Dropdown>
@@ -1698,9 +1767,9 @@ export default function Container({ Apps }: { Apps: Project }) {
             </div>
           </div>
         </div>
-
       </>
       }
+      <TaskBarAgent />
     </div>
   )
 }

@@ -730,7 +730,7 @@ export const deleteTabWithGroupSelection = async (uuid: string): Promise<string 
             if (!t.startsWith('agent')) {
                 await w.close()
             } else {
-                await w.hide()
+                // await w.hide()
             }
         }
     })
@@ -819,7 +819,7 @@ export const clearAllTabs = async (pyInvoke?: any, workspace?: string | null) =>
                             if (!t.startsWith('agent')) {
                                 await w.close();
                             } else {
-                                await w.hide();
+                                // await w.hide();
                             }
                         }
                     })

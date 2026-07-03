@@ -34,6 +34,67 @@ def clean_execute_body(code: str) -> str:
     code = re.sub(r'^[a-z]+try:', 'try:', code)
     return code
 
+
+def _ensure_returns(code: str) -> str:
+    """Rewrite trailing bare expressions as ``return`` statements.
+
+    Handles:
+    - Top-level bare expression (module body)
+    - Last bare expression inside ``try`` blocks
+    - Last bare expression inside every ``except`` handler
+    - Last bare expression inside ``else`` / ``finally`` blocks
+
+    Uses ``ast.unparse`` (Python 3.9+) to regenerate source from the
+    transformed tree, so formatting is normalised but semantics are
+    preserved exactly.
+    """
+
+    class _ReturnRewriter(ast.NodeTransformer):
+        """Rewrite the last bare Expr in a statement list to Return."""
+
+        @staticmethod
+        def _rewrite_stmts(stmts: list) -> list:
+            if stmts and isinstance(stmts[-1], ast.Expr):
+                ret = ast.Return(value=stmts[-1].value)
+                ast.copy_location(ret, stmts[-1])
+                ast.fix_missing_locations(ret)
+                stmts[-1] = ret
+            return stmts
+
+        def visit_Module(self, node: ast.Module) -> ast.Module:
+            self.generic_visit(node)  # recurse into children first
+            node.body = self._rewrite_stmts(list(node.body))
+            return node
+
+        def visit_Try(self, node: ast.Try) -> ast.Try:
+            self.generic_visit(node)  # recurse first
+            node.body    = self._rewrite_stmts(list(node.body))
+            node.orelse  = self._rewrite_stmts(list(node.orelse))
+            # Note: do NOT rewrite finally — a return inside finally is almost
+            # always a bug and suppresses exceptions.
+            for handler in node.handlers:
+                handler.body = self._rewrite_stmts(list(handler.body))
+            return node
+
+        # Python 3.11+ adds TryStar (except*) — handle it the same way.
+        if hasattr(ast, "TryStar"):
+            def visit_TryStar(self, node):  # type: ignore[override]
+                self.generic_visit(node)
+                node.body = self._rewrite_stmts(list(node.body))
+                node.orelse = self._rewrite_stmts(list(node.orelse))
+                for handler in node.handlers:
+                    handler.body = self._rewrite_stmts(list(handler.body))
+                return node
+
+    try:
+        tree = ast.parse(code)
+        new_tree = _ReturnRewriter().visit(tree)
+        ast.fix_missing_locations(new_tree)
+        return ast.unparse(new_tree)
+    except SyntaxError:
+        # Leave as-is; the compile step will surface the error properly.
+        return code
+
 def extract_execute_body(source: str) -> str:
     """
     Extract the try/except block from the body of an `execute` function.
@@ -99,6 +160,28 @@ def extract_execute_body(source: str) -> str:
     # --- 4. Extract source text ------------------------------------------
     segment = ast.get_source_segment(working, try_node)
 
+    if segment:
+        # ast.get_source_segment only trims the FIRST line of the segment
+        # down to try_node.col_offset — every subsequent line (the try
+        # body, and critically the `except` line itself) retains its
+        # original ABSOLUTE indentation from the source file. That means
+        # line 1 ("try:") can end up at column 0 while "except ..." is
+        # still sitting at whatever column it had in the original file
+        # (e.g. 4), even though the try body is at a much deeper column
+        # (e.g. 8). textwrap.dedent() then looks at the artificially
+        # shallow first line and computes 0 as the "common" leading
+        # whitespace, so it strips NOTHING — leaving try/except
+        # misaligned relative to each other and producing an
+        # IndentationError at compile time (e.g. some models emit an
+        # extra level of indentation inside the try body, which used to
+        # trigger exactly this).
+        #
+        # Fix: re-prepend the node's real column offset to the first
+        # line before dedenting, so every line in the segment reflects
+        # the *same* coordinate system and textwrap.dedent can compute
+        # the correct common prefix.
+        segment = (" " * try_node.col_offset) + segment
+
     if not segment:
         # Fallback: slice by line numbers (end_lineno available since 3.8)
         lines = working.splitlines(keepends=True)
@@ -108,7 +191,26 @@ def extract_execute_body(source: str) -> str:
     if not segment:
         return source
 
-    return textwrap.dedent(segment)
+    dedented = textwrap.dedent(segment)
+
+    # Normalize indentation to standard 4-space by round-tripping through the
+    # AST.  This fixes cases where the LLM uses non-standard indent widths
+    # (e.g. 8-space try body) that would produce mismatched levels after the
+    # outer `textwrap.indent` step.  If the segment has real syntax errors we
+    # leave it as-is so the compile step can surface them properly.
+    try:
+        dedented = ast.unparse(ast.parse(dedented))
+    except SyntaxError as e:
+        # Previously swallowed silently, which made it impossible to tell
+        # whether normalization actually ran. Log so failures here are
+        # visible instead of only surfacing three retries later as a
+        # confusing compile error downstream.
+        logger.warning(
+            f"[extract_execute_body] AST normalization round-trip failed, "
+            f"falling back to raw dedent: {e}"
+        )
+
+    return dedented
 
 
 def heal_indentation(wrapped: str, indent: str = "    ") -> str:
@@ -118,6 +220,15 @@ def heal_indentation(wrapped: str, indent: str = "    ") -> str:
     Finds the function header line, strips whatever indentation the body
     currently has, and re-applies `indent` uniformly. Falls back to a
     per-line enforcement pass if the header line is not found.
+
+    NOTE: a uniform shift can only fix cases where every line in the body
+    is offset by the same amount. It cannot repair *relative*
+    misalignment between sibling blocks (e.g. `try`/`except` sitting at
+    different depths than each other). For that class of error we first
+    try an AST parse/unparse round-trip on the body, which normalizes
+    indentation structurally instead of just shifting it; only if that
+    also fails do we fall back to the purely textual uniform-shift
+    heuristic below.
     """
     lines = wrapped.splitlines(keepends=True)
     header_idx: Optional[int] = None
@@ -139,6 +250,24 @@ def heal_indentation(wrapped: str, indent: str = "    ") -> str:
 
     header = "".join(lines[: header_idx + 1])
     body_raw = "".join(lines[header_idx + 1 :])
+
+    # First attempt: structural normalization via AST round-trip. This
+    # correctly fixes relative misalignment (not just a uniform offset),
+    # e.g. an `except` clause indented differently than its `try`.
+    try:
+        dedented_body = textwrap.dedent(body_raw).strip("\n")
+        normalized = ast.unparse(ast.parse(dedented_body))
+        body_fixed = textwrap.indent(normalized, indent) + "\n"
+        return header + body_fixed
+    except SyntaxError as e:
+        logger.warning(
+            f"[heal_indentation] AST round-trip failed, falling back to "
+            f"uniform-shift heuristic: {e}"
+        )
+
+    # Fallback: purely textual uniform shift (previous behavior). This
+    # will not fix relative misalignment, but it's better than nothing
+    # for cases where the AST round-trip itself can't parse the body.
     body_fixed = textwrap.indent(textwrap.dedent(body_raw).strip("\n"), indent) + "\n"
     return header + body_fixed
 
@@ -272,6 +401,7 @@ class CodeSandbox:
                                         result = {"result": result}
                                 else:
                                     return {}
+                                logger.info(f"[llm_tool] Fetching result '{fn_name}' {result}")
                                 results[call_id] = result
                             return results[next(iter(results))] if len(results) == 1 else results
                         return {}
@@ -353,7 +483,14 @@ class CodeSandbox:
             heal_tool = ToolRegistry(submit_healed_code, heal_tool_schema)
             heal_registry = {"submit_healed_code": heal_tool}
             current_code = extract_execute_body(clean_execute_body(current_code))
-            current_code = textwrap.indent(textwrap.dedent(current_code).strip("\n"), _indent)
+            current_code = textwrap.dedent(current_code).strip("\n")
+
+            # Rewrite trailing bare expressions → return, including inside
+            # try/except blocks (e.g. `ActionResult(...)` without `return`).
+            current_code = _ensure_returns(current_code)
+            logger.debug("[code_sandbox] _ensure_returns applied")
+
+            current_code = textwrap.indent(current_code.strip("\n"), _indent)
             current_code = f"async def __user_code__():\n{current_code}\n"
 
             for retry in range(max_retries + 1):

@@ -43,7 +43,7 @@ import Tasks from "./Tasks"
 import { useGlobal } from "./useGlobal"
 import Agents from "./Agents"
 import ControllableBrowsers from "./ControllableBrowsers"
-import { AsyncLock, generateIdFromString } from "./../index"  
+import { AsyncLock, generateIdFromString } from "./../index"
 import { getCurrentWebview } from "@tauri-apps/api/webview"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 
@@ -522,9 +522,7 @@ export default function Sidebar({
           let needAdd = true;
           if (Array.isArray(t)) {
             t.forEach(tab => {
-              if (!tab.title) {
-                needAdd = false;
-              }
+              needAdd = false;
               addTab({
                 uuid: tab.id,
                 title: tab.title,
@@ -720,12 +718,6 @@ export default function Sidebar({
   };
   const handleTabContextMenu = (id: string, e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault();
-    (async () => {
-      await AsyncLock.run(async () => {
-        const mw = await getCurrentWebview()
-        await mw.reparent(await getCurrentWindow())
-      })
-    })()
     if (editingTitleTabId) return;
     if (hideTimeoutRef.current) {
       clearTimeout(hideTimeoutRef.current);
@@ -814,7 +806,7 @@ export default function Sidebar({
               className="h-4 w-4 text-zinc-600/50 dark:text-zinc-300/50 opacity-50 group-hover/collapsed:opacity-100"
               viewBox="0 0 24 24"
               fill="none"
-              stroke="hsl(var(--accent))" 
+              stroke="hsl(var(--accent))"
               strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"

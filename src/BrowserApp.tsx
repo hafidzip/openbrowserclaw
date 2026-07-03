@@ -1,11 +1,7 @@
-import { ArrowLeft, ArrowRight, RefreshCw, Home, Search, Globe } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { AsyncLock, ref, useGlobal, usePython, usePythonEvent, useSnapshot, type AppInfo } from "openchad-react"
-import { getCurrentWindow, cursorPosition } from '@tauri-apps/api/window'
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
+import { Search, Globe } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { AsyncLock, ref, useGlobal, useSnapshot, type AppInfo } from "openchad-react"
 import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi'
-import { Webview, getCurrentWebview, getAllWebviews } from '@tauri-apps/api/webview';
-import { Button } from 'openchad-react/ui'
 import clsx from 'clsx'
 import { BrowserBar } from 'openchad-react/Bar';
 import { deleteActiveTabWithGroupSelection, MenuBar, TabInfo, TabState } from 'openchad-react/utils/state';
@@ -86,18 +82,7 @@ export function CommandPalette({
   }, [url.url, pyInvoke, workspace]);
 
   const handleSearchOrNavigate = (val: string) => {
-    let target = val;
-    // Check if it's a valid URL format
-    const urlPattern = /^(https?:\/\/)?([\w\-]+\.)+[\w\-]+(\/[\w\-./?%&=]*)?$/i;
-    if (urlPattern.test(target)) {
-      if (!/^https?:\/\//i.test(target)) {
-        target = 'https://' + target;
-      }
-    } else {
-      // Treat as search query
-      target = `https://google.com/search?q=${encodeURIComponent(target)}`;
-    }
-    onNavigate(target);
+    onNavigate(val);
   };
 
   return (
@@ -218,8 +203,9 @@ const cleanUrl = (u?: string | null) => {
   return u.replace(/\/$/, "");
 };
 
-export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, useActiveTabId, useTheme, tabId, appId, useTab }: AppInfo) {
-  const { childrenProps, layout: tabLayout } = useTab() ?? {};
+export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, emptyRef, useWorkspace, setTitle, setIcon, pyInvoke, useActiveTabId, useTheme, tabId, appId, useTab }: AppInfo) {
+  const { childrenProps, layout: tabLayout, children } = useTab() ?? {};
+  const childrenCountRef = useRef((children || []).length)
   const initialUrl = childrenProps?.[appId]?.data?.url || "";
   const [browsers, setBrowsers, { ready: browsersReady }] = useDatabaseImpl<Record<string, ControllableBrowser>>('ControllableBrowser', { initialValue: {} });
 
@@ -234,7 +220,7 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
   const { workspace } = useWorkspace()
   const { appId: activeAppId } = useSnapshot(MenuBar)
 
-  const [focus, setFocus] = useState(false)
+  const [focus, setFocus] = useGlobal('focusOnApp', { initialValue: false })
   const [refresh, setRefresh] = useState(0)
 
   const [showPalette, setShowPalette] = useState(false)
@@ -243,14 +229,17 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
   const pendingNav = useRef<'back' | 'forward' | null>(null)
 
   const activeTabId = useActiveTabId();
+  const activeTabIdRef = useRef(activeTabId)
+  activeTabIdRef.current = activeTabId
 
   const label = `webview-${appId}`
   const containerRef = useRef<HTMLDivElement>(null)
 
   const getByLabel = async (label: string) => {
     try {
-      const all = await getAllWebviews()
-      return all.find((wv) => wv.label === label)
+      if (allRef.current) {
+        return allRef.current.find((wv) => wv.label === label)
+      }
     } catch {
       return null
 
@@ -277,9 +266,11 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
   }
 
   const handleNavigate = async (newUrl: string) => {
-    const url = normalizeUrl(newUrl)
-    if (!url) return
-    await pyInvoke('eval', { label, script: `window.location = ${JSON.stringify(url)}` })
+    console.log('new url', newUrl);
+    const targetUrl = normalizeUrl(newUrl)
+    if (!targetUrl) return
+    console.log(targetUrl);
+    await pyInvoke('eval', { label, script: `window.location.href = '${targetUrl}'` })
   }
 
   const handleBack = async () => {
@@ -338,7 +329,21 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
   const browserReadyRef = useRef(browsersReady)
   browserReadyRef.current = browsersReady
 
+  const readyRef = useRef(ready)
+  readyRef.current = ready
+
   const [lastUrl, setLastUrl] = useState("")
+
+  useEffect(() => {
+    (async () => {
+      await AsyncLock.run(async () => {
+        if (allRef.current) {
+          const empty = allRef.current.find((wv) => wv.label === 'webview-empty')
+          if (empty) emptyRef.current = empty
+        }
+      })
+    })()
+  }, [])
 
   useEffect(() => {
     if (!ready) return
@@ -382,6 +387,10 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
   }, [activeTabId])
 
   useEffect(() => {
+    if (initialized && showPalette && activeAppId !== appId) setShowPalette(false)
+  }, [activeAppId])
+
+  useEffect(() => {
     if (activeTabId == tabId && activeAppId == appId) {
       MenuBar.appId = appId
       MenuBar.tabId = tabId
@@ -393,71 +402,81 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
     if (!mounted) setMount(activeTabId == tabId)
   }, [activeTabId])
 
+
+  const [isTabActive, setIsTabActive] = useState(false)
+
   useEffect(() => {
-    (async () => {
-      await AsyncLock.run(async () => {
-        const existing = await getByLabel(label)
-        if (existing) {
-          if (activeTabId == tabId) {
-            await existing.show()
-          } else {
-            await existing.hide()
+    if (!isTabActive) {
+      (async () => {
+        if (emptyRef.current) {
+          if (mainWindowRef.current) {
+            await emptyRef.current.reparent(mainWindowRef.current)
+            if (mainWebviewRef.current) await mainWebviewRef.current.reparent(mainWindowRef.current)
           }
         }
-      })
-    })()
+      })()
+    }
+  }, [isTabActive])
+
+
+  useEffect(() => {
+    if (activeTabIdRef.current == tabId) {
+      setIsTabActive(true);
+      (async () => {
+        await AsyncLock.run(async () => {
+          const existing = await getByLabel(label)
+          if (mainWindowRef.current) {
+            if (existing && initialized && mainWindowRef.current) {
+              await existing.reparent(mainWindowRef.current)
+              await existing.show();
+            }
+            if (mainWebviewRef.current) await mainWebviewRef.current.reparent(mainWindowRef.current)
+            setFocus(false);
+          }
+        })
+      })()
+    } else {
+      setIsTabActive(false)
+    }
   }, [activeTabId]);
 
   useEffect(() => {
-    (async () => {
+    // 1. Create a timer to delay execution by 100ms
+    const timer = setTimeout(async () => {
+      if (activeTabIdRef.current !== tabId && MenuBar.appId !== appId) return
       await AsyncLock.run(async () => {
+        if (!mainWindowRef.current || !mainWebviewRef.current) return
         if (focus) {
-          const existing = await getByLabel(label)
-          if (existing) {
-            await existing.reparent(await getCurrentWindow())
+          const existing = await getByLabel(label);
+          await mainWebviewRef.current.reparent(mainWindowRef.current);
+          if (existing && initialized) {
+            await existing.reparent(mainWindowRef.current);
           }
         } else {
-          const mw = await getCurrentWebview()
-          await mw.reparent(await getCurrentWindow())
+          await mainWebviewRef.current.reparent(mainWindowRef.current);
         }
-      })
-    })()
-  }, [focus, refresh])
+      });
+    }, 50 * (tabLayout == "single" ? 1 : 3)); // 100ms period
 
-  const [isCreateTask, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: true });
-  const [showSearchDialog] = useGlobal('showSearchDialog', { initialValue: false });
-  const [showMcpDialog] = useGlobal('showMcpDialog', { initialValue: false });
-  const [showCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false });
-  const [showLocalModelDialog] = useGlobal('showLocalModelDialog', { initialValue: false });
-  const [showCustomEndpointDialog] = useGlobal('showCustomEndpointDialog', { initialValue: false });
-  const [showSettingsDialog] = useGlobal('showSettingsDialog', { initialValue: false });
-  const [showTaskDialog] = useGlobal('showTaskDialog', { initialValue: false });
-  const [setupModel] = useGlobal('setupModel', { initialValue: false });
-  const [settingsDropdown] = useGlobal('settingsDropdown', { initialValue: false });
-  const [mobileSettingsDropdown] = useGlobal('mobileSettingsDropdown', { initialValue: false });
-  const [showControllableBrowsersDialog] = useGlobal('showControllableBrowsersDialog', { initialValue: false });
-  const [showSkillsDialog] = useGlobal('showSkillsDialog', { initialValue: false });
-  const [showAgentsDialog] = useGlobal('showAgentsDialog', { initialValue: false });
-  const [isMobileSearching, setIsMobileSearching] = useGlobal('isMobileSearching', { initialValue: false });
+    // 2. Cleanup function: Cancels the timer if dependencies change before 100ms pass
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [focus, refresh]);
 
-  useEffect(() => {
-    if (focus && (isCreateTask || isMobileSearching || showAgentsDialog || showSkillsDialog || showControllableBrowsersDialog || mobileSettingsDropdown || settingsDropdown || showSearchDialog || showMcpDialog || showCredentialsDialog || showLocalModelDialog || showCustomEndpointDialog || showSettingsDialog || showTaskDialog || setupModel)) {
-      setFocus(false)
-      setRefresh(prev => (prev + 1) % 2)
-    }
-  }, [focus, isCreateTask, isMobileSearching, showAgentsDialog, showSkillsDialog, showControllableBrowsersDialog, mobileSettingsDropdown, settingsDropdown, showSearchDialog, showMcpDialog, showCredentialsDialog, showLocalModelDialog, showCustomEndpointDialog, showSettingsDialog, showTaskDialog, setupModel])
+  const [, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: true });
+
 
   const syncSize = async () => {
     const container = containerRef.current
-    const webviews = await getAllWebviews()
-    const wvw = webviews.find(webview => webview.label === label)
+    if (!allRef.current) return;
+    const wvw = allRef.current.find(webview => webview.label === label)
     if (!container || !wvw) return
 
     const rect = container.getBoundingClientRect()
 
     try {
-      if (rect.width === 0 && rect.height === 0) return;
-      // Batch position + size + show in parallel — all are fire-and-resolve
+      if (rect.width < 500 && rect.height < 500) return;
       await Promise.all([
         wvw.setPosition(new LogicalPosition(rect.x, rect.y)),
         wvw.setSize(new LogicalSize(Math.round(rect.width), Math.round(rect.height))),
@@ -499,7 +518,20 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
           const rect = container.getBoundingClientRect()
           if (rect.width === 0 || rect.height === 0) return
 
-          // await AsyncLock.acquire();
+          // resolve when ready are true
+          if (!readyRef.current) {
+            await new Promise<void>((resolve) => {
+              const check = () => {
+                if (readyRef.current) {
+                  resolve();
+                } else {
+                  setTimeout(check, 50);
+                }
+              };
+              check();
+            });
+          }
+
           const wvw = await createWebview(label, {
             url: /^https?:\/\//.test(url.url) ? url.url : "about:blank",
             width: Math.round(rect.width),
@@ -507,7 +539,7 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
             x: screenX,
             y: screenY
           })
-          // AsyncLock.release();
+          
           setFocus(false)
           setRefresh(prev => (prev + 1) % 2)
 
@@ -545,14 +577,6 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
 
     const cleanups: (() => void)[] = []
 
-    const onFocus = () => { setFocus(false); setRefresh(prev => (prev + 1) % 2) }
-    const onAppFocus = (event: any) => {
-      if (event.detail?.target === label) {
-        MenuBar.appId = appId
-        MenuBar.tabId = tabId
-        MenuBar.current = ref(<>{elementRef.current}</>) as React.JSX.Element
-      }
-    }
     const onHidePopup = () => {
       setFocus(false);
     }
@@ -664,6 +688,7 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
 
     const onTabDelete = async () => {
       await deleteActiveTabWithGroupSelection()
+      setFocus(false);
       setRefresh(prev => (prev + 1) % 2)
     }
 
@@ -678,7 +703,6 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
     const observer = new ResizeObserver(Sync)
     observer.observe(containerRef.current)
     window.addEventListener('update_location', onLocationChange)
-    window.addEventListener('focus', onAppFocus)
     window.addEventListener('update_location_title_icon', onUpdateTitle)
     window.addEventListener('delete_tab', onTabDelete)
     window.addEventListener('switch_tab', onTabSwitch)
@@ -688,13 +712,11 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
     window.addEventListener('mainOnMove', Sync)
     window.addEventListener('mainOnResize', Sync)
     window.addEventListener('mainMove', Sync)
-    window.addEventListener('mainCursorLeave', onFocus)
     window.addEventListener('hide-popup', onHidePopup);
 
     return () => {
       observer.disconnect()
       window.removeEventListener('update_location', onLocationChange)
-      window.removeEventListener('focus', onAppFocus)
       window.removeEventListener('update_location_title_icon', onUpdateTitle)
       window.removeEventListener('delete_tab', onTabDelete)
       window.removeEventListener('switch_tab', onTabSwitch)
@@ -704,7 +726,6 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
       window.removeEventListener('mainOnMove', Sync)
       window.removeEventListener('mainOnResize', Sync)
       window.removeEventListener('mainMove', Sync)
-      window.removeEventListener('mainCursorLeave', onFocus)
       window.removeEventListener('hide-popup', onHidePopup);
       cleanups.forEach(fn => fn())
     }
@@ -747,16 +768,33 @@ export default function BrowserApp({ useWorkspace, setTitle, setIcon, pyInvoke, 
       <div
         ref={containerRef}
         id={label}
-        onPointerDown={async () => {
-          setFocus(true)
-          setRefresh(prev => (prev + 1) % 2)
+        onWheelCapture={() => {
+          if (MenuBar.appId !== appId) {
+            MenuBar.appId = appId
+            MenuBar.tabId = tabId
+            MenuBar.current = ref(<>{elementRef.current}</>) as React.JSX.Element
+          } else {
+            setFocus(true)
+            setRefresh(prev => (prev + 1) % 2)
+          }
         }}
-        onMouseMove={async () => {
+        onPointerDown={() => {
+          if (MenuBar.appId !== appId) {
+            MenuBar.appId = appId
+            MenuBar.tabId = tabId
+            MenuBar.current = ref(<>{elementRef.current}</>) as React.JSX.Element
+          } else {
+            setFocus(true)
+            setRefresh(prev => (prev + 1) % 2)
+          }
+        }}
+        onMouseMove={() => {
+          if (MenuBar.appId !== appId && tabLayout !== "single") return;
           setFocus(true)
           setRefresh(prev => (prev + 1) % 2)
         }}
         className={clsx(
-          "flex-1 w-full relative z-0 bg-transparent",
+          "flex-1 w-full relative z-0 bg-transparent browser-tab",
         )}
       >
         {!isTauri && (

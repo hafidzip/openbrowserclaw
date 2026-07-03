@@ -23,7 +23,7 @@ def sanitize_tauri_event(event: str) -> str:
     event = event.replace('\\', '/')   # \ → / (forward slash is allowed)
     return _TAURI_EVENT_SAFE.sub('_', event)
 # Optional pytauri imports - only available in Tauri mode
-_app_handle = None
+_app_handle: Optional["AppHandle"] = None
 _emitter_available = False
 try:
     from pytauri.ffi import Emitter, AppHandle

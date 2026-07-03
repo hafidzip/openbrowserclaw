@@ -26,3 +26,7 @@ python/config.json
 Extensions
 Backend/openchad/custombackend
 ModelProvider/openchad/CustomModelProvider
+Tools/private
+ModelProvider/private
+Backend/private
+Pipeline/private

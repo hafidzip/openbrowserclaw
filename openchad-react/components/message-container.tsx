@@ -826,7 +826,7 @@ function MessageContainer({
                         id={tabId + "_response_" + childBranchId + "_" + activeResponseBranch + "_" + siblingIndex}
                         activeId={activeId}
                     />
-                    {isStreaming && (
+                    {isStreaming && (activeId === tabId + "_response_" + childBranchId + "_" + activeResponseBranch + "_" + siblingIndex) && (
                         <div className="w-full flex justify-start pl-2 pt-2 pb-2">
                             <div className="w-2.5 h-2.5 rounded-full bg-accent animate-scale" />
                         </div>

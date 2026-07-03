@@ -117,10 +117,25 @@ class PluginWatcher:
         Returns:
             Tuple of (category, publisher, plugin_name) or None if not a plugin file
         """
+        def get_relative_parts(p: Path, b: Path) -> Optional[tuple[str, ...]]:
+            try:
+                p_res = p.resolve()
+                b_res = b.resolve()
+                p_str = str(p_res).lower()
+                b_str = str(b_res).lower()
+                if p_str == b_str:
+                    return ()
+                if p_str.startswith(b_str + os.sep) or p_str.startswith(b_str + "/"):
+                    rel_str = str(p_res)[len(str(b_res)):].lstrip("\\/")
+                    return Path(rel_str).parts
+            except Exception:
+                pass
+            return None
+
         try:
             path = Path(file_path).resolve()
-            # Check if this is a main.py or manifest.json in a plugin directory
-            if path.name not in ["main.py", "manifest.json", "settings.toml"]:
+            # Check if this is a main.py, manifest.json, settings.toml, or fields.ts in a plugin directory
+            if path.name not in ["main.py", "manifest.json", "settings.toml", "fields.ts"]:
                 # Check if it's any Python file in a plugin directory
                 if path.suffix != ".py":
                     return None
@@ -128,16 +143,14 @@ class PluginWatcher:
             if path.name == "settings.toml":
                 # Check if it's inside any known plugin path
                 for base_path in self.plugin_paths.values():
-                    if path.is_relative_to(Path(base_path).resolve()):
+                    if get_relative_parts(path, Path(base_path)) is not None:
                         return ("Settings", "global", "settings.toml")
                 return None
             # Find which plugin category this path belongs to
             for category, base_path in self.plugin_paths.items():
                 try:
-                    base_path_obj = Path(base_path).resolve()
-                    if path.is_relative_to(base_path_obj):
-                        # Extract relative parts
-                        rel_parts = path.relative_to(base_path_obj).parts
+                    rel_parts = get_relative_parts(path, Path(base_path))
+                    if rel_parts is not None:
                         # Standard handling for other plugins: {publisher}/{plugin}/file.py
                         if len(rel_parts) >= 2:
                             publisher = rel_parts[0]
@@ -196,14 +209,14 @@ class PluginWatcher:
             await self.backend_registry.reload_backend(plugin_key)
         elif category == "Tools" and self.tool_manager:
             if await self.tool_manager.reload_tool(plugin_key):
-                # plugin_key is "publisher/plugin" (slash); loaded_tools uses
-                # "publisher_plugin" (underscore)  normalise before lookup.
                 storage_key = re.sub(r"[:/\\]", "_", plugin_key)
-                tool_instance = self.tool_manager.loaded_tools.get(storage_key)
+                tool_instance = self.tool_manager.get_tool_by_storage_key(storage_key)
                 if tool_instance:
                     self._inject_dependencies(tool_instance)
             if self.mcp_instance:
                 self.tool_manager.export_all_tools(self.mcp_instance)
+                if self.event_emitter:
+                    await self.event_emitter.emit("tools_reloaded")
         elif category == "Pipeline" and self.pipeline_manager:
             await self.pipeline_manager.reload_pipeline(plugin_key)
         elif category == "ModelProvider" and self.model_provider_manager:
@@ -238,7 +251,8 @@ class PluginWatcher:
             try:
                 if await self.tool_manager.load_tool(plugin_key):
                     self._loaded_plugins[category].add(plugin_key)
-                    tool_instance = self.tool_manager.loaded_tools.get(plugin_key)
+                    storage_key = re.sub(r"[:/\\]", "_", plugin_key)
+                    tool_instance = self.tool_manager.get_tool_by_storage_key(storage_key)
                     if tool_instance:
                         self._inject_dependencies(tool_instance)
             except Exception as e:

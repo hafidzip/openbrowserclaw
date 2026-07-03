@@ -15,6 +15,7 @@ import { Fragment, useEffect, useState } from "react";
 import { CommandEmpty, CommandGroup, CommandList } from "cmdk";
 import { Plus } from "lucide-react";
 import { ScrollArea } from "./ui";
+import clsx from "clsx";
 interface DropdownProps {
   children: React.ReactNode;  
   placeholder?: String;
@@ -54,7 +55,7 @@ export function Dropdown({ children, content, align = "start", className = "w-56
       if (onOpenChange) onOpenChange(open);
     }}>
       <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
-      <DropdownMenuContent className={className} align={align}>
+      <DropdownMenuContent className={'w-fit'} align={align}>
         {setSearch && <>
           <Command onKeyDown={(e) => {
             e.stopPropagation();
@@ -71,7 +72,10 @@ export function Dropdown({ children, content, align = "start", className = "w-56
           </Command>
           <DropdownMenuSeparator />
         </>}
-        <ScrollArea className="max-h-[400px] overflow-y-auto">
+        <ScrollArea className={clsx(
+          "max-h-[400px] overflow-y-auto",
+          className,
+          )}>
           {content.length === 0 ? (
             <div className="text-[10pt] text-center opacity-[0.5] p-2 select-none">
               {search ? "No results found." : `No ${ placeholder  || 'options'} available.`}
