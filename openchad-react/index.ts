@@ -88,12 +88,33 @@ const useEvent = <T,>(event: string, callback: (data: T) => void) => {
 
 const useMenuBar = () => {
     const snap = useSnapshot(MenuBar)
-    return [snap.current, MenuBar] as const;
+    return snap;
 }
 
 
-
-const AsyncLock = new AsyncMutex();
+// ── HMR-safe AsyncLock singleton ─────────────────────────────────────────────
+// On hot reload, the module re-executes and a new instance would be created,
+// orphaning any pending `await acquire()` calls on the old one (deadlock).
+// We persist the instance via import.meta.hot.data so every reload reuses it,
+// and drain the queue in dispose() so in-flight waiters resolve cleanly.
+if (import.meta.hot) {
+    import.meta.hot.dispose((data: any) => {
+        // Drain all parked waiters so nothing hangs after the module is replaced
+        data.asyncLock?.reset();
+        data.asyncLock = (globalThis as any).__AsyncLock__;
+    });
+}
+function _getOrCreateLock(): AsyncMutex {
+    if (import.meta.hot) {
+        const prev = (import.meta.hot.data as any)?.asyncLock;
+        if (prev instanceof AsyncMutex) return prev;
+    }
+    if (!(globalThis as any).__AsyncLock__) {
+        (globalThis as any).__AsyncLock__ = new AsyncMutex();
+    }
+    return (globalThis as any).__AsyncLock__;
+}
+const AsyncLock = _getOrCreateLock();
 
 function useAvailableModels() {
     const { pyInvoke } = usePython()

@@ -29,6 +29,7 @@ export async function createWebview(
         let w = await Webview.getByLabel(label);
         
         if (!w) {
+            console.warn("Creating webview :", label, "with options :", options)
             await invoke('create_webview', {
                 args: {
                     parentLabel: 'main',

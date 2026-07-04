@@ -81,6 +81,9 @@
       "allow": [
         {
           "url": "https://**"
+        },
+        {
+          "url": "openbrowserclaw://**"
         }
       ]
     },

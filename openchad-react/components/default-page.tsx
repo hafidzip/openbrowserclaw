@@ -166,7 +166,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
 
     useEffect(() => {
         if (activeId == tabId && currentTab && currentTab.children[0] == appId) {
-            MenuBar.current = null;
+            MenuBar.appId = '';
         }
     }, [activeId]);
 

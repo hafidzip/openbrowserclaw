@@ -11,6 +11,7 @@ import type { AppInfo } from "./utils";
 import clsx from 'clsx';
 import { getAllWebviews } from '@tauri-apps/api/webview';
 import { AsyncLock } from './../index';
+import { invoke } from '@tauri-apps/api/core';
 
 export const LucideIcons = Icons
 
@@ -47,7 +48,19 @@ export interface Model {
     downloaded?: boolean;
 }
 
-export const MenuBar = proxy<{ tabId: string, appId: string, current: React.JSX.Element | null }>({ tabId: "", appId: "", current: null })
+export const MenuBar = proxy<{ tabId: string, appId: string }>({ tabId: "", appId: "" })
+
+/** Per-appId nav state so BrowserBar can read canGoBack/canGoForward reactively */
+export const BrowserNavState = proxy<Record<string, { canGoBack: boolean; canGoForward: boolean }>>({})
+
+/** Per-appId handler registry — plain object so refs don't get proxied */
+export const BrowserHandlers: Record<string, {
+  navigate?: (url: string) => void;
+  back?: () => void;
+  forward?: () => void;
+  refresh?: () => void;
+  addressBarClick?: () => void;
+}> = {}
 
 export const Workspace = proxy({
     workspace: null as string | null,
@@ -99,6 +112,7 @@ export interface ITab {
     icon: ({ className }: { className: string }) => React.ReactNode;
     title: string | null;
     layout: string;
+    isMuted: boolean;
     hasChildren: boolean;
     children: string[];
     group: string | null;
@@ -131,6 +145,7 @@ interface CreateTabParams {
     iconOverride?: string | null;
     layout?: string | null;
     childrenProps?: Record<string, ChildProp>;
+    isMuted?: boolean;
     size?: number[],
 }
 
@@ -140,6 +155,7 @@ export function createTab({
     iconOverride = null,
     layout = null,
     childrenProps = {},
+    isMuted = false,
     size = [50, 50, 50, 50, 50],
 }: CreateTabParams = {}): ITab {
     // Create default children if none provided
@@ -175,6 +191,7 @@ export function createTab({
         group,
         iconOverride,
         size,
+        isMuted,
         get IconOverrideComponent() {
             return ({ className }: { className: string }) => {
                 if (typeof this.iconOverride === 'string' && (this.iconOverride.startsWith('/') || this.iconOverride.startsWith('http') || /\.(png|jpg|jpeg|ico|svg|webp)$/i.test(this.iconOverride))) {
@@ -359,7 +376,7 @@ export const DragState = proxy(
         clear: () => {
             DragState.record = {};
         },
-        timeout: null as NodeJS.Timeout | null,
+        timeout: null as ReturnType<typeof setTimeout> | null,
         get id() {
             return DragState.record["id"];
         },
@@ -455,6 +472,7 @@ interface AddTabParams {
     group?: string | null;
     layout?: string;
     childrenProps?: Record<string, ChildProp>;
+    isMuted?: boolean;
     size?: number[];
 }
 
@@ -465,6 +483,7 @@ export const addTab = ({
     group = null,
     layout,
     childrenProps,
+    isMuted = false,
     size
 }: AddTabParams = {}): string => {
     const uuid = predefinedUuid ?? uuidv4();
@@ -529,6 +548,7 @@ export const addTab = ({
         iconOverride,
         layout: resolvedLayout,
         childrenProps: resolvedChildrenProps,
+        isMuted: isMuted,
         size: size ?? defaultSize
     });
     TabInfo.SetActive(uuid);
@@ -730,7 +750,7 @@ export const deleteTabWithGroupSelection = async (uuid: string): Promise<string 
             if (!t.startsWith('agent')) {
                 await w.close()
             } else {
-                // await w.hide()
+                await invoke('set_webview_muted', { label: `webview-${t}`, muted: true })
             }
         }
     })

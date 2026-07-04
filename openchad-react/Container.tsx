@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useRef, useState } from 'react'
+import { Suspense, useEffect, useRef, useState, memo } from 'react'
 import Sidebar from './components/sidebar'
 import Topbar from './components/topbar'
 import clsx from 'clsx'
@@ -9,7 +9,7 @@ import useElementSize from './components/hooks/useElementSize'
 import { Button } from './components/ui/button'
 import uuidv4 from './utils/uuid'
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener'
-import { KeyState, TabInfo, TabState, Viewport, Workspace, Theme, addTab, closeTab, detachTab, type ITab, deleteTab, deleteTabWithGroupSelection, deleteActiveTabWithGroupSelection } from './utils/state'
+import { KeyState, TabInfo, TabState, Viewport, Workspace, Theme, MenuBar, addTab, closeTab, detachTab, type ITab, deleteTab, deleteTabWithGroupSelection, deleteActiveTabWithGroupSelection } from './utils/state'
 import { proxy, useSnapshot } from 'valtio'
 import MultiView, { type LayoutType } from './components/multiview'
 import { Spinner } from './components/ui/spinner'
@@ -102,6 +102,7 @@ const composerVariants: Variants = {
     : { opacity: 0, transition: { duration: 0 } }
 };
 import { AsyncLock, generateIdFromString, type IAgent, useMenuBar } from './index'
+import { BrowserBar } from './Bar'
 import { cursorPosition, getCurrentWindow, PhysicalPosition, PhysicalSize, Window as TauriWindow } from '@tauri-apps/api/window'
 import Bar from './Bar'
 import { getAllWebviews, getCurrentWebview, Webview } from '@tauri-apps/api/webview'
@@ -157,6 +158,8 @@ export default function Container({ Apps }: { Apps: Project }) {
   const [code, setCode] = useGlobal('code', { initialValue: "" });
   const [codeId] = useGlobal('codeId', { initialValue: "" });
   const [isSaved, setIsSaved] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useGlobal('isFullscreen', { initialValue: false });
+  const [isPlayingRegistry, setIsPlayingRegistry] = useGlobal<Record<string, boolean>>('isPlayingRegistry', { initialValue: {}});
   const [focus, setFocus] = useGlobal('focusOnApp', { initialValue: false })
   const focusRef = useRef(focus)
   focusRef.current = focus
@@ -189,12 +192,15 @@ export default function Container({ Apps }: { Apps: Project }) {
   const [intializeTheme, setInitializeTheme] = useState(false);
   const [intializeBrowser, setInitializeBrowser] = useState(false);
   const isFirstSave = useRef(true);
-  const [MenuBar, setMenuBar] = useMenuBar();
+  const { appId: activeBarAppId } = useMenuBar();
 
   const emptyRef = useRef<Webview | null>(null)
   const allRef = useRef<Webview[] | null>(null)
   const mainWindowRef = useRef<TauriWindow | null>(null)
   const mainWebviewRef = useRef<Webview | null>(null)
+  // Tracks which browser UUIDs have already had their webview created + listeners attached.
+  // Using a ref (not state) so updates don't trigger re-renders.
+  const initializedBrowsersRef = useRef<Set<string>>(new Set())
 
   useEffect(() => {
     (async () => {
@@ -227,50 +233,64 @@ export default function Container({ Apps }: { Apps: Project }) {
 
   useEffect(() => {
     if (!ready) return;
+    if (!intializeTheme) return;
 
     (async () => {
       if (!allRef.current) allRef.current = await getAllWebviews();
       if (!mainWindowRef.current) mainWindowRef.current = await getCurrentWindow();
       if (!mainWebviewRef.current) mainWebviewRef.current = await getCurrentWebview();
 
-      // Convert the Record object into an array of [uuid, browserData] pairs
-      const browserEntries = Object.entries(browsers);
-      const target = browserEntries.length;
-      let current = 0;
+      console.warn("Controllable Browser:", browsers)
 
-      // Handle the edge case where the record is completely empty
-      if (target === 0) {
-        setInitializeBrowser(true);
+      const browserEntries = Object.entries(browsers);
+
+      console.warn("browserEntries:", browserEntries)
+
+      // Find only the UUIDs that haven't been initialized yet.
+      // This handles both the initial load and browsers added at runtime.
+      const newEntries = browserEntries.filter(([uuid]) => !initializedBrowsersRef.current.has(uuid));
+
+      if (browserEntries.length === 0 || newEntries.length === 0) {
+        // Nothing new to set up — mark as initialized if not already done.
+        if (!intializeBrowser) setInitializeBrowser(true);
         return;
       }
+      const size = await mainWebviewRef.current?.size();
+      const position = await mainWebviewRef.current?.position();
 
-      browserEntries.forEach(async ([uuid, browser]) => {
+      await Promise.all(newEntries.map(async ([uuid, browser]) => {
         const label = `webview-${uuid}`;
-        const size = await mainWebviewRef.current?.size()
-        const position = await mainWebviewRef.current?.position()
+
+        // Mark as initialized immediately so concurrent effect runs don't duplicate work.
+        initializedBrowsersRef.current.add(uuid);
+
         if (!allRef.current?.find((wv) => wv.label === label)) {
-          console.log(browser);
+          console.warn("Browser : ", browser);
           const w = await createWebview(label, {
-            url: browser.url || 'about:blank',
+            url: 'about:blank',
             width: size?.width,
             height: size?.height,
             x: position?.x,
             y: position?.y,
           });
 
+
+          if (browser.url && /^https?:\/\//.test(browser.url)) setTimeout(async () => {
+            await pyInvoke('eval', { label, script: `window.location.href = '${browser.url}'` })
+          }
+            , 250);
+
           if (w) {
-            current += 1;
-
-            if (current === target) {
-              setInitializeBrowser(true);
-            }
-
             await w.once('tauri://error', (e) => {
               console.error(`Webview "${label}" failed to create:`, e);
-            })
+            });
 
             await w.listen('page_loaded', (event) => {
               window.dispatchEvent(new CustomEvent('page_loaded', { detail: event.payload }));
+              if(snaptabsRef.current && !snaptabsRef.current[uuid]){
+                invoke('set_webview_muted', { label: label, muted: true })
+              }
+              console.warn("page_loaded:", event.payload);
             });
 
             await w.listen('focus', (event) => {
@@ -285,6 +305,10 @@ export default function Container({ Apps }: { Apps: Project }) {
               window.dispatchEvent(new CustomEvent('update_location_title_icon', { detail: event.payload }));
             });
 
+            w.listen('report_audio_state', (event) => {
+              window.dispatchEvent(new CustomEvent('report_audio_state', { detail: event.payload }));
+            })
+
             await w.listen('delete_tab', (event) => {
               window.dispatchEvent(new CustomEvent('delete_tab', { detail: event.payload }));
             });
@@ -295,22 +319,14 @@ export default function Container({ Apps }: { Apps: Project }) {
 
             await w.listen('create_task', async (event) => {
               window.dispatchEvent(new CustomEvent('create_task', { detail: event.payload }));
-            })
-          }
-
-        } else {
-          // Fallback: If the webview already exists, we still need to increment 
-          // the counter so setInitializeBrowser(true) correctly triggers.
-          current += 1;
-          if (current === target) {
-            setInitializeBrowser(true);
+            });
           }
         }
-      });
+      }));
 
-      
+      if (!intializeBrowser) setInitializeBrowser(true);
     })();
-  }, [browsers, ready]);
+  }, [browsers, intializeTheme, ready]);
 
   useEffect(() => {
     if (!mounted) return;
@@ -519,6 +535,8 @@ export default function Container({ Apps }: { Apps: Project }) {
   const [isSearchChatOpen, setIsSearchChatOpen] = useState(false);
   const searchRef = useRef<any>(null);
   const snaptabs = useSnapshot(TabState);
+  const snaptabsRef = useRef(snaptabs)
+  snaptabsRef.current = snaptabs
   const [tabs, setTabs] = useState<Record<string, React.ReactNode>>({});
   const { children, layout, active, SetActive } = useSnapshot(TabInfo);
   const activeRef = useRef(active)
@@ -749,7 +767,13 @@ export default function Container({ Apps }: { Apps: Project }) {
               const props: AppInfo = AppInfoProps(value.appname, parentKey, key);
               const AppComp = appRegistry[value.appname];
               const Component = AppComp || DefaultPage;
-              const AppComponent = Component as React.ComponentType<AppInfo>;
+              const AppComponent = memo(
+                Component as React.ComponentType<AppInfo>,
+                (prev, next) =>
+                  prev.appname === next.appname &&
+                  prev.tabId === next.tabId &&
+                  prev.appId === next.appId
+              );
               nextTabs[key] = (
                 <Suspense fallback={<div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2"><Spinner /></div>}>
                   <AppComponent key={key} {...props} />
@@ -765,8 +789,36 @@ export default function Container({ Apps }: { Apps: Project }) {
   }, [snaptabs]);
 
   useEffect(() => {
-    if (Object.keys(snaptabs).length == 0) setMenuBar.current = null
+    if (Object.keys(snaptabs).length == 0) MenuBar.appId = ''
   }, [snaptabs])
+
+  const prevMutedRef = useRef<Record<string, boolean>>({});
+  useEffect(() => {
+    const prev = prevMutedRef.current;
+    const next: Record<string, boolean> = {};
+    Object.entries(snaptabs).forEach(([tabId, tab]) => {
+      const muted = tab.isMuted ?? false;
+      next[tabId] = muted;
+      if (prev[tabId] !== muted) {
+        invoke('set_webview_muted', { label: `webview-${tabId}`, muted }).catch(() => { });
+      }
+    });
+    prevMutedRef.current = next;
+  }, [snaptabs]);
+
+  useEffect(() => {
+    const checkFullscreen = async () => {
+      try {
+        const full = await getCurrentWindow().isFullscreen();
+        setIsFullscreen(full);
+      } catch (e) {
+        console.error(e);
+      }
+    };
+    checkFullscreen();
+    window.addEventListener('resize', checkFullscreen);
+    return () => window.removeEventListener('resize', checkFullscreen);
+  }, []);
 
   useEffect(() => {
     setMounted(true);
@@ -995,6 +1047,20 @@ export default function Container({ Apps }: { Apps: Project }) {
       }
     }
 
+    const onReportAudioState = (_event: any) => {
+      const data = _event.detail as any
+      if (!data.label) return;
+      console.warn("report audio", data)
+
+      const label = data.label;
+      const key = label.replace("webview-", "");
+      const tabId = Object.keys(TabState).find((id) => TabState[id].children.includes(key));
+
+      if (tabId && TabState[tabId]) {
+        setIsPlayingRegistry(prev => ({ ...prev, [tabId]: data.playing ?? false }))
+      }
+    }
+
     const updateCdpPorts = async () => {
       await AsyncLock.acquire();
       allRef.current = await getAllWebviews();
@@ -1025,12 +1091,13 @@ export default function Container({ Apps }: { Apps: Project }) {
 
     const onFocusApp = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
-      if (target && !target.closest('.browser-tab') && !target.closest('.resize-handle') ) {
+      if (target && !target.closest('.browser-tab') && !target.closest('.resize-handle')) {
         setFocus(false);
       }
     }
 
     // true = capture phase → fires before ANY child handler
+    window.addEventListener('report_audio_state', onReportAudioState)
     window.addEventListener('mousemove', onFocusApp);
     window.addEventListener('contextmenu', blockContextMenu);
     window.addEventListener('update_cdp_ports', updateCdpPorts);
@@ -1039,6 +1106,7 @@ export default function Container({ Apps }: { Apps: Project }) {
     document.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
     return () => {
+      window.removeEventListener('report_audio_state', onReportAudioState)
       window.removeEventListener('mousemove', onFocusApp);
       window.removeEventListener('contextmenu', blockContextMenu);
       window.removeEventListener('update_cdp_ports', updateCdpPorts);
@@ -1380,7 +1448,10 @@ export default function Container({ Apps }: { Apps: Project }) {
         <div data-tauri-drag-region className='absolute w-full h-8 top-0 left-0'>
 
         </div>
-        <aside className="items-start x hidden md:flex bg-[hsl(var(--bg))] relative z-10">
+        <aside className={clsx(
+          "items-start bg-[hsl(var(--bg))] relative z-10",
+          isFullscreen ? 'hidden' : 'hidden md:flex'
+        )}>
           {/* <VerticalTab menus={menus} /> */}
           <Sidebar
             projectName={Apps.projectName}
@@ -1389,6 +1460,7 @@ export default function Container({ Apps }: { Apps: Project }) {
             layout={snaptheme.layout}
             theme={snaptheme.theme}
             settings={settings}
+            isPlayingRegistry={isPlayingRegistry}
             {...(Apps.repository && { repository: Apps.repository })}
           />
         </aside>
@@ -1401,18 +1473,19 @@ export default function Container({ Apps }: { Apps: Project }) {
           {/*  */}
           <div className={clsx(
             "w-full overflow-hidden flex flex-col",
-            "h-[calc(100%)] md:h-full"
+            "h-[calc(100%)] md:h-full",
           )}>
             <Bar theme={snaptheme.theme} isRightToLeft={currentLayout === "rightToLeft"}>
-              {MenuBar}
+              {activeBarAppId ? <BrowserBar appId={activeBarAppId} /> : null}
             </Bar>
             <div
               id="app"
               className={
                 clsx(
                   "flex flex-1",
-                  "relative w-full border-[0px] border-solid border-[hsl(var(--chat-border))] border-t-[1px]",
-                  currentLayout === "rightToLeft" ? 'border-r-[1px]' : 'border-l-[1px]',
+                  "relative w-full border-[0px] border-solid border-[hsl(var(--chat-border))]",
+                  !isFullscreen && "border-t-[1px]",
+                  !isFullscreen && (currentLayout === "rightToLeft" ? 'border-r-[1px]' : 'border-l-[1px]'),
                 )
               }>
 

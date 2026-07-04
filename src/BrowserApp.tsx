@@ -1,15 +1,14 @@
 import { Search, Globe } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { AsyncLock, ref, useGlobal, useSnapshot, type AppInfo } from "openchad-react"
+import { AsyncLock, useGlobal, useSnapshot, type AppInfo } from "openchad-react"
 import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi'
 import clsx from 'clsx'
-import { BrowserBar } from 'openchad-react/Bar';
-import { deleteActiveTabWithGroupSelection, MenuBar, TabInfo, TabState } from 'openchad-react/utils/state';
+import { deleteActiveTabWithGroupSelection, MenuBar, BrowserHandlers, BrowserNavState, TabState } from 'openchad-react/utils/state';
 
-import { emitTo } from '@tauri-apps/api/event';
 import { createWebview, uuidv4 } from 'openchad-react/utils';
 import { useDatabaseImpl } from 'openchad-react/components/useDatabase';
 import type { ControllableBrowser } from 'openchad-react/components/ControllableBrowsers';
+import { invoke } from '@tauri-apps/api/core'
 
 const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
 
@@ -33,7 +32,8 @@ export function CommandPalette({
     const urlRegex = /^([a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}/;
     return urlRegex.test(string);
   };
-  const [url, setUrl] = useDatabaseImpl(`${appId}-url`, { initialValue: { url: "about:blank" } })
+  const [url] = useDatabaseImpl(`${appId}-url`, { initialValue: { url: "about:blank" } })
+  const [inputValue, setInputValue] = useState(url.url === "about:blank" ? "" : url.url)
   const inputRef = useRef<HTMLInputElement>(null)
   const [suggestions, setSuggestions] = useState<any[]>([])
 
@@ -52,12 +52,12 @@ export function CommandPalette({
     const fetchSuggestions = async () => {
       const db = workspace ?? "global";
       try {
-        const searchClause = url.url ? "WHERE metadata LIKE ?" : "";
+        const searchClause = inputValue ? "WHERE metadata LIKE ?" : "";
         const res = await pyInvoke("sqlite", {
           db,
           command: "query",
           sql: `SELECT id, metadata FROM site_registry ${searchClause} ORDER BY rowid DESC LIMIT 5`,
-          params: url.url ? [`%${url.url}%`] : []
+          params: inputValue ? [`%${inputValue}%`] : []
         }) as any;
         const rows = res?.data ?? (Array.isArray(res) ? res : []);
         if (!Array.isArray(rows)) return;
@@ -79,7 +79,7 @@ export function CommandPalette({
     return () => {
       active = false;
     };
-  }, [url.url, pyInvoke, workspace]);
+  }, [inputValue, pyInvoke, workspace]);
 
   const handleSearchOrNavigate = (val: string) => {
     onNavigate(val);
@@ -113,11 +113,11 @@ export function CommandPalette({
             className="w-full bg-transparent border-none outline-none text-[15px] p-0 focus:ring-0 placeholder:font-normal"
             style={{ color: 'var(--fgColor-default)' }}
             placeholder="Search or Enter URL..."
-            value={url.url}
-            onChange={(e) => setUrl({ url: e.target.value })}
+            value={inputValue}
+            onChange={(e) => setInputValue(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && url.url.trim()) {
-                handleSearchOrNavigate(url.url.trim());
+              if (e.key === 'Enter' && inputValue.trim()) {
+                handleSearchOrNavigate(inputValue.trim());
               }
             }}
           />
@@ -125,12 +125,12 @@ export function CommandPalette({
 
         {/* Suggestion List */}
         <div className="flex flex-col gap-0.5">
-          {url.url.trim() && url.url !== "about:blank" && (
+          {inputValue.trim() && inputValue !== "about:blank" && (
             <div
               className="w-full flex items-center justify-between px-3.5 py-2 rounded-xl cursor-pointer transition-colors duration-150"
               onMouseEnter={(e) => e.currentTarget.style.backgroundColor = 'hsl(var(--hover))'}
               onMouseLeave={(e) => e.currentTarget.style.backgroundColor = 'transparent'}
-              onClick={() => handleSearchOrNavigate(url.url.trim())}
+              onClick={() => handleSearchOrNavigate(inputValue.trim())}
             >
               <div className="flex items-center gap-3 min-w-0">
                 <div className="w-5 h-5 flex items-center justify-center flex-shrink-0">
@@ -138,14 +138,14 @@ export function CommandPalette({
                 </div>
                 <div className="flex items-baseline gap-2 min-w-0 text-[14px]">
                   <span style={{ color: 'var(--fgColor-default)' }} className="font-medium flex-shrink-0">
-                    {isValidHttpUrl(url.url) ? `Open ${url.url}` : `Search ${url.url}`}
+                    {isValidHttpUrl(inputValue) ? `Open ${inputValue}` : `Search ${inputValue}`}
                   </span>
                 </div>
               </div>
             </div>
           )}
 
-          {suggestions.filter((item) => item.id !== url.url).map((item) => {
+          {suggestions.filter((item) => item.id !== inputValue).map((item) => {
             const hasIcon = typeof item.icon === "string" && (
               item.icon.startsWith("/") ||
               item.icon.startsWith("http") ||
@@ -304,24 +304,8 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
 
   const [mounted, setMount] = useState(false)
 
-  const {
-    element,
-    setHandleNavigate,
-    setHandleBack,
-    setHandleForward,
-    setHandleRefresh,
-    setHandleAddressBarClick
-  } = BrowserBar({
-    appId,
-    canGoBack: currentIndex > 0,
-    canGoForward: currentIndex < history.length - 1
-  })
-
   const layoutRef = useRef(tabLayout)
   layoutRef.current = tabLayout
-
-  const elementRef = useRef(element)
-  elementRef.current = element
 
   const workspaceRef = useRef(workspace)
   workspaceRef.current = workspace
@@ -333,6 +317,45 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   readyRef.current = ready
 
   const [lastUrl, setLastUrl] = useState("")
+
+  // Register handlers in the global BrowserHandlers registry for this appId.
+  // BrowserBar reads these directly — no re-render needed.
+  useEffect(() => {
+    BrowserHandlers[appId] = {
+      navigate: handleNavigate,
+      back: handleBack,
+      forward: handleForward,
+      refresh: handleRefresh,
+      addressBarClick: () => {
+        setShowPalette((prev) => {
+          if (!prev) {
+            setLastUrl(url.url)
+            setFocus(false)
+            setRefresh(prev => (prev + 1) % 2)
+          } else {
+            setLastUrl(url.url)
+            setFocus(true)
+            setRefresh(prev => (prev + 1) % 2)
+          }
+          return !prev;
+        });
+      },
+    };
+    return () => { delete BrowserHandlers[appId]; };
+  }, [handleNavigate, handleBack, handleForward, handleRefresh])
+
+  // Keep BrowserNavState up-to-date so BrowserBar back/forward buttons reflect reality
+  useEffect(() => {
+    BrowserNavState[appId] = {
+      canGoBack: currentIndex > 0,
+      canGoForward: currentIndex < history.length - 1,
+    };
+  }, [currentIndex, history.length])
+
+  // Cleanup nav state on unmount
+  useEffect(() => {
+    return () => { delete BrowserNavState[appId]; };
+  }, [])
 
   useEffect(() => {
     (async () => {
@@ -356,33 +379,11 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
     }
   }, [ready])
 
-
-  useEffect(() => {
-    setHandleNavigate(handleNavigate)
-    setHandleBack(handleBack)
-    setHandleForward(handleForward)
-    setHandleRefresh(handleRefresh)
-    setHandleAddressBarClick(() => {
-      setShowPalette((prev) => {
-        if (!prev) {
-          setLastUrl(url.url)
-          setFocus(false)
-          setRefresh(prev => (prev + 1) % 2)
-        } else {
-          setLastUrl(url.url)
-          setFocus(true)
-          setRefresh(prev => (prev + 1) % 2)
-        }
-        return !prev;
-      });
-    });
-  }, [handleNavigate, handleBack, handleForward, handleRefresh])
-
+  // Activate this app's bar when tab becomes active
   useEffect(() => {
     if (activeTabId == tabId) {
       MenuBar.appId = appId
       MenuBar.tabId = tabId
-      MenuBar.current = ref(<>{element}</>) as React.JSX.Element
     }
   }, [activeTabId])
 
@@ -394,9 +395,8 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
     if (activeTabId == tabId && activeAppId == appId) {
       MenuBar.appId = appId
       MenuBar.tabId = tabId
-      MenuBar.current = ref(<>{element}</>) as React.JSX.Element
     }
-  }, [activeTabId, activeAppId, url, element])
+  }, [activeTabId, activeAppId])
 
   useEffect(() => {
     if (!mounted) setMount(activeTabId == tabId)
@@ -506,10 +506,9 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
 
     (async () => {
       const existing = await getByLabel(label)
-      if (existing) {
+      if (existing || label.startsWith('webview-agent')) {
         setFocus(false)
         setRefresh(prev => (prev + 1) % 2)
-        await existing.show()
       } else {
         console.log('init webview')
         const initWebview = async (): Promise<void> => {
@@ -533,13 +532,15 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
           }
 
           const wvw = await createWebview(label, {
-            url: /^https?:\/\//.test(url.url) ? url.url : "about:blank",
+            url: "about:blank",
             width: Math.round(rect.width),
             height: Math.round(rect.height),
             x: screenX,
             y: screenY
           })
-          
+          if (url.url && /^https?:\/\//.test(url.url)) {
+            setTimeout(async () => await pyInvoke('eval', { label, script: `window.location.href = '${url.url}'` }), 250);
+          }
           setFocus(false)
           setRefresh(prev => (prev + 1) % 2)
 
@@ -553,6 +554,9 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
             })
             wvw.listen('update_location_title_icon', (event) => {
               window.dispatchEvent(new CustomEvent('update_location_title_icon', { detail: event.payload }));
+            })
+            wvw.listen('report_audio_state', (event) => {
+              window.dispatchEvent(new CustomEvent('report_audio_state', { detail: event.payload }));
             })
             wvw.listen('delete_tab', async (event) => {
               window.dispatchEvent(new CustomEvent('delete_tab', { detail: event.payload }));
@@ -634,8 +638,10 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
         }
       })
     }
+
     const onLocationChange = async (event: any) => {
       await AsyncLock.run(async () => {
+        setRefresh((prev) => (prev + 1) % 2)
         const data = event.detail as any
         if (data.target == label) {
           setUrl({ url: data.url })
@@ -772,7 +778,6 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
           if (MenuBar.appId !== appId) {
             MenuBar.appId = appId
             MenuBar.tabId = tabId
-            MenuBar.current = ref(<>{elementRef.current}</>) as React.JSX.Element
           } else {
             setFocus(true)
             setRefresh(prev => (prev + 1) % 2)
@@ -782,7 +787,6 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
           if (MenuBar.appId !== appId) {
             MenuBar.appId = appId
             MenuBar.tabId = tabId
-            MenuBar.current = ref(<>{elementRef.current}</>) as React.JSX.Element
           } else {
             setFocus(true)
             setRefresh(prev => (prev + 1) % 2)

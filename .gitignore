@@ -13,6 +13,7 @@ dist
 uv.lock 
 pnpm-lock.yaml
 __pycache__
+.pytest_cache
 .cache
 .python-version
 .env
@@ -24,8 +25,6 @@ __pycache__
 .env.local
 python/config.json
 Extensions
-Backend/openchad/custombackend
-ModelProvider/openchad/CustomModelProvider
 Tools/private
 ModelProvider/private
 Backend/private

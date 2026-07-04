@@ -2327,9 +2327,7 @@ async def catch_all(path_name: str):
     # List of high-priority prefixes to ignore (already handled by FastAPI)
     if path_name.startswith(("api/", "file/", "ws", "health", "assets/")):
         raise HTTPException(status_code=404)
-    index_path = os.path.join(_PROJECT_ROOT, "frontend", "index.html")
-    if os.path.exists(index_path):
-        return FileResponse(index_path)
+        
     # If build doesn't exist yet, return a helpful error
     return Response(
         content="Frontend not built. Please run 'npm run build' in the root directory.",
@@ -2382,13 +2380,12 @@ def main() -> int:
     logger.info("[PATH] Tauri.toml     = %s  (exists=%s)", tauri_toml, tauri_toml.exists())
 
     # ── Step 1: Set BASE_URL ──────────────────────────────────────────────────
-    base_url = "localhost:" + (VITE_PORT if DEV_MODE else str(port))
+    base_url = f"localhost:{(VITE_PORT if DEV_MODE else str(port))}"
     os.environ["BASE_URL"] = base_url
     logger.info("[STEP 1] BASE_URL set to: %s", base_url)
 
-    frontend_dist = "http://localhost:" + (VITE_PORT if DEV_MODE else str(port))
-    tauri_config = {"build": {"frontendDist": frontend_dist}}
-    logger.info("[STEP 1] frontendDist  = %s", frontend_dist)
+    frontend_dist = f"http://localhost:{VITE_PORT}"
+    tauri_config = {"build": {"frontendDist": frontend_dist}} if DEV_MODE else "./frontend"
 
     # ── Step 2: Resolve builder/context factories ─────────────────────────────
     logger.info("[STEP 2] Resolving builder_factory and context_factory ...")

@@ -28,4 +28,16 @@ export class AsyncMutex {
       this.release();
     }
   }
-}   
+
+  /**
+   * Force-unlock and resolve all parked waiters.
+   * Called on HMR dispose so orphaned `await acquire()` calls
+   * don't hang forever after the module is replaced.
+   */
+  reset(): void {
+    const waiting = this.queue.splice(0);
+    this.locked = false;
+    for (const resolve of waiting) resolve();
+  }
+}
+

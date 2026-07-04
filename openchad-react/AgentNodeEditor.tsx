@@ -1517,7 +1517,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>('1')
   const [hoveredAgentId, setHoveredAgentId] = useState<string | null>(null)
   const [runningAgents, setRunningAgents] = useState<Record<string, boolean>>({})
-  const heartbeatTimers = useRef<Record<string, NodeJS.Timeout>>({})
+  const heartbeatTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
 
   usePythonEvent("agent_heartbeat", (data: { agent_id: string }) => {
     const { agent_id } = data;
@@ -1639,7 +1639,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
 
   useEffect(() => {
     if (activeTabId == tabId) {
-      MenuBar.current = null
+      MenuBar.appId = ''
     }
   }, [activeTabId])
 

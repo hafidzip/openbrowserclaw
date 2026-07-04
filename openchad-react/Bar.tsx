@@ -2,40 +2,23 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import clsx from 'clsx';
 import { ArrowLeft, ArrowRight, Columns, Columns2, Columns3, Grid2X2, LayoutPanelTop, Link2, Minus, PanelBottom, PanelsLeftBottom, PanelsRightBottom, RotateCw, Rows2, SlidersHorizontal, Square, X } from 'lucide-react';
 import { useRef, useState } from 'react';
-import { addTab } from './utils/state';
+import { useSnapshot } from 'valtio';
+import { addTab, BrowserHandlers, BrowserNavState } from './utils/state';
 import { uuidv4 } from './utils';
 import { useDatabaseImpl } from './components/useDatabase';
+import { useGlobal } from './components/useGlobal';
 
 const isTauriEnv = typeof window !== "undefined" && !!(window as any).__TAURI__;
 
 
-export function BrowserBar({
-  appId,
-  canGoBack,
-  canGoForward
-}: {
-  appId: string;
-  canGoBack: boolean;
-  canGoForward: boolean;
-}) {
-  const [url, , {ready}] = useDatabaseImpl(`${appId}-url`, {initialValue: {url: "about:blank"}});
+export function BrowserBar({ appId }: { appId: string }) {
+  const [url] = useDatabaseImpl(`${appId}-url`, {initialValue: {url: "about:blank"}});
+  const navSnap = useSnapshot(BrowserNavState);
+  const nav = navSnap[appId] ?? { canGoBack: false, canGoForward: false };
+  const { canGoBack, canGoForward } = nav;
 
-  const handleNavigateRef = useRef<((url: string) => void) | undefined>(undefined);
-  const handleBackRef = useRef<(() => void) | undefined>(undefined);
-  const handleForwardRef = useRef<(() => void) | undefined>(undefined);
-  const handleRefreshRef = useRef<(() => void) | undefined>(undefined);
-  const handleAddressBarClickRef = useRef<(() => void) | undefined>(undefined);
-
-  // Refs are mutated silently — no re-render, so no infinite loop
-  const setHandleNavigate = (fn: (url: string) => void) => { handleNavigateRef.current = fn; };
-  const setHandleBack = (fn: () => void) => { handleBackRef.current = fn; };
-  const setHandleForward = (fn: () => void) => { handleForwardRef.current = fn; };
-  const setHandleRefresh = (fn: () => void) => { handleRefreshRef.current = fn; };
-  const setHandleAddressBarClick = (fn: () => void) => { handleAddressBarClickRef.current = fn; };
-
-
-  return {
-    element: <>
+  return (
+    <>
       {/* Navigation Controls (Left) */}
       <div className={
         clsx(
@@ -43,7 +26,7 @@ export function BrowserBar({
         )
       }>
         <div
-          onClick={() => { if (canGoBack) handleBackRef.current?.(); }}
+          onClick={() => { if (canGoBack) BrowserHandlers[appId]?.back?.(); }}
           className={clsx(
             "flex items-center justify-center rounded-lg w-7 h-7 transition-colors",
             canGoBack
@@ -54,7 +37,7 @@ export function BrowserBar({
           <ArrowLeft className="w-4 h-4" />
         </div>
         <div
-          onClick={() => { if (canGoForward) handleForwardRef.current?.(); }}
+          onClick={() => { if (canGoForward) BrowserHandlers[appId]?.forward?.(); }}
           className={clsx(
             "flex items-center justify-center rounded-lg w-7 h-7 transition-colors",
             canGoForward
@@ -64,7 +47,7 @@ export function BrowserBar({
         >
           <ArrowRight className="w-4 h-4" />
         </div>
-        <div onClick={() => { handleRefreshRef.current?.(); }} className="flex items-center justify-center rounded-lg w-7 h-7 hover:bg-white/10 dark:hover:bg-white/5 transition-colors cursor-pointer text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200">
+        <div onClick={() => { BrowserHandlers[appId]?.refresh?.(); }} className="flex items-center justify-center rounded-lg w-7 h-7 hover:bg-white/10 dark:hover:bg-white/5 transition-colors cursor-pointer text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200">
           <RotateCw className="w-3.5 h-3.5" />
         </div>
       </div>
@@ -79,7 +62,7 @@ export function BrowserBar({
           "absolute left-0 w-full h-7 rounded-full flex items-center justify-center px-3 gap-2 transition-all pointer-events-none",
         )}>
           <div
-            onClick={() => { handleAddressBarClickRef.current?.(); }}
+            onClick={() => { BrowserHandlers[appId]?.addressBarClick?.(); }}
             className={clsx(
               'text-center text-accent/50 hover:text-accent bg-[hsl(var(--bg))] hover:bg-card cursor-pointer w-100 text-xs rounded-lg  px-2 py-1 truncate pointer-events-auto',
             )}
@@ -89,8 +72,9 @@ export function BrowserBar({
         </div>}
       </div>
 
+      {/* Layout Controls (Right) */}
       <div className={clsx(
-        'flex items-center gap-2 px-4',
+        'flex items-center gap-2 px-4 pointer-events-auto',
       )}>
         <Columns2
           onClick={() => {
@@ -289,8 +273,8 @@ export function BrowserBar({
           })
         }} className='text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 cursor-pointer' size={14} />
       </div>
-    </>, setHandleNavigate, setHandleBack, setHandleForward, setHandleRefresh, setHandleAddressBarClick
-  }
+    </>
+  );
 }
 
 export default function Bar({ children, theme, isRightToLeft }: { children?: React.JSX.Element | React.JSX.Element[] | null, theme: string, isRightToLeft: boolean }) {
@@ -310,11 +294,14 @@ export default function Bar({ children, theme, isRightToLeft }: { children?: Rea
     }
   };
 
+  const [isFullscreen, setIsFullscreen] = useGlobal('isFullscreen', { initialValue: false });
+
   return (
     <div
       data-tauri-drag-region
       className={clsx(
-        "w-full h-8 flex items-center justify-between select-none flex-shrink-0 z-20 px-2",
+        isFullscreen ? 'hidden' : 'flex',
+        "w-full h-8 items-center justify-between select-none flex-shrink-0 z-20 px-2",
         "bg-[hsl(var(--bg))]",
         isRightToLeft ? "flex-row-reverse" : "flex-row"
       )}

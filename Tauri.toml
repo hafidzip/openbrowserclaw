@@ -2,8 +2,7 @@
 productName = "OpenBrowser"
 version = "0.1.0"
 identifier = "com.openbrowser.app"
-[build]
-frontendDist = "./frontend"
+
 [app]
 withGlobalTauri = true
 security.capabilities = ["default", "remote-webview", "popup-webview"]

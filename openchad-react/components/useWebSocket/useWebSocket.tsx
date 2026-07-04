@@ -67,7 +67,7 @@ export class WebSocketManager {
     private pendingRequests: Map<number | string, PendingRequest> = new Map();
     private activeStreams: Map<number | string, AsyncStream<any>> = new Map();
     private messageId: number = 0;
-    private reconnectTimer: NodeJS.Timeout | null = null;
+    private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     // Event emitter functionality
     private eventHandlers: Map<string, Set<EventHandler>> = new Map();
     private onceHandlers: Map<string, Set<EventHandler>> = new Map();

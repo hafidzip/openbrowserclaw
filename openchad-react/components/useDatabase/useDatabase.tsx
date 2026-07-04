@@ -1,9 +1,72 @@
 import { proxy, useSnapshot } from "valtio";
-import { type SetStateAction, type Dispatch, useEffect, useState } from "react";
+import { type SetStateAction, type Dispatch, useEffect } from "react";
 import { usePython } from "../usePython";
 import { sanitizeTauriEvent } from "../../utils/utils";
 
 const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
+
+// ============================================================================
+// Module-scope pure utilities (defined once, never recreated per render)
+// ============================================================================
+
+function deepParseJson(value: unknown): unknown {
+    if (typeof value === 'string') {
+        const trimmed = value.trim();
+        if (
+            (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+            (trimmed.startsWith('[') && trimmed.endsWith(']'))
+        ) {
+            try {
+                return deepParseJson(JSON.parse(trimmed));
+            } catch {
+                return value;
+            }
+        }
+        try {
+            const parsed = JSON.parse(trimmed);
+            if (parsed !== value) {
+                return deepParseJson(parsed);
+            }
+        } catch {
+            // not JSON, return as-is
+        }
+        return value;
+    }
+    if (Array.isArray(value)) {
+        return value.map(deepParseJson);
+    }
+    if (typeof value === 'object' && value !== null) {
+        return Object.fromEntries(
+            Object.entries(value as Record<string, unknown>).map(
+                ([k, v]) => [k, deepParseJson(v)]
+            )
+        );
+    }
+    return value;
+}
+
+function deepEqual(obj1: any, obj2: any): boolean {
+    if (obj1 === obj2) return true;
+    if (typeof obj1 !== 'object' || obj1 === null || obj2 === null || typeof obj2 !== 'object') {
+        return false;
+    }
+    if (Array.isArray(obj1) !== Array.isArray(obj2)) return false;
+    if (Array.isArray(obj1)) {
+        if (obj1.length !== obj2.length) return false;
+        for (let i = 0; i < obj1.length; i++) {
+            if (!deepEqual(obj1[i], obj2[i])) return false;
+        }
+        return true;
+    }
+    const keys1 = Object.keys(obj1);
+    const keys2 = Object.keys(obj2);
+    if (keys1.length !== keys2.length) return false;
+    for (const key of keys1) {
+        if (!Object.prototype.hasOwnProperty.call(obj2, key)) return false;
+        if (!deepEqual(obj1[key], obj2[key])) return false;
+    }
+    return true;
+}
 // ============================================================================
 // Type Utilities for useState-like experience
 // ============================================================================
@@ -89,15 +152,22 @@ interface IDatabase {
     _isPrimitive: boolean;
     // Track if this database stores an array value
     _isArray: boolean;
-    // Track last modification timestamp
-    _lastModified: number;
-    // Track subscription count
-    _subscriptionCount: number;
     // Track if first fetch has completed
     _ready: boolean;
 }
 
+/**
+ * Non-reactive bookkeeping: mutations here do NOT trigger useSnapshot re-renders.
+ * Keeps _lastModified and _subscriptionCount off the valtio proxy so that
+ * internal db-event handling never causes unnecessary component re-renders.
+ */
+interface IDbMeta {
+    _lastModified: number;
+    _subscriptionCount: number;
+}
+
 const database = proxy<Record<string, IDatabase>>({});
+const dbMeta: Record<string, IDbMeta> = {};
 
 const initialValues = {} as Record<string, any>;
 // ============================================================================
@@ -159,46 +229,10 @@ export function useDatabaseImplBase<T = Record<string, unknown>>(
         initialValues[dbKey] = initialValue;
     }
     const { pyInvoke, isStreamReady } = usePython();
-    function deepParseJson(value: unknown): unknown {
-        if (typeof value === 'string') {
-            const trimmed = value.trim();
-            if (
-                (trimmed.startsWith('{') && trimmed.endsWith('}')) ||
-                (trimmed.startsWith('[') && trimmed.endsWith(']'))
-            ) {
-                try {
-                    return deepParseJson(JSON.parse(trimmed));
-                } catch {
-                    return value;
-                }
-            }
-            // Handle quoted/multi-encoded strings like '"{\\"key\\":\\"val\\"}"'
-            try {
-                const parsed = JSON.parse(trimmed);
-                if (parsed !== value) {
-                    return deepParseJson(parsed);
-                }
-            } catch {
-                // not JSON, return as-is
-            }
-            return value;
-        }
-        if (Array.isArray(value)) {
-            return value.map(deepParseJson);
-        }
-        if (typeof value === 'object' && value !== null) {
-            return Object.fromEntries(
-                Object.entries(value as Record<string, unknown>).map(
-                    ([k, v]) => [k, deepParseJson(v)]
-                )
-            );
-        }
-        return value;
-    }
     async function request(body: any): Promise<any> {
         try {
             const res = await pyInvoke('sqlite', body);
-            return deepParseJson(res.data);    // ← parsing happens here
+            return deepParseJson(res.data);
         } catch (e) {
             console.error("SQLite request failed", e);
             return null;
@@ -329,32 +363,10 @@ export function useDatabaseImplBase<T = Record<string, unknown>>(
             database[`${databaseName}.${tb}`]._ready = true;
         }
     }
-    function deepEqual(obj1: any, obj2: any): boolean {
-        if (obj1 === obj2) return true;
-        if (typeof obj1 !== 'object' || obj1 === null || obj2 === null || typeof obj2 !== 'object') {
-            return false;
-        }
-        if (Array.isArray(obj1) !== Array.isArray(obj2)) return false;
-        if (Array.isArray(obj1)) {
-            if (obj1.length !== obj2.length) return false;
-            for (let i = 0; i < obj1.length; i++) {
-                if (!deepEqual(obj1[i], obj2[i])) return false;
-            }
-            return true;
-        }
-        const keys1 = Object.keys(obj1);
-        const keys2 = Object.keys(obj2);
-        if (keys1.length !== keys2.length) return false;
-        for (const key of keys1) {
-            if (!Object.prototype.hasOwnProperty.call(obj2, key)) return false;
-            if (!deepEqual(obj1[key], obj2[key])) return false;
-        }
-        return true;
-    }
     function setData(data: SetStateAction<unknown>) {
         const db = database[`${databaseName}.${tb}`];
         const sync = async (obj: object) => {
-            db._lastModified = Date.now() + 500;
+            dbMeta[`${databaseName}.${tb}`]._lastModified = Date.now() + 500;
             await request({ db: databaseName, table: tb, command: 'sync_table', data: obj });
         };
         const processDataForSync = (inputData: unknown): Record<string, unknown> => {
@@ -432,12 +444,15 @@ export function useDatabaseImplBase<T = Record<string, unknown>>(
     function createDatabase<T>(databaseName: string, tb: string, initialValue?: T): void {
         const primitiveMode = initialValue !== undefined && isPrimitive(initialValue);
         const arrayMode = Array.isArray(initialValue);
+        // Initialize non-reactive meta (not on the proxy)
+        dbMeta[`${databaseName}.${tb}`] = {
+            _lastModified: Date.now(),
+            _subscriptionCount: 0,
+        };
         database[`${databaseName}.${tb}`] = {
             data: undefined,
             _isPrimitive: primitiveMode,
             _isArray: arrayMode,
-            _lastModified: Date.now(),
-            _subscriptionCount: 0,
             _ready: false,
             query: async (sql: string) => {
                 const result = await request({ db: databaseName, command: "query", sql });
@@ -479,15 +494,17 @@ export function useDatabaseImplBase<T = Record<string, unknown>>(
     if (!database[dbKey]) {
         createDatabase<T>(databaseName, tb, initialValue);
     }
-    // Subscribe to database change events  works in both WebSocket and Tauri modes
+    // Subscribe to database change events — works in both WebSocket and Tauri modes
     useEffect(() => {
         const db = database[dbKey];
-        if (!isStreamReady || !db) return;
+        const meta = dbMeta[dbKey];
+        if (!isStreamReady || !db || !meta) return;
         // Tauri: store the unlisten function
         let tauriUnlisten: (() => void) | undefined;
         const eventName = `db_changed:${databaseName}.${tb}`;
-        db._subscriptionCount++;
-        if (db._subscriptionCount >= 1) {
+        // Use plain-object meta to avoid triggering snapshot re-renders
+        meta._subscriptionCount++;
+        if (meta._subscriptionCount >= 1) {
             pyInvoke('db_subscribe', { db: databaseName, table: tb }).then(() => {
                 refreshTable(databaseName, tb);
             }).catch(() => { });
@@ -504,18 +521,18 @@ export function useDatabaseImplBase<T = Record<string, unknown>>(
             } else {
                 return;
             }
-            const currentDb = database[dbKey];
-            if (currentDb && timestamp > currentDb._lastModified) {
-                currentDb._lastModified = timestamp;
+            const currentMeta = dbMeta[dbKey];
+            if (currentMeta && timestamp > currentMeta._lastModified) {
+                currentMeta._lastModified = timestamp;
                 refreshTable(databaseName, tb);
             }
         };
         // Tauri mode: event payload arrives directly as {timestamp}
         const handleDbChangeTauri = (data: { timestamp: number }) => {
             const { timestamp } = data;
-            const currentDb = database[dbKey];
-            if (currentDb && timestamp > currentDb._lastModified) {
-                currentDb._lastModified = timestamp;
+            const currentMeta = dbMeta[dbKey];
+            if (currentMeta && timestamp > currentMeta._lastModified) {
+                currentMeta._lastModified = timestamp;
                 refreshTable(databaseName, tb);
             }
         };
@@ -535,10 +552,10 @@ export function useDatabaseImplBase<T = Record<string, unknown>>(
                 } else {
                     window.removeEventListener(eventName, handleDbChangeWS);
                 }
-                const currentDb = database[dbKey];
-                if (currentDb) {
-                    currentDb._subscriptionCount--;
-                    if (currentDb._subscriptionCount === 0) {
+                const currentMeta = dbMeta[dbKey];
+                if (currentMeta) {
+                    currentMeta._subscriptionCount--;
+                    if (currentMeta._subscriptionCount === 0) {
                         pyInvoke('db_unsubscribe', { db: databaseName, table: tb }).catch(() => { });
                     }
                 }

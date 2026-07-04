@@ -3,7 +3,7 @@ import clsx from "clsx"
 import { Aspan } from "./animated"
 import { motion, AnimatePresence } from "motion/react"
 import { useRef, useState, useEffect, Fragment, useCallback, memo } from "react"
-import { ChevronDown, GitBranch, Plus, Settings, X, Pin, ChevronRight, ArrowLeftRight, Key, HardDrive, Globe, Drama, EarthIcon, Scroll, AlarmCheck } from "lucide-react"
+import { ChevronDown, GitBranch, Plus, Settings, X, Pin, ChevronRight, ArrowLeftRight, Key, HardDrive, Globe, Drama, EarthIcon, Scroll, AlarmCheck, Volume2, VolumeX } from "lucide-react"
 import { Dialog as DialogUI, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog"
 import { Dropdown } from "./dropdown"
 import { TabState, addTab, TabInfo, reorderTabsInGroup, deleteTabWithGroupSelection, setTabGroup, type ITab, Theme, LucideIcons, clearAllTabs } from '../utils/state'
@@ -62,8 +62,11 @@ interface SortableTabItemProps {
   onMouseLeave: () => void;
   onContextMenu: (id: string, e: React.MouseEvent<HTMLDivElement>) => void;
   onDelete: () => void;
+  onMuteToggle: () => void;
   isActive: boolean;
   onClick: () => void;
+  isPlayingAudio: boolean;
+  isMuted: boolean;
 }
 
 const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
@@ -91,7 +94,12 @@ function SortableTabItem({ defaultTitle,
   onMouseEnter,
   onMouseLeave,
   onContextMenu,
-  onDelete, onClick }: SortableTabItemProps) {
+  onDelete,
+  onMuteToggle,
+  onClick,
+  isMuted,
+  isPlayingAudio
+}: SortableTabItemProps) {
   const divRef = useRef<HTMLDivElement | null>(null);
   const {
     attributes,
@@ -135,6 +143,26 @@ function SortableTabItem({ defaultTitle,
         className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer active:cursor-grabbing"
       >
         <TabIcon iconVal={icon} className="relative min-w-[20px] transition-all duration-250 left-[7px]" />
+        {
+          !isCollapsedSidebar &&
+          <>
+            {(isPlayingAudio || isMuted) &&
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMuteToggle();
+                }}
+                className={clsx(
+                  "p-1 rounded-md hover:bg-accent/20 transition-opacity",
+                  "opacity-100"
+                )}
+                aria-label="Mute tab"
+              >
+                {isMuted ? <VolumeX className="h-4 w-4 text-accent" /> : <Volume2 className="h-4 w-4 text-accent" />}
+              </button>
+            }
+          </>
+        }
         <Aspan isCollapsed={isCollapsedSidebar} className="truncate flex-1 min-w-0 block">{title || defaultTitle}</Aspan>
       </div>
       {/* Delete Button - Expanded State */}
@@ -167,18 +195,31 @@ function SortableTabItem({ defaultTitle,
         }
       </>}
       {/* Delete Button - Collapsed State (Top Right Corner) */}
-      {isCollapsedSidebar && isHovered && (
-        <button
+
+      {isCollapsedSidebar && <>
+        {isHovered && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete();
+            }}
+            className="absolute -top-1 -left-0 p-[2px] rounded-md bg-neutral-600 hover:bg-neutral-700 dark:bg-[hsl(var(--float))] dark:hover:bg-[hsl(var(--hoverfloat))] transition-colors"
+            aria-label="Delete tab"
+          >
+            <X className="h-2.5 w-2.5 text-white" />
+          </button>
+        )}
+        {(isPlayingAudio || isMuted) && <button
           onClick={(e) => {
             e.stopPropagation();
-            onDelete();
+            onMuteToggle();
           }}
-          className="absolute -top-1 -left-0 p-[2px] rounded-md bg-neutral-600 hover:bg-neutral-700 dark:bg-[hsl(var(--float))] dark:hover:bg-[hsl(var(--hoverfloat))] transition-colors"
-          aria-label="Delete tab"
+          className="absolute bottom-1 -right-1 p-[2px] rounded-md bg-neutral-600 hover:bg-neutral-700 dark:bg-[hsl(var(--float))] dark:hover:bg-[hsl(var(--hoverfloat))] transition-colors"
+          aria-label="Mute tab"
         >
-          <X className="h-2.5 w-2.5 text-white" />
-        </button>
-      )}
+          {isMuted ? <VolumeX className="h-3 w-3 text-white" /> : <Volume2 className="h-3 w-3 text-white" />}
+        </button>}
+      </>}
     </div>
   );
 }
@@ -214,6 +255,7 @@ interface TabGroupProps {
   sensors: ReturnType<typeof useSensors>;
   showGroupHeader?: boolean;
   defaultCollapsed?: boolean;
+  isPlayingRegistry: Record<string, boolean>;
 }
 
 function TabGroup({
@@ -233,6 +275,7 @@ function TabGroup({
   sensors,
   showGroupHeader = false,
   defaultCollapsed = false,
+  isPlayingRegistry,
 }: TabGroupProps) {
   const [isCollapsed, setIsCollapsed] = useState(defaultCollapsed);
   const [lastActiveTabId, setLastActiveTabId] = useState("");
@@ -322,7 +365,7 @@ function TabGroup({
                 items={tabIds}
                 strategy={verticalListSortingStrategy}
               >
-                {Object.entries(tabs).map(([uuid, { iconOverride, title }], index) => (
+                {Object.entries(tabs).map(([uuid, { iconOverride, title, isMuted }], index) => (
                   <SortableTabItem
                     defaultTitle={defaultTitle}
                     isPinned={pinned}
@@ -338,8 +381,11 @@ function TabGroup({
                     onMouseLeave={onTabMouseLeave}
                     onContextMenu={onTabContextMenu}
                     onDelete={() => onTabDelete(uuid)}
+                    onMuteToggle={() => { if(TabState[uuid]) TabState[uuid].isMuted = !isMuted; }}
                     isActive={activeTabId === uuid}
                     onClick={() => onTabClick(uuid)}
+                    isMuted={isMuted}
+                    isPlayingAudio={isPlayingRegistry[uuid] ?? false}
                   />
                 ))}
               </SortableContext>
@@ -407,7 +453,8 @@ export default function Sidebar({
   layout,
   theme,
   settings,
-  repository
+  repository,
+  isPlayingRegistry
 }: {
   projectName: string;
   ProjectIcon: React.ComponentType;
@@ -416,6 +463,7 @@ export default function Sidebar({
   theme: string;
   settings: Record<string, SettingItem>;
   repository?: string;
+  isPlayingRegistry: Record<string, boolean>
 }) {
   const allTabs = useSnapshot(TabState);
   // Record<string, { title: string; layout: string; group: string | null; childrenProps: Record<string, { title: string; path: string; icon: string; }> }>>
@@ -869,6 +917,7 @@ export default function Sidebar({
           sensors={sensors}
           showGroupHeader={true}
           defaultCollapsed={false}
+          isPlayingRegistry={isPlayingRegistry}
         />
         {!isCollapsedSidebar && <div className="h-1" />}
         {/* Ungrouped Tabs */}
@@ -890,6 +939,7 @@ export default function Sidebar({
           }}
           sensors={sensors}
           showGroupHeader={false}
+          isPlayingRegistry={isPlayingRegistry}
         />
       </div>
       <div className={clsx(
