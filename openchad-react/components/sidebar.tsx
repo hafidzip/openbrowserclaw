@@ -6,8 +6,7 @@ import { useRef, useState, useEffect, Fragment, useCallback, memo } from "react"
 import { ChevronDown, GitBranch, Plus, Settings, X, Pin, ChevronRight, ArrowLeftRight, Key, HardDrive, Globe, Drama, EarthIcon, Scroll, AlarmCheck, Volume2, VolumeX, Wrench } from "lucide-react"
 import { Dialog as DialogUI, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog"
 import { Dropdown } from "./dropdown"
-import { TabState, addTab, TabInfo, reorderTabsInGroup, deleteTabWithGroupSelection, setTabGroup, type ITab, Theme, LucideIcons, clearAllTabs } from '../utils/state'
-import { useSnapshot } from 'valtio'
+import { TabState, addTab, TabInfo, reorderTabsInGroup, deleteTabWithGroupSelection, setTabGroup, type ITab, Theme, LucideIcons, clearAllTabs, useTabState, useTabInfo, setActive } from '../utils/state'
 import {
   DndContext,
   closestCenter,
@@ -466,7 +465,7 @@ export default function Sidebar({
   repository?: string;
   isPlayingRegistry: Record<string, boolean>
 }) {
-  const allTabs = useSnapshot(TabState);
+  const [allTabs] = useTabState();
   // Record<string, { title: string; layout: string; group: string | null; childrenProps: Record<string, { title: string; path: string; icon: string; }> }>>
   // const [savedTabs, setSavedTabs, { query: savedTabsQuery }] = useDatabase<string[]>("tabs");
   const [savedTabs, setSavedTabs, { query: savedTabsQuery }] = useDatabaseImpl<Record<string,
@@ -545,7 +544,7 @@ export default function Sidebar({
   const isAllowCollapseRef = useRef<boolean>(true);
   const tabContainerRef = useRef<HTMLDivElement>(null);
   const mousePositionRef = useRef<{ x: number; y: number } | null>(null);
-  const { active, SetActive } = useSnapshot(TabInfo);
+  const [{ active }] = useTabInfo();
   // DnD sensors
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -915,7 +914,7 @@ export default function Sidebar({
           onTabMouseLeave={handleTabMouseLeave}
           onTabContextMenu={handleTabContextMenu}
           onTabDelete={handleDeleteTab}
-          onTabClick={SetActive}
+          onTabClick={setActive}
           sensors={sensors}
           showGroupHeader={true}
           defaultCollapsed={false}
@@ -937,7 +936,7 @@ export default function Sidebar({
           onTabContextMenu={handleTabContextMenu}
           onTabDelete={handleDeleteTab}
           onTabClick={(uuid) => {
-            SetActive(uuid)
+            setActive(uuid)
           }}
           sensors={sensors}
           showGroupHeader={false}

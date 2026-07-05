@@ -145,6 +145,42 @@ export function useGlobal<T = Record<string, unknown>>(
 }
 
 // ============================================================================
+// Imperative helpers — for non-hook code (e.g. state.tsx helper functions)
+// ============================================================================
+
+/**
+ * Initialise a key in the global store at module level (outside React).
+ * Safe to call multiple times — only the first call wins (first-writer rule).
+ */
+export function initGlobal<T>(key: string, initialValue: T): void {
+    ensureKey<T>(key, initialValue);
+}
+
+/**
+ * Read the current value of a global key imperatively.
+ * Returns undefined if the key has never been initialised.
+ */
+export function getGlobal<T>(key: string): T | undefined {
+    return store.get(key) as T | undefined;
+}
+
+/**
+ * Write a new value (or functional updater) to a global key imperatively,
+ * notifying all React subscribers exactly like the hook setter does.
+ */
+export { setGlobal };
+
+/**
+ * Force-notify all subscribers for a key after an in-place mutation.
+ * Use with the shallow-clone trigger pattern:
+ *   tabState[uuid].foo = newValue;
+ *   notifyGlobal("TabState");
+ */
+export function notifyGlobal(key: string): void {
+    notifyListeners(key);
+}
+
+// ============================================================================
 // Type Exports for Advanced Usage
 // ============================================================================
 

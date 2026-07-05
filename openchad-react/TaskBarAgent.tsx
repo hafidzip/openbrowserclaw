@@ -3,7 +3,7 @@ import { X } from 'lucide-react';
 import { motion, AnimatePresence, useMotionValue, useAnimationFrame } from 'motion/react';
 import { useAvailableAgents, usePython, usePythonEvent, useSnapshot, useGlobal, generateIdFromString, type IAgent } from './index';
 import { useDatabaseImpl } from './components/useDatabase';
-import { Workspace } from './utils/state';
+import { useWorkspaceState } from './utils/state';
 import { plainToBlocks } from './components/composer';
 
 //  Character Registry 
@@ -638,7 +638,7 @@ const PatrollingAgent = memo(function PatrollingAgent({ agent, containerWidth }:
 
 function useAvailableTasks() {
     const { pyInvoke } = usePython();
-    const { workspace } = useSnapshot(Workspace);
+    const [{ workspace }] = useWorkspaceState();
     const { agents } = useAvailableAgents();
     const [tasks, setTasks] = useState<IAgent[]>([]);
     const [isLoading, setLoading] = useState(true);

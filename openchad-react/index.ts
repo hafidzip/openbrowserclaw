@@ -12,7 +12,7 @@ import { OpenChadIcon } from "./components/open-chad-icon";
 import ContainerSingleApp from "./ContainerSingleApp";
 import ContainerOverlayApp from "./ContainerOverlayApp";
 import { proxy, ref, useSnapshot } from "valtio";
-import { MenuBar, Theme, Workspace } from "./utils/state";
+import { useWorkspaceState, useThemeState, useMenuBarState } from "./utils/state";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { uuidv4 } from "./utils";
 import { AsyncMutex } from "./components/Mutex/mutex";
@@ -29,7 +29,7 @@ function generateIdFromString(input: string): string {
 
 const useTool = <T,>() => {
     const { pyInvoke } = usePython()
-    const { workspace } = useSnapshot(Workspace);
+    const [{ workspace }] = useWorkspaceState();
     const tabId = "global";
     return (tool: string, parameters: Record<string, any>) => {
         return pyInvoke<T>("tools/execute", { tool, workspace: workspace ?? "global", tabId, ...parameters });
@@ -37,7 +37,7 @@ const useTool = <T,>() => {
 }
 
 const useDatabase = <T,>(tb: string, options?: { initialValue?: T }) => {
-    const { workspace } = useSnapshot(Workspace);
+    const [{ workspace }] = useWorkspaceState();
     const hashed = generateIdFromString(`${workspace ?? "global"}/${tb}`);
     return (options?.initialValue !== undefined)
         ? useDatabaseImplBase<T>(workspace ?? "global", hashed, options.initialValue)
@@ -73,7 +73,7 @@ const useGlobal = <T = Record<string, unknown>>(
 };
 
 const useTheme = () => {
-    return useSnapshot(Theme)
+    return useThemeState()[0];
 }
 
 const useEvent = <T,>(event: string, callback: (data: T) => void) => {
@@ -87,7 +87,7 @@ const useEvent = <T,>(event: string, callback: (data: T) => void) => {
 }
 
 const useMenuBar = () => {
-    const snap = useSnapshot(MenuBar)
+    const [snap] = useMenuBarState();
     return snap;
 }
 
@@ -193,7 +193,7 @@ interface IAgent {
 
 function useAvailableAgents() {
     const { pyInvoke } = usePython()
-    const { workspace } = useSnapshot(Workspace)
+    const [{ workspace }] = useWorkspaceState();
     const [agents, setAgents] = useState<IAgent[]>([])
     const [isLoading, setLoading] = useState(true)
 

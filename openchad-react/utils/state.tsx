@@ -1,4 +1,6 @@
-import { proxy } from 'valtio';
+import { initGlobal, getGlobal, setGlobal, notifyGlobal } from '../components/useGlobal/useGlobal';
+export { getGlobal, setGlobal, initGlobal };
+import { useGlobal } from '../components/useGlobal';
 import uuidv4 from "./uuid";
 import { sha256 } from 'js-sha256';
 import { cleanupPersistentIframe } from "../components/iframe-mirror";
@@ -48,10 +50,53 @@ export interface Model {
     downloaded?: boolean;
 }
 
-export const MenuBar = proxy<{ tabId: string, appId: string }>({ tabId: "", appId: "" })
+// ============================================================================
+// MenuBar
+// ============================================================================
+export interface MenuBarState { tabId: string; appId: string; }
+initGlobal<MenuBarState>("MenuBar", { tabId: "", appId: "" });
+export const useMenuBarState = () => useGlobal<MenuBarState>("MenuBar", { initialValue: { tabId: "", appId: "" } });
+export const setMenuBarTabId = (tabId: string) =>
+    setGlobal<MenuBarState>("MenuBar", p => ({ ...(p ?? { tabId: "", appId: "" }), tabId }));
+export const setMenuBarAppId = (appId: string) =>
+    setGlobal<MenuBarState>("MenuBar", p => ({ ...(p ?? { tabId: "", appId: "" }), appId }));
+/** @deprecated use useMenuBarState() or setMenuBarTabId/setMenuBarAppId */
+export const MenuBar = {
+    get tabId() { return getGlobal<MenuBarState>("MenuBar")?.tabId ?? ""; },
+    set tabId(v: string) { setMenuBarTabId(v); },
+    get appId() { return getGlobal<MenuBarState>("MenuBar")?.appId ?? ""; },
+    set appId(v: string) { setMenuBarAppId(v); },
+};
 
-/** Per-appId nav state so BrowserBar can read canGoBack/canGoForward reactively */
-export const BrowserNavState = proxy<Record<string, { canGoBack: boolean; canGoForward: boolean }>>({})
+// ============================================================================
+// BrowserNavState
+// ============================================================================
+export interface BrowserNavEntry { canGoBack: boolean; canGoForward: boolean; }
+initGlobal<Record<string, BrowserNavEntry>>("BrowserNavState", {});
+export const useBrowserNavState = () =>
+    useGlobal<Record<string, BrowserNavEntry>>("BrowserNavState", { initialValue: {} });
+export const setBrowserNav = (appId: string, nav: Partial<BrowserNavEntry>) => {
+    const cur = getGlobal<Record<string, BrowserNavEntry>>("BrowserNavState") ?? {};
+    const existing = cur[appId] ?? { canGoBack: false, canGoForward: false };
+    setGlobal("BrowserNavState", { ...cur, [appId]: { ...existing, ...nav } });
+};
+/** @deprecated use useBrowserNavState() or setBrowserNav() */
+export const BrowserNavState = new Proxy({} as Record<string, BrowserNavEntry>, {
+    get(_t, key: string) {
+        return getGlobal<Record<string, BrowserNavEntry>>("BrowserNavState")?.[key];
+    },
+    set(_t, key: string, value: BrowserNavEntry) {
+        const cur = getGlobal<Record<string, BrowserNavEntry>>("BrowserNavState") ?? {};
+        setGlobal("BrowserNavState", { ...cur, [key]: value });
+        return true;
+    },
+    deleteProperty(_t, key: string) {
+        const cur = getGlobal<Record<string, BrowserNavEntry>>("BrowserNavState") ?? {};
+        const { [key]: _, ...rest } = cur;
+        setGlobal("BrowserNavState", rest);
+        return true;
+    }
+});
 
 /** Per-appId handler registry — plain object so refs don't get proxied */
 export const BrowserHandlers: Record<string, {
@@ -62,12 +107,19 @@ export const BrowserHandlers: Record<string, {
   addressBarClick?: () => void;
 }> = {}
 
-export const Workspace = proxy({
-    workspace: null as string | null,
-    setWorkspace: (workspace: string | null) => {
-        Workspace.workspace = workspace;
-    }
-})
+// ============================================================================
+// Workspace
+// ============================================================================
+export interface WorkspaceState { workspace: string | null; }
+initGlobal<WorkspaceState>("Workspace", { workspace: null });
+export const useWorkspaceState = () => useGlobal<WorkspaceState>("Workspace", { initialValue: { workspace: null } });
+export const setWorkspace = (workspace: string | null) =>
+    setGlobal<WorkspaceState>("Workspace", { workspace });
+/** @deprecated use useWorkspaceState() */
+export const Workspace = {
+    get workspace() { return getGlobal<WorkspaceState>("Workspace")?.workspace ?? null; },
+    setWorkspace,
+};
 
 export function formatTaskTime(timestamp: number) {
     const date = new Date(timestamp);
@@ -91,12 +143,25 @@ export function formatTaskTime(timestamp: number) {
     return `${time} ${day}/${month}/${year}`;
 }
 
-export const Theme = proxy({
-    theme: "dark",
-    layout: "rightToLeft",
-})
-// Interface for credential structure
+// ============================================================================
+// Theme
+// ============================================================================
+export interface ThemeState { theme: string; layout: string; }
+initGlobal<ThemeState>("Theme", { theme: "dark", layout: "rightToLeft" });
+export const useThemeState = () => useGlobal<ThemeState>("Theme", { initialValue: { theme: "dark", layout: "rightToLeft" } });
+export const setTheme = (theme: string) =>
+    setGlobal<ThemeState>("Theme", p => ({ ...(p ?? { theme: "dark", layout: "rightToLeft" }), theme }));
+export const setThemeLayout = (layout: string) =>
+    setGlobal<ThemeState>("Theme", p => ({ ...(p ?? { theme: "dark", layout: "rightToLeft" }), layout }));
+/** @deprecated use useThemeState() */
+export const Theme = {
+    get theme() { return getGlobal<ThemeState>("Theme")?.theme ?? "dark"; },
+    set theme(v: string) { setTheme(v); },
+    get layout() { return getGlobal<ThemeState>("Theme")?.layout ?? "rightToLeft"; },
+    set layout(v: string) { setThemeLayout(v); },
+};
 
+// Interface for credential structure
 export interface Credential {
     activity: Record<number, number>; // timestamp -> amount
     value: string; // API key value
@@ -125,9 +190,8 @@ export interface ITab {
     }>;
 }
 
-export const AppComponents = proxy<Record<string, React.ComponentType<any> | React.ComponentType>>({});
-
-export const Apps = proxy<Record<string, Record<string, React.ComponentType<any> | React.ComponentType>>>({});
+export const AppComponents: Record<string, React.ComponentType<any> | React.ComponentType> = {};
+export const Apps: Record<string, Record<string, React.ComponentType<any> | React.ComponentType>> = {};
 
 export const icons: Record<string, React.ComponentType<{ className: string }>> = {
     default: LucideIcons.Compass,
@@ -250,221 +314,270 @@ export function createTab({
     };
 }
 
-export const KeyState = proxy({
-    keys: {
-        // =====================
-        // Letters
-        // =====================
-        a: false, b: false, c: false, d: false, e: false, f: false, g: false,
-        h: false, i: false, j: false, k: false, l: false, m: false, n: false,
-        o: false, p: false, q: false, r: false, s: false, t: false, u: false,
-        v: false, w: false, x: false, y: false, z: false,
-        // =====================
-        // Numbers (top row)
-        // =====================
-        "0": false, "1": false, "2": false, "3": false, "4": false,
-        "5": false, "6": false, "7": false, "8": false, "9": false,
-        // =====================
-        // Function keys
-        // =====================
-        f1: false, f2: false, f3: false, f4: false, f5: false, f6: false,
-        f7: false, f8: false, f9: false, f10: false, f11: false, f12: false,
-        // =====================
-        // Modifiers
-        // =====================
-        shift: false,
-        control: false,
-        alt: false,
-        meta: false, // Windows / Command key
-        // =====================
-        // Navigation
-        // =====================
-        arrowup: false,
-        arrowdown: false,
-        arrowleft: false,
-        arrowright: false,
-        home: false,
-        end: false,
-        pageup: false,
-        pagedown: false,
-        // =====================
-        // Editing / system
-        // =====================
-        space: false,
-        enter: false,
-        escape: false,
-        backspace: false,
-        tab: false,
-        delete: false,
-        // =====================
-        // Symbols
-        // =====================
-        "`": false,
-        "-": false,
-        "=": false,
-        "[": false,
-        "]": false,
-        "\\": false,
-        ";": false,
-        "'": false,
-        ",": false,
-        ".": false,
-        "/": false,
-        // =====================
-        // Numpad
-        // =====================
-        numpad0: false,
-        numpad1: false,
-        numpad2: false,
-        numpad3: false,
-        numpad4: false,
-        numpad5: false,
-        numpad6: false,
-        numpad7: false,
-        numpad8: false,
-        numpad9: false,
-        numpadadd: false,
-        numpadsubtract: false,
-        numpadmultiply: false,
-        numpaddivide: false,
-        numpaddecimal: false,
-        numpadenter: false,
-        // =====================
-        // Locks
-        // =====================
-        capslock: false,
-        numlock: false,
-        scrolllock: false,
-    } as Record<string, boolean>,
-    setKey: (key: string, pressed: boolean) => {
-        KeyState.keys[key] = pressed
-    },
-    clearKeys: () => {
-        Object.keys(KeyState.keys).forEach(key => {
-            KeyState.keys[key] = false;
-        });
-        KeyState.ctrl = false;
-        KeyState.shift = false;
-        KeyState.alt = false;
-    },
-    ctrl: false,
-    setCtrl: (ctrl: boolean) => {
-        KeyState.ctrl = ctrl;
-    },
-    shift: false,
-    setShift: (shift: boolean) => {
-        KeyState.shift = shift;
-    },
-    alt: false,
-    setAlt: (alt: boolean) => {
-        KeyState.alt = alt;
-    },
-})
+// ============================================================================
+// KeyState
+// ============================================================================
+export interface KeyStateData {
+    keys: Record<string, boolean>;
+    ctrl: boolean;
+    shift: boolean;
+    alt: boolean;
+}
+const _initialKeys: Record<string, boolean> = {
+    a: false, b: false, c: false, d: false, e: false, f: false, g: false,
+    h: false, i: false, j: false, k: false, l: false, m: false, n: false,
+    o: false, p: false, q: false, r: false, s: false, t: false, u: false,
+    v: false, w: false, x: false, y: false, z: false,
+    "0": false, "1": false, "2": false, "3": false, "4": false,
+    "5": false, "6": false, "7": false, "8": false, "9": false,
+    f1: false, f2: false, f3: false, f4: false, f5: false, f6: false,
+    f7: false, f8: false, f9: false, f10: false, f11: false, f12: false,
+    shift: false, control: false, alt: false, meta: false,
+    arrowup: false, arrowdown: false, arrowleft: false, arrowright: false,
+    home: false, end: false, pageup: false, pagedown: false,
+    space: false, enter: false, escape: false, backspace: false, tab: false, delete: false,
+    "`": false, "-": false, "=": false, "[": false, "]": false, "\\": false,
+    ";": false, "'": false, ",": false, ".": false, "/": false,
+    numpad0: false, numpad1: false, numpad2: false, numpad3: false, numpad4: false,
+    numpad5: false, numpad6: false, numpad7: false, numpad8: false, numpad9: false,
+    numpadadd: false, numpadsubtract: false, numpadmultiply: false,
+    numpaddivide: false, numpaddecimal: false, numpadenter: false,
+    capslock: false, numlock: false, scrolllock: false,
+};
+initGlobal<KeyStateData>("KeyState", { keys: { ..._initialKeys }, ctrl: false, shift: false, alt: false });
+export const useKeyStateData = () => useGlobal<KeyStateData>("KeyState", { initialValue: { keys: { ..._initialKeys }, ctrl: false, shift: false, alt: false } });
+export const setKey = (key: string, pressed: boolean) => {
+    const cur = getGlobal<KeyStateData>("KeyState")!;
+    cur.keys[key] = pressed;
+    notifyGlobal("KeyState");
+};
+export const setCtrl = (ctrl: boolean) =>
+    setGlobal<KeyStateData>("KeyState", p => ({ ...p!, ctrl }));
+export const setShift = (shift: boolean) =>
+    setGlobal<KeyStateData>("KeyState", p => ({ ...p!, shift }));
+export const setAlt = (alt: boolean) =>
+    setGlobal<KeyStateData>("KeyState", p => ({ ...p!, alt }));
+export const clearKeys = () => {
+    const cur = getGlobal<KeyStateData>("KeyState")!;
+    Object.keys(cur.keys).forEach(k => { cur.keys[k] = false; });
+    setGlobal<KeyStateData>("KeyState", { ...cur, ctrl: false, shift: false, alt: false });
+};
+/** @deprecated use useKeyStateData() or setKey/setCtrl/setShift/setAlt */
+export const KeyState = {
+    get keys() { return getGlobal<KeyStateData>("KeyState")!.keys; },
+    setKey,
+    clearKeys,
+    get ctrl() { return getGlobal<KeyStateData>("KeyState")?.ctrl ?? false; },
+    setCtrl,
+    get shift() { return getGlobal<KeyStateData>("KeyState")?.shift ?? false; },
+    setShift,
+    get alt() { return getGlobal<KeyStateData>("KeyState")?.alt ?? false; },
+    setAlt,
+};
 
-export const TabState = proxy<Record<string, ITab>>({})
-
-export const DragState = proxy(
-    {
-        active: false,
-        record: {
-            id: null as string | null,
-            over: null as string | null
-        } as Record<string, string | null>,
-        set: (key: string, id: string | null) => {
-            DragState.record[key] = id;
-        },
-        clear: () => {
-            DragState.record = {};
-        },
-        timeout: null as ReturnType<typeof setTimeout> | null,
-        get id() {
-            return DragState.record["id"];
-        },
-        get over() {
-            return DragState.record["over"];
-        }
+// ============================================================================
+// TabState
+// ============================================================================
+initGlobal<Record<string, ITab>>("TabState", {});
+export const useTabState = () => useGlobal<Record<string, ITab>>("TabState", { initialValue: {} });
+/** @deprecated Read TabState directly in non-hook code via getGlobal("TabState") */
+export const TabState = new Proxy({} as Record<string, ITab>, {
+    get(_t, key: string) {
+        return getGlobal<Record<string, ITab>>("TabState")?.[key];
+    },
+    set(_t, key: string, value: ITab) {
+        const cur = getGlobal<Record<string, ITab>>("TabState") ?? {};
+        setGlobal("TabState", { ...cur, [key]: value });
+        return true;
+    },
+    deleteProperty(_t, key: string) {
+        const cur = getGlobal<Record<string, ITab>>("TabState") ?? {};
+        const { [key]: _, ...rest } = cur;
+        setGlobal("TabState", rest);
+        return true;
+    },
+    ownKeys() {
+        return Object.keys(getGlobal<Record<string, ITab>>("TabState") ?? {});
+    },
+    has(_t, key: string) {
+        return key in (getGlobal<Record<string, ITab>>("TabState") ?? {});
+    },
+    getOwnPropertyDescriptor(_t, key: string) {
+        const cur = getGlobal<Record<string, ITab>>("TabState") ?? {};
+        if (key in cur) return { configurable: true, enumerable: true, writable: true, value: cur[key] };
+        return undefined;
     }
-)
+});
 
-export const Viewport = proxy({
-    width: 0,
-    height: 0,
-    overflowX: false,
-    overflowY: false,
-    aspectRatio: "16:9",
-})
+// ============================================================================
+// DragState
+// ============================================================================
+export interface DragStateData {
+    active: boolean;
+    record: Record<string, string | null>;
+    timeout: ReturnType<typeof setTimeout> | null;
+}
+initGlobal<DragStateData>("DragState", { active: false, record: {}, timeout: null });
+export const useDragState = () => useGlobal<DragStateData>("DragState", { initialValue: { active: false, record: {}, timeout: null } });
+export const setDragRecord = (key: string, id: string | null) => {
+    const cur = getGlobal<DragStateData>("DragState")!;
+    setGlobal<DragStateData>("DragState", { ...cur, record: { ...cur.record, [key]: id } });
+};
+export const clearDragState = () => {
+    const cur = getGlobal<DragStateData>("DragState")!;
+    setGlobal<DragStateData>("DragState", { ...cur, record: {} });
+};
+export const setDragActive = (active: boolean) =>
+    setGlobal<DragStateData>("DragState", p => ({ ...p!, active }));
+/** @deprecated use useDragState() or setDragRecord/clearDragState */
+export const DragState = {
+    get active() { return getGlobal<DragStateData>("DragState")?.active ?? false; },
+    get record() { return getGlobal<DragStateData>("DragState")?.record ?? {}; },
+    set: setDragRecord,
+    clear: clearDragState,
+    get timeout() { return getGlobal<DragStateData>("DragState")?.timeout ?? null; },
+    get id() { return getGlobal<DragStateData>("DragState")?.record["id"] ?? null; },
+    get over() { return getGlobal<DragStateData>("DragState")?.record["over"] ?? null; },
+};
 
-export const TabInfo = proxy({
-    active: "",
-    get icon() {
-        return TabState[this.active]?.icon || (() => null);
-    },
-    children: [] as string[],
-    layout: "single",
-    switchMode: false,
-    size: [100],
-    SetActive: (uuid: string) => {
-        TabInfo.active = uuid;
-        TabInfo.switchMode = false;
-        const tab = TabState[uuid];
-        if (tab) {
-            TabInfo.layout = tab.layout;
-            TabInfo.children = tab.children;
-            TabInfo.size = tab.size;
-        }
+// ============================================================================
+// Viewport
+// ============================================================================
+export interface ViewportState {
+    width: number;
+    height: number;
+    overflowX: boolean;
+    overflowY: boolean;
+    aspectRatio: string;
+}
+initGlobal<ViewportState>("Viewport", { width: 0, height: 0, overflowX: false, overflowY: false, aspectRatio: "16:9" });
+export const useViewport = () => useGlobal<ViewportState>("Viewport", { initialValue: { width: 0, height: 0, overflowX: false, overflowY: false, aspectRatio: "16:9" } });
+export const setViewport = (update: Partial<ViewportState>) =>
+    setGlobal<ViewportState>("Viewport", p => ({ ...p!, ...update }));
+/** @deprecated use useViewport() */
+export const Viewport = new Proxy({} as ViewportState, {
+    get(_t, key: string) { return (getGlobal<ViewportState>("Viewport") as any)?.[key]; },
+    set(_t, key: string, value: any) {
+        setGlobal<ViewportState>("Viewport", p => ({ ...p!, [key]: value }));
+        return true;
     }
-})
+});
+
+// ============================================================================
+// TabInfo
+// ============================================================================
+export interface TabInfoState {
+    active: string;
+    children: string[];
+    layout: string;
+    switchMode: boolean;
+    size: number[];
+}
+const _initialTabInfo: TabInfoState = { active: "", children: [], layout: "single", switchMode: false, size: [100] };
+initGlobal<TabInfoState>("TabInfo", { ..._initialTabInfo });
+export const useTabInfo = () => useGlobal<TabInfoState>("TabInfo", { initialValue: { ..._initialTabInfo } });
+export const setActive = (uuid: string) => {
+    const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+    const tab = tabState[uuid];
+    setGlobal<TabInfoState>("TabInfo", p => ({
+        ...p!,
+        active: uuid,
+        switchMode: false,
+        layout: tab?.layout ?? p!.layout,
+        children: tab ? Object.keys(tab.childrenProps) : p!.children,
+        size: tab?.size ?? p!.size,
+    }));
+};
+export const setTabInfoProp = <K extends keyof TabInfoState>(key: K, value: TabInfoState[K]) =>
+    setGlobal<TabInfoState>("TabInfo", p => ({ ...p!, [key]: value }));
+/** @deprecated use useTabInfo() or setActive/setTabInfoProp */
+export const TabInfo = new Proxy({} as TabInfoState & { SetActive: (uuid: string) => void; icon: ({ className }: { className: string }) => React.ReactNode }, {
+    get(_t, key: string) {
+        if (key === "SetActive") return setActive;
+        if (key === "icon") {
+            const activeId = getGlobal<TabInfoState>("TabInfo")?.active ?? "";
+            const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+            return tabState[activeId]?.icon || (() => null);
+        }
+        return (getGlobal<TabInfoState>("TabInfo") as any)?.[key];
+    },
+    set(_t, key: string, value: any) {
+        setGlobal<TabInfoState>("TabInfo", p => ({ ...p!, [key]: value }));
+        return true;
+    }
+});
+
+// ============================================================================
+// HoverState
+// ============================================================================
+export interface HoverStateData {
+    current: HTMLElement | null;
+    mousePos: { x: number; y: number };
+}
+initGlobal<HoverStateData>("HoverState", { current: null, mousePos: { x: 0, y: 0 } });
+export const useHoverState = () => useGlobal<HoverStateData>("HoverState", { initialValue: { current: null, mousePos: { x: 0, y: 0 } } });
+export const setHoverState = (update: Partial<HoverStateData>) =>
+    setGlobal<HoverStateData>("HoverState", p => ({ ...p!, ...update }));
+/** @deprecated use useHoverState() */
+export const HoverState = new Proxy({} as HoverStateData, {
+    get(_t, key: string) { return (getGlobal<HoverStateData>("HoverState") as any)?.[key]; },
+    set(_t, key: string, value: any) {
+        setGlobal<HoverStateData>("HoverState", p => ({ ...p!, [key]: value }));
+        return true;
+    }
+});
+
+// ============================================================================
 // Helper functions for tab management
+// ============================================================================
 
 export const reorderTabs = (fromIndex: number, toIndex: number) => {
-    const entries = Object.entries(TabState);
+    const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+    const entries = Object.entries(tabState);
     const [removed] = entries.splice(fromIndex, 1);
     entries.splice(toIndex, 0, removed);
-    // Clear current state
-    Object.keys(TabState).forEach(key => {
-        delete TabState[key];
-    });
-    // Re-add with new indices
-    entries.forEach(([key, value]) => {
-        TabState[key] = value;
-    });
+    setGlobal("TabState", Object.fromEntries(entries));
 };
-// Helper functions for tab management
 
 export const reorderChildren = (uuid: string, fromIndex: number, toIndex: number) => {
+    const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+    const tab = tabState[uuid];
+    if (!tab) return [];
     if (fromIndex === toIndex) {
-        return Object.keys(TabState[uuid].childrenProps);
+        return Object.keys(tab.childrenProps);
     }
     console.log('Reorder called:', { fromIndex, toIndex });
-    const entries = Object.entries(TabState[uuid].childrenProps);
+    const entries = Object.entries(tab.childrenProps);
     console.log('Before:', entries.map(([k]) => k));
     // SWAP instead of move
     const temp = entries[fromIndex];
     entries[fromIndex] = entries[toIndex];
     entries[toIndex] = temp;
     console.log('After swap:', entries.map(([k]) => k));
-    // Rebuild the object completely fresh
     const newChildrenProps = {} as Record<string, any>;
     entries.forEach(([key, value]) => {
         newChildrenProps[key] = value;
     });
-    TabState[uuid].childrenProps = newChildrenProps;
-    console.log(Object.keys(TabState[uuid].childrenProps));
-    return Object.keys(TabState[uuid].childrenProps);
+    tab.childrenProps = newChildrenProps;
+    setGlobal("TabState", { ...tabState });
+    console.log(Object.keys(tab.childrenProps));
+    return Object.keys(tab.childrenProps);
 };
 
 export const deleteTab = (uuid: string) => {
-    delete TabState[uuid];
+    const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+    const { [uuid]: _, ...rest } = tabState;
     // Filter out any entries where childrenProps is undefined/empty
-    Object.keys(TabState).forEach((key) => {
-        const entry = TabState[key];
-        const children = entry?.childrenProps;
-        if (!children || (typeof children === "object" && Object.keys(children).length === 0)) {
-            delete TabState[key];
-        }
-    });
+    const filtered = Object.fromEntries(
+        Object.entries(rest).filter(([_, entry]) => {
+            const children = entry?.childrenProps;
+            return children && typeof children === "object" && Object.keys(children).length > 0;
+        })
+    );
+    setGlobal("TabState", filtered);
     cleanupPersistentIframe(uuid);
 };
+
 interface AddTabParams {
     uuid?: string;
     title?: string;
@@ -487,15 +600,11 @@ export const addTab = ({
     size
 }: AddTabParams = {}): string => {
     const uuid = predefinedUuid ?? uuidv4();
-    // When called with no childrenProps, fall back to the defaultTab
-    // registered by Container via window.defaultTabs / window.defaultLayout
     let resolvedLayout = layout;
     let resolvedChildrenProps = childrenProps;
     if (childrenProps) {
         resolvedChildrenProps = { ...childrenProps }
         const currentChildrenCount = Object.keys(resolvedChildrenProps ?? {}).length;
-
-        // 2. Auto-resolve children: If provided but less than 4, pad the rest
         if (resolvedChildrenProps && currentChildrenCount > 0 && currentChildrenCount < 4) {
             for (let i = currentChildrenCount; i < 4; i++) {
                 resolvedChildrenProps[uuidv4()] = {
@@ -503,7 +612,7 @@ export const addTab = ({
                     title: null,
                     appname: "default",
                     data: null,
-                } as any; // Cast as necessary based on your exact ChildProp type
+                } as any;
             }
         }
     }
@@ -542,7 +651,7 @@ export const addTab = ({
             }
         }
     }
-    TabState[uuid] = createTab({
+    const newTab = createTab({
         group,
         title,
         iconOverride,
@@ -551,21 +660,23 @@ export const addTab = ({
         isMuted: isMuted,
         size: size ?? defaultSize
     });
-    TabInfo.SetActive(uuid);
+    const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+    setGlobal("TabState", { ...tabState, [uuid]: newTab });
+    setActive(uuid);
     return uuid;
 };
 
 export const relayoutTab = (pkey: string) => {
-    const currentProps = TabState[pkey].childrenProps;
+    const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+    const tab = tabState[pkey];
+    if (!tab) return;
+    const currentProps = tab.childrenProps;
     const entries = Object.entries(currentProps);
-    // Separate real apps and dummy apps
     const realApps = entries.filter(([_, prop]) => prop.appname !== "default" && prop.appname !== "select-tab");
-    // Construct new childrenProps with real apps first
     const newChildrenProps: Record<string, any> = {};
     realApps.forEach(([k, v]) => {
         newChildrenProps[k] = v;
     });
-    // Fill remaining slots with dummies
     const dummyKeys = ["default1", "default2", "default3"];
     let dummyIdx = 0;
     while (Object.keys(newChildrenProps).length < 4) {
@@ -587,46 +698,48 @@ export const relayoutTab = (pkey: string) => {
             dummyIdx++;
         }
     }
-    TabState[pkey].childrenProps = newChildrenProps;
+    tab.childrenProps = newChildrenProps;
     const realCount = realApps.length;
     if (realCount === 0) {
-        const tabKeys = Object.keys(TabState);
+        const tabKeys = Object.keys(tabState);
         const oldIndex = tabKeys.indexOf(pkey);
-        delete TabState[pkey];
-        if (TabInfo.active === pkey) {
-            const otherTabs = Object.keys(TabState);
+        const { [pkey]: _, ...rest } = tabState;
+        setGlobal("TabState", rest);
+        const tabInfo = getGlobal<TabInfoState>("TabInfo")!;
+        if (tabInfo.active === pkey) {
+            const otherTabs = Object.keys(rest);
             if (otherTabs.length > 0) {
                 const nextIndex = Math.min(oldIndex, otherTabs.length - 1);
-                TabInfo.SetActive(otherTabs[nextIndex]);
+                setActive(otherTabs[nextIndex]);
             } else {
-                TabInfo.active = "";
-                TabInfo.children = [];
-                TabInfo.layout = "single";
-                TabInfo.size = [50, 50, 50, 50, 50];
+                setGlobal<TabInfoState>("TabInfo", { active: "", children: [], layout: "single", size: [50, 50, 50, 50, 50], switchMode: false });
             }
         }
     } else {
-        if (realCount === 1) {
-            TabState[pkey].layout = "single";
-        } else if (realCount === 2) {
-            TabState[pkey].layout = "horizontal";
-        } else if (realCount === 3) {
-            TabState[pkey].layout = "triple";
-        } else if (realCount === 4) {
-            TabState[pkey].layout = "grid2x2";
-        }
-        if (TabInfo.active === pkey) {
-            TabInfo.layout = TabState[pkey].layout;
-            TabInfo.children = Object.keys(newChildrenProps);
-            TabInfo.size = TabState[pkey].size;
+        if (realCount === 1) { tab.layout = "single"; }
+        else if (realCount === 2) { tab.layout = "horizontal"; }
+        else if (realCount === 3) { tab.layout = "triple"; }
+        else if (realCount === 4) { tab.layout = "grid2x2"; }
+        setGlobal("TabState", { ...tabState });
+        const tabInfo = getGlobal<TabInfoState>("TabInfo")!;
+        if (tabInfo.active === pkey) {
+            setGlobal<TabInfoState>("TabInfo", p => ({
+                ...p!,
+                layout: tab.layout,
+                children: Object.keys(newChildrenProps),
+                size: tab.size,
+            }));
         }
     }
 };
 
 export const closeTab = (childrenKey: string) => {
-    const parentKey = Object.entries(TabState).find(([_, v]) => v.children.includes(childrenKey))?.[0];
+    const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+    const parentKey = Object.entries(tabState).find(([_, v]) => v.children.includes(childrenKey))?.[0];
     if (parentKey) {
-        delete TabState[parentKey].childrenProps[childrenKey];
+        const tab = tabState[parentKey];
+        delete tab.childrenProps[childrenKey];
+        setGlobal("TabState", { ...tabState });
         relayoutTab(parentKey);
     }
 };
@@ -639,9 +752,11 @@ export interface IApp {
 }
 
 export const detachTab = (childrenKey: string) => {
-    const parentKey = Object.entries(TabState).find(([_, v]) => v.children.includes(childrenKey))?.[0];
+    const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+    const parentKey = Object.entries(tabState).find(([_, v]) => v.children.includes(childrenKey))?.[0];
     if (parentKey) {
-        const childProp = TabState[parentKey].childrenProps[childrenKey];
+        const tab = tabState[parentKey];
+        const childProp = tab.childrenProps[childrenKey];
         addTab({
             layout: "single",
             childrenProps: {
@@ -651,97 +766,68 @@ export const detachTab = (childrenKey: string) => {
                 "default3": { icon: "default", title: null, appname: "default", data: null },
             }
         });
-        delete TabState[parentKey].childrenProps[childrenKey];
+        delete tab.childrenProps[childrenKey];
+        setGlobal("TabState", { ...tabState });
         relayoutTab(parentKey);
     }
 };
-// Tab Group Management Utilities
-/**
- * Get all tabs belonging to a specific group
- * @param group - Group name (null for ungrouped tabs)
- */
 
 export const getTabsByGroup = (group: string | null): Record<string, ITab> => {
+    const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
     return Object.fromEntries(
-        Object.entries(TabState).filter(([_, tab]) => tab.group === group)
+        Object.entries(tabState).filter(([_, tab]) => tab.group === group)
     );
 };
-/**
- * Get all unique group names from TabState
- */
 
 export const getAllGroups = (): (string | null)[] => {
+    const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
     const groups = new Set<string | null>();
-    Object.values(TabState).forEach(tab => groups.add(tab.group));
+    Object.values(tabState).forEach(tab => groups.add(tab.group));
     return Array.from(groups);
 };
-/**
- * Set a tab's group
- * @param uuid - Tab ID
- * @param group - Group name or null for ungrouped
- */
 
 export const setTabGroup = (uuid: string, group: string | null) => {
-    if (TabState[uuid]) {
-        TabState[uuid].group = group;
+    const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+    if (tabState[uuid]) {
+        tabState[uuid].group = group;
+        setGlobal("TabState", { ...tabState });
     }
 };
-/**
- * Reorder tabs within a specific group
- * @param group - Group to reorder within
- * @param fromIndex - Original index within the group
- * @param toIndex - Target index within the group
- */
 
 export const reorderTabsInGroup = (group: string | null, fromIndex: number, toIndex: number) => {
-    // Get all tabs, separating by group
-    const allEntries = Object.entries(TabState);
+    const allEntries = Object.entries(getGlobal<Record<string, ITab>>("TabState") ?? {});
     const groupEntries = allEntries.filter(([_, tab]) => tab.group === group);
-    // Reorder within the group
     const [removed] = groupEntries.splice(fromIndex, 1);
     groupEntries.splice(toIndex, 0, removed);
-    // Reconstruct TabState maintaining group order
-    // First reconstruct groups in their original order
     const groupOrder = getAllGroups();
-    // Clear current state
-    Object.keys(TabState).forEach(key => {
-        delete TabState[key];
-    });
-    // Re-add tabs in order: null group first, then named groups alphabetically
     groupOrder.sort((a, b) => {
         if (a === null) return -1;
         if (b === null) return 1;
         return a.localeCompare(b);
     });
+    const result: [string, ITab][] = [];
     groupOrder.forEach(g => {
         const entries = g === group ? groupEntries : allEntries.filter(([_, tab]) => tab.group === g);
-        entries.forEach(([key, value]) => {
-            TabState[key] = value;
-        });
+        entries.forEach(e => result.push(e as [string, ITab]));
     });
+    setGlobal("TabState", Object.fromEntries(result));
 };
-/**
- * Delete a tab with auto-selection of next tab in the same group
- * @param uuid - Tab ID to delete
- * @returns The ID of the newly selected tab, or null if no tabs remain
- */
 
 export const deleteActiveTabWithGroupSelection = async (): Promise<string | null> => {
-    return await deleteTabWithGroupSelection(TabInfo.active);
+    return await deleteTabWithGroupSelection(getGlobal<TabInfoState>("TabInfo")!.active);
 }
 
 export const deleteTabWithGroupSelection = async (uuid: string): Promise<string | null> => {
     await AsyncLock.acquire();
-    const tabToDelete = TabState[uuid];
+    const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+    const tabToDelete = tabState[uuid];
     if (!tabToDelete) {
         AsyncLock.release();
         return null
     }
-    
     const group = tabToDelete.group;
     const groupTabs = Object.keys(getTabsByGroup(group));
     const indexInGroup = groupTabs.indexOf(uuid);
-    // Find next tab in the same group first
     let nextTabId: string | null = null;
     const all = await getAllWebviews()
     Object.keys(tabToDelete.childrenProps).map(async (t: string) => {
@@ -755,28 +841,23 @@ export const deleteTabWithGroupSelection = async (uuid: string): Promise<string 
         }
     })
     if (groupTabs.length > 1) {
-        // Try to select next tab in same group
         if (indexInGroup > 0) {
             nextTabId = groupTabs[indexInGroup - 1];
         } else if (indexInGroup < groupTabs.length - 1) {
             nextTabId = groupTabs[indexInGroup + 1];
         }
     } else {
-        // No more tabs in this group, find next in any group
-        const allTabs = Object.keys(TabState).filter(id => id !== uuid);
+        const allTabs = Object.keys(tabState).filter(id => id !== uuid);
         if (allTabs.length > 0) {
-            // Prefer ungrouped tabs, then any other group
-            const ungroupedTabs = allTabs.filter(id => TabState[id].group === null);
+            const ungroupedTabs = allTabs.filter(id => tabState[id].group === null);
             nextTabId = ungroupedTabs.length > 0 ? ungroupedTabs[0] : allTabs[0];
         }
     }
-
-
-    // Delete the tab
     deleteTab(uuid);
-    // Update active tab if the deleted tab was active
-    if (TabInfo.active === uuid && nextTabId && typeof TabState[nextTabId].childrenProps !== "undefined" && TabState[nextTabId].childrenProps !== null) {
-        TabInfo.SetActive(nextTabId);
+    const tabInfo = getGlobal<TabInfoState>("TabInfo")!;
+    const updatedTabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+    if (tabInfo.active === uuid && nextTabId && typeof updatedTabState[nextTabId]?.childrenProps !== "undefined" && updatedTabState[nextTabId].childrenProps !== null) {
+        setActive(nextTabId);
     }
     AsyncLock.release();
     return nextTabId;
@@ -786,7 +867,8 @@ export const clearAllTabs = async (pyInvoke?: any, workspace?: string | null) =>
     await AsyncLock.acquire();
     try {
         const all = await getAllWebviews();
-        const tabUuids = Object.keys(TabState);
+        const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+        const tabUuids = Object.keys(tabState);
 
         if (pyInvoke) {
             const db = workspace ?? "global";
@@ -807,17 +889,11 @@ export const clearAllTabs = async (pyInvoke?: any, workspace?: string | null) =>
                         rows.forEach((row: any) => {
                             let val = row._v;
                             if (typeof val === 'string') {
-                                try {
-                                    val = JSON.parse(val);
-                                } catch { }
+                                try { val = JSON.parse(val); } catch { }
                             }
-                            if (row.id === 'isStreaming') {
-                                isStreaming = !!val;
-                            } else if (row.id === 'activeId') {
-                                activeId = String(val || "");
-                            } else if (row.id === 'dontStop') {
-                                dontStop = !!val;
-                            }
+                            if (row.id === 'isStreaming') { isStreaming = !!val; }
+                            else if (row.id === 'activeId') { activeId = String(val || ""); }
+                            else if (row.id === 'dontStop') { dontStop = !!val; }
                         });
                         if (isStreaming && activeId && !dontStop) {
                             await pyInvoke("v1/chat/stop", { id: activeId });
@@ -830,7 +906,7 @@ export const clearAllTabs = async (pyInvoke?: any, workspace?: string | null) =>
         }
 
         for (const uuid of tabUuids) {
-            const tab = TabState[uuid];
+            const tab = tabState[uuid];
             if (tab && tab.childrenProps) {
                 await Promise.all(
                     Object.keys(tab.childrenProps).map(async (t: string) => {
@@ -838,38 +914,25 @@ export const clearAllTabs = async (pyInvoke?: any, workspace?: string | null) =>
                         if (w) {
                             if (!t.startsWith('agent')) {
                                 await w.close();
-                            } else {
-                                // await w.hide();
                             }
                         }
                     })
                 );
             }
-            delete TabState[uuid];
             cleanupPersistentIframe(uuid);
         }
-        TabInfo.active = "";
-        TabInfo.children = [];
-        TabInfo.layout = "single";
-        TabInfo.size = [100];
-        TabInfo.switchMode = false;
+        setGlobal("TabState", {});
+        setGlobal<TabInfoState>("TabInfo", { active: "", children: [], layout: "single", size: [100], switchMode: false });
     } finally {
         AsyncLock.release();
     }
 };
 
-/**
- * Move a tab from one group to another
- * @param uuid - Tab ID
- * @param targetGroup - Target group name or null
- * @param insertAtIndex - Optional index to insert at within target group
- */
-
 export const moveTabToGroup = (uuid: string, targetGroup: string | null, insertAtIndex?: number) => {
-    if (!TabState[uuid]) return;
-    const tab = TabState[uuid];
+    const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+    if (!tabState[uuid]) return;
+    const tab = tabState[uuid];
     const sourceGroup = tab.group;
-    // If moving to the same group, just reorder
     if (sourceGroup === targetGroup && insertAtIndex !== undefined) {
         const groupTabs = Object.keys(getTabsByGroup(targetGroup));
         const currentIndex = groupTabs.indexOf(uuid);
@@ -878,9 +941,8 @@ export const moveTabToGroup = (uuid: string, targetGroup: string | null, insertA
         }
         return;
     }
-    // Change the group
     tab.group = targetGroup;
-    // If insert position specified, reorder to that position
+    setGlobal("TabState", { ...tabState });
     if (insertAtIndex !== undefined) {
         const groupTabs = Object.keys(getTabsByGroup(targetGroup));
         const currentIndex = groupTabs.indexOf(uuid);
@@ -889,11 +951,3 @@ export const moveTabToGroup = (uuid: string, targetGroup: string | null, insertA
         }
     }
 };
-
-export const HoverState = proxy<{
-    current: HTMLElement | null;
-    mousePos: { x: number, y: number };
-}>({
-    current: null,
-    mousePos: { x: 0, y: 0 }
-});

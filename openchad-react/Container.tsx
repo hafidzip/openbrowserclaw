@@ -9,8 +9,7 @@ import useElementSize from './components/hooks/useElementSize'
 import { Button } from './components/ui/button'
 import uuidv4 from './utils/uuid'
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener'
-import { KeyState, TabInfo, TabState, Viewport, Workspace, Theme, MenuBar, addTab, closeTab, detachTab, type ITab, deleteTab, deleteTabWithGroupSelection, deleteActiveTabWithGroupSelection } from './utils/state'
-import { proxy, useSnapshot } from 'valtio'
+import { KeyState, TabInfo, TabState, Viewport, Workspace, Theme, MenuBar, addTab, closeTab, detachTab, type ITab, deleteTab, deleteTabWithGroupSelection, deleteActiveTabWithGroupSelection, useWorkspaceState, useThemeState, useTabState, useTabInfo, setWorkspace, setActive, setMenuBarTabId, setMenuBarAppId, getGlobal, setGlobal, setTheme, setThemeLayout, setTabInfoProp, setKey, setCtrl, setShift, setAlt, clearKeys, setViewport, type TabInfoState } from './utils/state'
 import MultiView, { type LayoutType } from './components/multiview'
 import { Spinner } from './components/ui/spinner'
 import React from 'react'
@@ -130,16 +129,16 @@ export default function Container({ Apps }: { Apps: Project }) {
   const { settings } = useSettings();
   const [startupStatus] = useState<any>(null);
   const [test, , { folders }] = useFolderImpl('Workspaces');
-  const { workspace, setWorkspace } = useSnapshot(Workspace);
+  const [{ workspace }] = useWorkspaceState();
   const workspaceRef = useRef(workspace);
   workspaceRef.current = workspace
-  const appRegistry = proxy<Record<string, React.ComponentType<AppInfo>>>({
+  const appRegistry: Record<string, React.ComponentType<AppInfo>> = {
     ...(Apps.appRegistry || {}),
     ...Apps.defaultTab.tabs.reduce((acc: Record<string, React.ComponentType<AppInfo>>, t: any) => {
       acc[t.appname] = t.App;
       return acc;
     }, {})
-  });
+  };
   const [mounted, setMounted] = useState(false);
   const [isCreateTask, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: false });
   const [, setAnimateExit] = useState(false);
@@ -187,7 +186,7 @@ export default function Container({ Apps }: { Apps: Project }) {
   };
 
   const [browsers, , { ready }] = useDatabaseImpl<Record<string, ControllableBrowser>>('ControllableBrowser', { initialValue: {} });
-  const snaptheme = useSnapshot(Theme);
+  const [snaptheme] = useThemeState();
   const currentLayout = snaptheme.layout;
   const [intializeTheme, setInitializeTheme] = useState(false);
   const [intializeBrowser, setInitializeBrowser] = useState(false);
@@ -444,8 +443,8 @@ export default function Container({ Apps }: { Apps: Project }) {
         }
         console.warn("Initial Theme :", savedTheme[0]?.theme, savedTheme[0]?.layout);
         // 4. Apply theme
-        Theme.theme = savedTheme[0]?.theme ?? 'dark';
-        Theme.layout = savedTheme[0]?.layout ?? defaultLayout;
+        setTheme(savedTheme[0]?.theme ?? 'dark');
+        setThemeLayout(savedTheme[0]?.layout ?? defaultLayout);
       }
       setInitializeTheme(true);
     })();
@@ -539,11 +538,11 @@ export default function Container({ Apps }: { Apps: Project }) {
   }, [workspaces.length])
   const [isSearchChatOpen, setIsSearchChatOpen] = useState(false);
   const searchRef = useRef<any>(null);
-  const snaptabs = useSnapshot(TabState);
+  const [snaptabs] = useTabState();
   const snaptabsRef = useRef(snaptabs)
   snaptabsRef.current = snaptabs
   const [tabs, setTabs] = useState<Record<string, React.ReactNode>>({});
-  const { children, layout, active, SetActive } = useSnapshot(TabInfo);
+  const [{ children, layout, active }] = useTabInfo();
   const activeRef = useRef(active)
   activeRef.current = active
   const actives = (() => {
@@ -567,30 +566,38 @@ export default function Container({ Apps }: { Apps: Project }) {
       allRef,
       emptyRef,
       useWorkspace: () => {
-        const { workspace, setWorkspace } = useSnapshot(Workspace);
+        const [{ workspace }] = useWorkspaceState();
         return { workspace: workspace ?? "global", setWorkspace };
       },
       tabId,
       appId,
       settings: settings,
       useActiveTabId: () => {
-        const { active } = useSnapshot(TabInfo);
+        const [{ active }] = useTabInfo();
         return active;
       },
       useTitle: () => {
-        const _tabs = useSnapshot(TabState);
+        const [_tabs] = useTabState();
         return typeof _tabs[tabId]?.title === "string" ? _tabs[tabId]?.title : null;
       },
       setTitle: (title: string) => {
-        if (TabState[tabId] && typeof TabState[tabId].childrenProps !== "undefined") TabState[tabId] = { ...TabState[tabId], title };
+        const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+        if (tabState[tabId] && typeof tabState[tabId].childrenProps !== "undefined") {
+          tabState[tabId].title = title;
+          setGlobal("TabState", { ...tabState });
+        }
       },
       setIcon: (icon: string) => {
-        if (TabState[tabId] && typeof TabState[tabId].childrenProps !== "undefined") TabState[tabId] = { ...TabState[tabId], iconOverride: icon };
+        const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+        if (tabState[tabId] && typeof tabState[tabId].childrenProps !== "undefined") {
+          tabState[tabId].iconOverride = icon;
+          setGlobal("TabState", { ...tabState });
+        }
       },
       useNotchVisible: () => {
         const slotIndex = children.indexOf(tabId);
         if (slotIndex === -1) return false;
-        const { layout: _layout } = useSnapshot(Theme)
+        const [{ layout: _layout }] = useThemeState();
         const isRightToLeft = _layout === "rightToLeft";
         if (isRightToLeft) {
           // Top-Left corner
@@ -623,10 +630,10 @@ export default function Container({ Apps }: { Apps: Project }) {
         }
       },
       useTheme: () => {
-        return useSnapshot(Theme);
+        return useThemeState()[0];
       },
       useTab: () => {
-        const _tabs = useSnapshot(TabState);
+        const [_tabs] = useTabState();
         return _tabs[tabId] as ITab;
       },
       addTab: (tabs: { app: string; data?: Record<string, any> }[] | { app: string; data?: Record<string, any> }, layout?: string) => {
@@ -714,7 +721,7 @@ export default function Container({ Apps }: { Apps: Project }) {
         return {};
       },
       useTool: () => {
-        const { workspace } = useSnapshot(Workspace);
+        const [{ workspace }] = useWorkspaceState();
         return async (tool: string, parameters: Record<string, any>) => {
           return await pyInvoke("tools/execute", { tool, workspace, tabId, ...parameters });
         }
@@ -794,7 +801,7 @@ export default function Container({ Apps }: { Apps: Project }) {
   }, [snaptabs]);
 
   useEffect(() => {
-    if (Object.keys(snaptabs).length == 0) MenuBar.appId = ''
+    if (Object.keys(snaptabs).length == 0) setMenuBarAppId('')
   }, [snaptabs])
 
   const prevMutedRef = useRef<Record<string, boolean>>({});
@@ -954,10 +961,11 @@ export default function Container({ Apps }: { Apps: Project }) {
       activeElement instanceof HTMLInputElement ||
       activeElement instanceof HTMLTextAreaElement ||
       (activeElement instanceof HTMLElement && activeElement.isContentEditable);
-    if (TabInfo.layout !== "single" && !isInputFocused) {
-      TabInfo.switchMode = true;
+    const currentTabInfo = getGlobal<TabInfoState>("TabInfo")!;
+    if (currentTabInfo.layout !== "single" && !isInputFocused) {
+      setTabInfoProp("switchMode", true);
     } else {
-      TabInfo.switchMode = false;
+      setTabInfoProp("switchMode", false);
     }
   }, ["control", "shift"]);
 
@@ -991,15 +999,16 @@ export default function Container({ Apps }: { Apps: Project }) {
     if (!mounted) return;
     // Input
     function onKeyDown(event: KeyboardEvent) {
-      KeyState.setKey(event.key.toLowerCase(), true);
-      KeyState.setCtrl(event.ctrlKey);
-      KeyState.setShift(event.shiftKey);
-      KeyState.setAlt(event.altKey);
+      setKey(event.key.toLowerCase(), true);
+      setCtrl(event.ctrlKey);
+      setShift(event.shiftKey);
+      setAlt(event.altKey);
       if (event.ctrlKey && event.key >= '1' && event.key <= '9') {
         event.preventDefault();
         const n = parseInt(event.key);
         const tabIndex = n === 9 ? -1 : n - 1;
-        const tabEntries = Object.entries(TabState);
+        const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+        const tabEntries = Object.entries(tabState);
         const pinned = tabEntries.filter(([_, tab]) => tab.group === 'pinned');
         const nonPinned = tabEntries.filter(([_, tab]) => tab.group !== 'pinned');
         const orderedTabs = [...pinned, ...nonPinned];
@@ -1011,7 +1020,7 @@ export default function Container({ Apps }: { Apps: Project }) {
           }
           if (targetIndex >= 0 && targetIndex < orderedTabs.length) {
             const [tabId] = orderedTabs[targetIndex];
-            TabInfo.SetActive(tabId);
+            setActive(tabId);
           }
         }
       }
@@ -1026,13 +1035,13 @@ export default function Container({ Apps }: { Apps: Project }) {
       }
     }
     function onKeyUp(event: KeyboardEvent) {
-      KeyState.setKey(event.key.toLowerCase(), false);
-      KeyState.setCtrl(event.ctrlKey);
-      KeyState.setShift(event.shiftKey);
-      KeyState.setAlt(event.altKey);
+      setKey(event.key.toLowerCase(), false);
+      setCtrl(event.ctrlKey);
+      setShift(event.shiftKey);
+      setAlt(event.altKey);
     }
     function onBlur() {
-      KeyState.clearKeys();
+      clearKeys();
     }
     const blockContextMenu = (e: MouseEvent) => {
       // const target = e.target as HTMLElement;
@@ -1080,9 +1089,10 @@ export default function Container({ Apps }: { Apps: Project }) {
 
       const label = data.label;
       const key = label.replace("webview-", "");
-      const tabId = Object.keys(TabState).find((id) => TabState[id].children.includes(key));
+      const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+      const tabId = Object.keys(tabState).find((id) => tabState[id].children.includes(key));
 
-      if (tabId && TabState[tabId]) {
+      if (tabId && tabState[tabId]) {
         setIsPlayingRegistry(prev => ({ ...prev, [tabId]: data.playing ?? false }))
       }
     }
@@ -1120,7 +1130,8 @@ export default function Container({ Apps }: { Apps: Project }) {
       if (!data) return;
       const tabIndex = data.tab_index;
       
-      const tabEntries = Object.entries(TabState);
+      const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
+      const tabEntries = Object.entries(tabState);
       const pinned = tabEntries.filter(([_, tab]) => tab.group === 'pinned');
       const nonPinned = tabEntries.filter(([_, tab]) => tab.group !== 'pinned');
       const orderedTabs = [...pinned, ...nonPinned];
@@ -1134,7 +1145,7 @@ export default function Container({ Apps }: { Apps: Project }) {
       
       if (targetIndex >= 0 && targetIndex < orderedTabs.length) {
         const [tabId] = orderedTabs[targetIndex];
-        TabInfo.SetActive(tabId);
+        setActive(tabId);
       }
     };
 
@@ -1176,11 +1187,13 @@ export default function Container({ Apps }: { Apps: Project }) {
   const mobileSearchInputRef = useRef<HTMLInputElement>(null);
   const [vieweportRef, { width: viewportWidth, height: viewportHeight, overflowX: viewportOverflowX, overflowY: viewportOverflowY, aspectRatio: viewportAspectRatio }] = useElementSize<HTMLDivElement>();
   useEffect(() => {
-    Viewport.width = viewportWidth;
-    Viewport.height = viewportHeight;
-    Viewport.overflowX = viewportOverflowX;
-    Viewport.overflowY = viewportOverflowY;
-    Viewport.aspectRatio = viewportAspectRatio;
+    setViewport({
+      width: viewportWidth,
+      height: viewportHeight,
+      overflowX: viewportOverflowX,
+      overflowY: viewportOverflowY,
+      aspectRatio: viewportAspectRatio
+    });
   }, [viewportWidth, viewportHeight, viewportOverflowX, viewportOverflowY, viewportAspectRatio])
   const [warmup, setWarmup] = useState(true);
   useEffect(() => {
@@ -1583,7 +1596,7 @@ export default function Container({ Apps }: { Apps: Project }) {
                         {Object.entries(snaptabs).filter(([, item]) => (item.title || "Untitled").toLowerCase().includes(mobileSearchText.toLowerCase())).map(([key, item], i) => (
                           <div
                             onClick={() => {
-                              SetActive(key)
+                              setActive(key)
                               setIsMobileSearching(false);
                             }}
                             key={i}
@@ -1615,7 +1628,7 @@ export default function Container({ Apps }: { Apps: Project }) {
                     <div className='p-1 bg-white/10 rounded-lg'>
                       {isMobileSearching
                         ? <Search className='w-4 h-4' />
-                        : TabInfo.icon({ className: "w-4 h-4" })
+                        : (typeof snaptabs[active]?.icon === 'function' ? snaptabs[active].icon({ className: "w-4 h-4" }) : <Search className='w-4 h-4' />)
                       }
                     </div>
                   </div>

@@ -1,8 +1,8 @@
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "./ui/resizable";
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
-import { useSnapshot } from "valtio";
-import { DragState, KeyState, reorderChildren, TabInfo, TabState, Viewport } from "../utils/state";
+import { useDragState, useKeyStateData, useTabInfo, useTabState, useViewport, setTabInfoProp, DragState, TabInfo, TabState, reorderChildren, setGlobal, getGlobal } from "../utils/state";
+import type { ITab } from "../utils/state";
 import { cn } from "../lib/utils";
 import type { ImperativePanelHandle } from "react-resizable-panels";
 
@@ -26,9 +26,9 @@ interface MultiViewProps {
 
 const ViewSlot = ({ node, id }: { node: HTMLElement | undefined, id: string }) => {
   const ref = useRef<HTMLDivElement>(null);
-  const { record } = useSnapshot(DragState);
-  const tabInfo = useSnapshot(TabInfo);
-  const { ctrl, shift } = useSnapshot(KeyState);
+  const [{ record }] = useDragState();
+  const [tabInfo] = useTabInfo();
+  const [{ ctrl, shift }] = useKeyStateData();
   const active = ctrl && shift && tabInfo.switchMode;
   // Replace all drag state with pointer state
   const isDragging = useRef(false);
@@ -223,25 +223,28 @@ export default function MultiView({
     const node = key ? nodesRef.current.get(key) : undefined;
     return <ViewSlot key={key || `slot-${slotIndex}`} node={node} id={key} />;
   };
-  const { size, active } = useSnapshot(TabInfo);
-  const { aspectRatio } = useSnapshot(Viewport);
-  const tabState = useSnapshot(TabState);
+  const [{ size, active }] = useTabInfo();
+  const [{ aspectRatio }] = useViewport();
+  const [tabState] = useTabState();
   const renderLayout = useCallback(() => {
-    const { ctrl, shift } = useSnapshot(KeyState);
-    const tabInfo = useSnapshot(TabInfo);
+    const [{ ctrl, shift }] = useKeyStateData();
+    const [tabInfo] = useTabInfo();
     const isSwitchModeActive = tabInfo.switchMode;
     const dragEvent = {
       className: ctrl && shift && isSwitchModeActive ? "bg-accent/50 dark:bg-accent/25" : "bg-[hsl(var(--chat-border))]/50 dark:bg-[hsl(var(--chat-border))]",
     }
     function handleResize(e: number, index: number) {
-
-      if (active !== "" && size[index]) {
-        TabInfo.size[index] = e;
-        console.warn("TabInfo.size[index]", TabInfo.size[index])
+      if (active !== "" && size[index] !== undefined) {
+        const newSize = [...size];
+        newSize[index] = e;
+        setTabInfoProp("size", newSize);
+        console.warn("TabInfo.size[index]", newSize[index]);
       }
-      if (tabState[active] && tabState[active].size && tabState[active].size[index]) {
-        TabState[active].size[index] = e;
-        console.warn("tabState[active].size[index]", tabState[active].size)
+      if (tabState[active]?.size?.[index] !== undefined) {
+        const curTabState = getGlobal<Record<string, ITab>>("TabState")!;
+        curTabState[active].size[index] = e;
+        setGlobal("TabState", { ...curTabState });
+        console.warn("tabState[active].size[index]", curTabState[active].size);
       }
     }
     const refs = [

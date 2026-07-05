@@ -32,7 +32,7 @@ import {
 import { ref, useFolder, useTheme, type AppInfo, Dropdown, useAvailableModels, uuidv4, usePythonEvent, useGlobal } from 'openchad-react'
 import clsx from 'clsx'
 import type { Model } from './utils'
-import { MenuBar } from './utils/state'
+import { setMenuBarAppId } from './utils/state'
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
@@ -1639,7 +1639,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
 
   useEffect(() => {
     if (activeTabId == tabId) {
-      MenuBar.appId = ''
+      setMenuBarAppId(appId);
     }
   }, [activeTabId])
 

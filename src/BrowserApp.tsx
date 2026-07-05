@@ -1,9 +1,9 @@
 import { Search, Globe } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { AsyncLock, useGlobal, useSnapshot, type AppInfo } from "openchad-react"
+import { AsyncLock, useGlobal, useMenuBar, type AppInfo } from "openchad-react"
 import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi'
 import clsx from 'clsx'
-import { deleteActiveTabWithGroupSelection, MenuBar, BrowserHandlers, BrowserNavState, TabState } from 'openchad-react/utils/state';
+import { deleteActiveTabWithGroupSelection, BrowserHandlers, TabState, getGlobal, setGlobal, type MenuBarState, setMenuBarAppId, setMenuBarTabId, setBrowserNav, type BrowserNavEntry } from 'openchad-react/utils/state';
 
 import { createWebview, uuidv4 } from 'openchad-react/utils';
 import { useDatabaseImpl } from 'openchad-react/components/useDatabase';
@@ -203,6 +203,8 @@ const cleanUrl = (u?: string | null) => {
   return u.replace(/\/$/, "");
 };
 
+const getMenuBarAppId = () => getGlobal<MenuBarState>("MenuBar")?.appId ?? "";
+
 export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, emptyRef, useWorkspace, setTitle, setIcon, pyInvoke, useActiveTabId, useTheme, tabId, appId, useTab }: AppInfo) {
   const { childrenProps, layout: tabLayout, children } = useTab() ?? {};
   const childrenCountRef = useRef((children || []).length)
@@ -218,7 +220,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   const { history, currentIndex } = navState;
   const { layout } = useTheme()
   const { workspace } = useWorkspace()
-  const { appId: activeAppId } = useSnapshot(MenuBar)
+  const { appId: activeAppId } = useMenuBar()
 
   const [focus, setFocus] = useGlobal('focusOnApp', { initialValue: false })
   const [refresh, setRefresh] = useState(0)
@@ -348,15 +350,19 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
 
   // Keep BrowserNavState up-to-date so BrowserBar back/forward buttons reflect reality
   useEffect(() => {
-    BrowserNavState[appId] = {
+    setBrowserNav(appId, {
       canGoBack: currentIndex > 0,
       canGoForward: currentIndex < history.length - 1,
-    };
+    });
   }, [currentIndex, history.length])
 
   // Cleanup nav state on unmount
   useEffect(() => {
-    return () => { delete BrowserNavState[appId]; };
+    return () => {
+      const cur = getGlobal<Record<string, BrowserNavEntry>>("BrowserNavState") ?? {};
+      const { [appId]: _, ...rest } = cur;
+      setGlobal("BrowserNavState", rest);
+    };
   }, [])
 
   useEffect(() => {
@@ -384,8 +390,8 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   // Activate this app's bar when tab becomes active
   useEffect(() => {
     if (activeTabId == tabId) {
-      MenuBar.appId = appId
-      MenuBar.tabId = tabId
+      setMenuBarAppId(appId)
+      setMenuBarTabId(tabId)
     }
   }, [activeTabId])
 
@@ -395,8 +401,8 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
 
   useEffect(() => {
     if (activeTabId == tabId && activeAppId == appId) {
-      MenuBar.appId = appId
-      MenuBar.tabId = tabId
+      setMenuBarAppId(appId)
+      setMenuBarTabId(tabId)
     }
   }, [activeTabId, activeAppId])
 
@@ -445,7 +451,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   useEffect(() => {
     // 1. Create a timer to delay execution by 100ms
     const timer = setTimeout(async () => {
-      if (activeTabIdRef.current !== tabId && MenuBar.appId !== appId) return
+      if (activeTabIdRef.current !== tabId && getMenuBarAppId() !== appId) return
       await AsyncLock.run(async () => {
         if (!mainWindowRef.current || !mainWebviewRef.current) return
         if (focus) {
@@ -782,25 +788,25 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
         ref={containerRef}
         id={label}
         onWheelCapture={() => {
-          if (MenuBar.appId !== appId) {
-            MenuBar.appId = appId
-            MenuBar.tabId = tabId
+          if (getMenuBarAppId() !== appId) {
+            setMenuBarAppId(appId)
+            setMenuBarTabId(tabId)
           } else {
             setFocus(true)
             setRefresh(prev => (prev + 1) % 2)
           }
         }}
         onPointerDown={() => {
-          if (MenuBar.appId !== appId) {
-            MenuBar.appId = appId
-            MenuBar.tabId = tabId
+          if (getMenuBarAppId() !== appId) {
+            setMenuBarAppId(appId)
+            setMenuBarTabId(tabId)
           } else {
             setFocus(true)
             setRefresh(prev => (prev + 1) % 2)
           }
         }}
         onMouseMove={() => {
-          if (MenuBar.appId !== appId && tabLayout !== "single") return;
+          if (getMenuBarAppId() !== appId && tabLayout !== "single") return;
           setFocus(true)
           setRefresh(prev => (prev + 1) % 2)
         }}

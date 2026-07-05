@@ -2,8 +2,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import clsx from 'clsx';
 import { ArrowLeft, ArrowRight, Columns, Columns2, Columns3, Grid2X2, LayoutPanelTop, Link2, Minus, PanelBottom, PanelsLeftBottom, PanelsRightBottom, RotateCw, Rows2, SlidersHorizontal, Square, X } from 'lucide-react';
 import { useRef, useState } from 'react';
-import { useSnapshot } from 'valtio';
-import { addTab, BrowserHandlers, BrowserNavState } from './utils/state';
+import { addTab, BrowserHandlers, useBrowserNavState } from './utils/state';
 import { uuidv4 } from './utils';
 import { useDatabaseImpl } from './components/useDatabase';
 import { useGlobal } from './components/useGlobal';
@@ -13,8 +12,8 @@ const isTauriEnv = typeof window !== "undefined" && !!(window as any).__TAURI__;
 
 export function BrowserBar({ appId }: { appId: string }) {
   const [url] = useDatabaseImpl(`${appId}-url`, {initialValue: {url: "about:blank"}});
-  const navSnap = useSnapshot(BrowserNavState);
-  const nav = navSnap[appId] ?? { canGoBack: false, canGoForward: false };
+  const [navState] = useBrowserNavState();
+  const nav = navState[appId] ?? { canGoBack: false, canGoForward: false };
   const { canGoBack, canGoForward } = nav;
 
   return (
