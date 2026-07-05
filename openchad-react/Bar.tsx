@@ -1,20 +1,22 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import clsx from 'clsx';
-import { ArrowLeft, ArrowRight, Columns, Columns2, Columns3, Grid2X2, LayoutPanelTop, Link2, Minus, PanelBottom, PanelsLeftBottom, PanelsRightBottom, RotateCw, Rows2, SlidersHorizontal, Square, X } from 'lucide-react';
+import { ArrowLeft, ArrowLeftRight, ArrowRight, Columns, Columns2, Columns3, Columns3Cog, Grid2X2, LayoutPanelTop, Link2, Minus, PanelBottom, PanelsLeftBottom, PanelsRightBottom, RotateCw, Rows2, SlidersHorizontal, Square, X } from 'lucide-react';
 import { useRef, useState } from 'react';
-import { addTab, BrowserHandlers, useBrowserNavState } from './utils/state';
+import { useSnapshot } from 'valtio';
+import { addTab, BrowserHandlers, BrowserNavState, TabInfo } from './utils/state';
 import { uuidv4 } from './utils';
 import { useDatabaseImpl } from './components/useDatabase';
 import { useGlobal } from './components/useGlobal';
+import { invoke } from '@tauri-apps/api/core';
 
 const isTauriEnv = typeof window !== "undefined" && !!(window as any).__TAURI__;
 
 
 export function BrowserBar({ appId }: { appId: string }) {
-  const [url] = useDatabaseImpl(`${appId}-url`, {initialValue: {url: "about:blank"}});
-  const [navState] = useBrowserNavState();
-  const nav = navState[appId] ?? { canGoBack: false, canGoForward: false };
-  const { canGoBack, canGoForward } = nav;
+  const [url] = useDatabaseImpl(`${appId}-url`, { initialValue: { url: "about:blank" } });
+  const navSnap = useSnapshot(BrowserNavState);
+  const nav = navSnap[appId] ?? { canGoBack: false, canGoForward: false, layout: "single" };
+  const { canGoBack, canGoForward, layout } = nav;
 
   return (
     <>
@@ -53,13 +55,13 @@ export function BrowserBar({ appId }: { appId: string }) {
 
       {/* Pill-shaped Address Bar (Middle) */}
       <div className="flex-1 px-4 pointer-events-none">
-        { /^https?:\/\//.test(url.url) && <div 
-        style={{
-          top:'2px'
-        }}
-        className={clsx(
-          "absolute left-0 w-full h-7 rounded-full flex items-center justify-center px-3 gap-2 transition-all pointer-events-none",
-        )}>
+        {/^https?:\/\//.test(url.url) && <div
+          style={{
+            top: '2px'
+          }}
+          className={clsx(
+            "absolute left-0 w-full h-7 rounded-full flex items-center justify-center px-3 gap-2 transition-all pointer-events-none",
+          )}>
           <div
             onClick={() => { BrowserHandlers[appId]?.addressBarClick?.(); }}
             className={clsx(
@@ -75,6 +77,22 @@ export function BrowserBar({ appId }: { appId: string }) {
       <div className={clsx(
         'flex items-center gap-2 px-4 pointer-events-auto',
       )}>
+        {layout !== "single" && <Columns3Cog
+          onClick={() => {
+            const activeElement = document.activeElement;
+            const isInputFocused =
+              activeElement instanceof HTMLInputElement ||
+              activeElement instanceof HTMLTextAreaElement ||
+              (activeElement instanceof HTMLElement && activeElement.isContentEditable);
+            if (TabInfo.layout !== "single" && !isInputFocused) {
+              TabInfo.switchMode = true;
+              window.dispatchEvent(new CustomEvent('switchMode'));
+            } else {
+              TabInfo.switchMode = false;
+              window.dispatchEvent(new CustomEvent('switchMode'));
+            }
+          }}
+          className='text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200 cursor-pointer' size={14} />}
         <Columns2
           onClick={() => {
             addTab({

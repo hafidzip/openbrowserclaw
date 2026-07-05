@@ -160,21 +160,7 @@ APPS_DIR = os.environ.get("OPENCHAD_APPS_DIR", os.path.join(_PROJECT_ROOT, "Apps
 MODEL_PROVIDERS_DIR = os.environ.get("OPENCHAD_MODEL_PROVIDERS_DIR", os.path.join(_PROJECT_ROOT, "ModelProvider"))
 SETTINGS_DIR = os.environ.get("OPENCHAD_SETTINGS_DIR", os.path.join(_PROJECT_ROOT, "Settings"))
 
-def get_plugin_dirs():
-    """Return absolute paths for all plugin and data directories."""
-    return {
-        "PROJECT_ROOT": os.path.abspath(_PROJECT_ROOT),
-        "PYTHON_ROOT": os.path.abspath(_PYTHON_ROOT),
-        "BACKENDS_DIR": os.path.abspath(BACKENDS_DIR),
-        "PIPELINES_DIR": os.path.abspath(PIPELINES_DIR),
-        "TOOLS_DIR": os.path.abspath(TOOLS_DIR),
-        "APPS_DIR": os.path.abspath(APPS_DIR),
-        "MODEL_PROVIDERS_DIR": os.path.abspath(MODEL_PROVIDERS_DIR),
-        "SETTINGS_DIR": os.path.abspath(SETTINGS_DIR),
-        "is_darwin": sys.platform == "darwin",
-        "is_windows": os.name == "nt",
-        "is_linux": sys.platform == "linux",
-    }
+
 
 # Initialize Shared Config Lock
 config_lock = asyncio.Lock()
@@ -296,10 +282,27 @@ def find_available_port(host: str, start_port: int, max_attempts: int = 256) -> 
         f"No available ports found in range {start_port}–{start_port + max_attempts - 1}"
     )
 port = find_available_port("127.0.0.1", 2048)
-
 DEV_MODE = os.getenv("DEV_MODE", "false").lower() == "true"
 VITE_PORT = os.getenv("VITE_PORT", "3000")
 APP_NAME = os.getenv("APP_NAME", "openchad")
+base_url = f"http://localhost:{(VITE_PORT if DEV_MODE else str(port))}"
+
+def get_plugin_dirs():
+    """Return absolute paths for all plugin and data directories."""
+    return {
+        "BASE_URL": base_url,
+        "PROJECT_ROOT": os.path.abspath(_PROJECT_ROOT),
+        "PYTHON_ROOT": os.path.abspath(_PYTHON_ROOT),
+        "BACKENDS_DIR": os.path.abspath(BACKENDS_DIR),
+        "PIPELINES_DIR": os.path.abspath(PIPELINES_DIR),
+        "TOOLS_DIR": os.path.abspath(TOOLS_DIR),
+        "APPS_DIR": os.path.abspath(APPS_DIR),
+        "MODEL_PROVIDERS_DIR": os.path.abspath(MODEL_PROVIDERS_DIR),
+        "SETTINGS_DIR": os.path.abspath(SETTINGS_DIR),
+        "is_darwin": sys.platform == "darwin",
+        "is_windows": os.name == "nt",
+        "is_linux": sys.platform == "linux",
+    }
 
 mcp_instance = FastMCP(APP_NAME)
 is_windows = os.name == "nt"
@@ -2617,7 +2620,7 @@ def main() -> int:
     logger.info("[PATH] Tauri.toml     = %s  (exists=%s)", tauri_toml, tauri_toml.exists())
 
     # ── Step 1: Set BASE_URL ──────────────────────────────────────────────────
-    base_url = f"localhost:{(VITE_PORT if DEV_MODE else str(port))}"
+    
     os.environ["BASE_URL"] = base_url
     logger.info("[STEP 1] BASE_URL set to: %s", base_url)
 

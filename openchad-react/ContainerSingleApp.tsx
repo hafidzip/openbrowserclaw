@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { selectModel } from './components/sidebar'
 import { motion } from "motion/react"
-import { Theme, useWorkspaceState, useThemeState, setWorkspace, KeyState } from './utils/state'
+import { KeyState, Workspace, Theme, } from './utils/state'
+import { useSnapshot } from 'valtio'
 import React from 'react'
 import { usePython, usePythonEvent } from './components/usePython'
 import { SelectWorkspace } from './components/select-workspace'
@@ -30,7 +31,7 @@ export default function ContainerSingleApp({ App, enableWorkspace = false }: { A
     const { settings, updateSetting } = useSettings();
     const [startupStatus] = useState<any>(null);
     const [, , { folders }] = useFolderImpl('Workspaces');
-    const [{ workspace }] = useWorkspaceState();
+    const { workspace, setWorkspace } = useSnapshot(Workspace);
     const [isSwitchWorkspace, setIsSwitchWorkspace] = useState(false);
     const [mounted, setMounted] = useState(false);
     const [showMcpDialog, setShowMcpDialog] = useGlobal('showMcpDialog', {initialValue: false})
@@ -38,7 +39,7 @@ export default function ContainerSingleApp({ App, enableWorkspace = false }: { A
     const [showLocalModelDialog, setShowLocalModelDialog] = useGlobal('showLocalModelDialog', {initialValue: false})
     const [showCustomEndpointDialog, setShowCustomEndpointDialog] = useGlobal('showCustomEndpointDialog', {initialValue: false})
     const [setupModel, setSetupModel] = useState(false);
-    const [snaptheme] = useThemeState();
+    const snaptheme = useSnapshot(Theme);
     const [intialzeTheme, setInitialzeTheme] = useState(false);
     const isFirstSave = useRef(true);
 

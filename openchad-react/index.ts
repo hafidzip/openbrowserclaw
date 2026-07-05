@@ -12,7 +12,7 @@ import { OpenChadIcon } from "./components/open-chad-icon";
 import ContainerSingleApp from "./ContainerSingleApp";
 import ContainerOverlayApp from "./ContainerOverlayApp";
 import { proxy, ref, useSnapshot } from "valtio";
-import { useWorkspaceState, useThemeState, useMenuBarState } from "./utils/state";
+import { MenuBar, Theme, Workspace } from "./utils/state";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { uuidv4 } from "./utils";
 import { AsyncMutex } from "./components/Mutex/mutex";
@@ -29,7 +29,7 @@ function generateIdFromString(input: string): string {
 
 const useTool = <T,>() => {
     const { pyInvoke } = usePython()
-    const [{ workspace }] = useWorkspaceState();
+    const { workspace } = useSnapshot(Workspace);
     const tabId = "global";
     return (tool: string, parameters: Record<string, any>) => {
         return pyInvoke<T>("tools/execute", { tool, workspace: workspace ?? "global", tabId, ...parameters });
@@ -37,7 +37,7 @@ const useTool = <T,>() => {
 }
 
 const useDatabase = <T,>(tb: string, options?: { initialValue?: T }) => {
-    const [{ workspace }] = useWorkspaceState();
+    const { workspace } = useSnapshot(Workspace);
     const hashed = generateIdFromString(`${workspace ?? "global"}/${tb}`);
     return (options?.initialValue !== undefined)
         ? useDatabaseImplBase<T>(workspace ?? "global", hashed, options.initialValue)
@@ -73,7 +73,7 @@ const useGlobal = <T = Record<string, unknown>>(
 };
 
 const useTheme = () => {
-    return useThemeState()[0];
+    return useSnapshot(Theme)
 }
 
 const useEvent = <T,>(event: string, callback: (data: T) => void) => {
@@ -87,7 +87,7 @@ const useEvent = <T,>(event: string, callback: (data: T) => void) => {
 }
 
 const useMenuBar = () => {
-    const [snap] = useMenuBarState();
+    const snap = useSnapshot(MenuBar)
     return snap;
 }
 
@@ -102,6 +102,8 @@ if (import.meta.hot) {
         // Drain all parked waiters so nothing hangs after the module is replaced
         data.asyncLock?.reset();
         data.asyncLock = (globalThis as any).__AsyncLock__;
+        data.webCreationLock?.reset();
+        data.webCreationLock = (globalThis as any).__WebCreationLock__;
     });
 }
 function _getOrCreateLock(): AsyncMutex {
@@ -114,7 +116,19 @@ function _getOrCreateLock(): AsyncMutex {
     }
     return (globalThis as any).__AsyncLock__;
 }
+
+function _getOrCreateWebCreationLock(): AsyncMutex {
+    if (import.meta.hot) {
+        const prev = (import.meta.hot.data as any)?.webCreationLock;
+        if (prev instanceof AsyncMutex) return prev;
+    }
+    if (!(globalThis as any).__WebCreationLock__) {
+        (globalThis as any).__WebCreationLock__ = new AsyncMutex();
+    }
+    return (globalThis as any).__WebCreationLock__;
+}
 const AsyncLock = _getOrCreateLock();
+const WebCreationLock = _getOrCreateWebCreationLock()
 
 function useAvailableModels() {
     const { pyInvoke } = usePython()
@@ -188,12 +202,12 @@ interface IAgent {
     id?: string | null,
     name?: string | null,
     icon?: string | null,
-    timestamp?: number| null,
+    timestamp?: number | null,
 }
 
 function useAvailableAgents() {
     const { pyInvoke } = usePython()
-    const [{ workspace }] = useWorkspaceState();
+    const { workspace } = useSnapshot(Workspace)
     const [agents, setAgents] = useState<IAgent[]>([])
     const [isLoading, setLoading] = useState(true)
 
@@ -271,6 +285,7 @@ export {
     useAvailableModels,
     useAvailableAgents,
     AsyncLock,
+    WebCreationLock,
     proxy,
     ref,
     useSnapshot,

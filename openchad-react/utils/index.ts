@@ -24,7 +24,7 @@ export async function createWebview(
     label: string,
     options: CreateWebviewOptions = {}
 ): Promise<Webview | undefined> {
-    await AsyncLock.acquire()
+    await AsyncLock.acquire();
     try {
         let w = await Webview.getByLabel(label);
         

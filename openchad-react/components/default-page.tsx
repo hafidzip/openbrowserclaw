@@ -11,7 +11,7 @@ import ModelSelection from "./model-selection";
 import { ArrowDown } from "lucide-react";
 import { generateIdFromString, useAvailableAgents, useGlobal, type IAgent } from "../index";
 import type { SelectionMode } from "./composer";
-import { setMenuBarAppId } from "openchad-react/utils/state";
+import { MenuBar } from "openchad-react/utils/state";
 import { useDatabaseImpl } from "./useDatabase";
 
 export interface MessageState {
@@ -166,7 +166,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
 
     useEffect(() => {
         if (activeId == tabId && currentTab && currentTab.children[0] == appId) {
-            setMenuBarAppId('');
+            MenuBar.appId = '';
         }
     }, [activeId]);
 

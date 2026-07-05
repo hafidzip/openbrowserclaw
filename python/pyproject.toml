@@ -3,7 +3,7 @@ name = "python"
 version = "0.1.0"
 description = "OpenBrowser - AI-driven Browser built with OpenChad"
 readme = "README.md"
-requires-python = ">=3.13, <3.14"
+requires-python = ">=3.13"
 
 dependencies = [
     "openchadpy",
@@ -11,7 +11,6 @@ dependencies = [
     "huggingface_hub",
     "llama-cpp-python>=0.3.30",
     "playwright>=1.49.0",
-    "greetingtool>=0.1.0",
 ]
 
 [tool.uv.sources]

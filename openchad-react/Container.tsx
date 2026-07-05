@@ -9,7 +9,8 @@ import useElementSize from './components/hooks/useElementSize'
 import { Button } from './components/ui/button'
 import uuidv4 from './utils/uuid'
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener'
-import { KeyState, TabInfo, TabState, Viewport, Workspace, Theme, MenuBar, addTab, closeTab, detachTab, type ITab, deleteTab, deleteTabWithGroupSelection, deleteActiveTabWithGroupSelection, useWorkspaceState, useThemeState, useTabState, useTabInfo, setWorkspace, setActive, setMenuBarTabId, setMenuBarAppId, getGlobal, setGlobal, setTheme, setThemeLayout, setTabInfoProp, setKey, setCtrl, setShift, setAlt, clearKeys, setViewport, type TabInfoState } from './utils/state'
+import { KeyState, TabInfo, TabState, Viewport, Workspace, Theme, MenuBar, addTab, closeTab, detachTab, type ITab, deleteTab, deleteTabWithGroupSelection, deleteActiveTabWithGroupSelection } from './utils/state'
+import { proxy, useSnapshot } from 'valtio'
 import MultiView, { type LayoutType } from './components/multiview'
 import { Spinner } from './components/ui/spinner'
 import React from 'react'
@@ -118,6 +119,7 @@ export default function Container({ Apps }: { Apps: Project }) {
   if (Apps.defaultTab.tabs.length === 0) {
     throw new Error("Apps.defaultTab.tabs is empty");
   }
+
   (window as any).defaultLayout = Apps.defaultTab.layout;
   (window as any).defaultIcon = Apps.defaultTab.icon;
   (window as any).defaultTabs = Apps.defaultTab.tabs;
@@ -129,16 +131,16 @@ export default function Container({ Apps }: { Apps: Project }) {
   const { settings } = useSettings();
   const [startupStatus] = useState<any>(null);
   const [test, , { folders }] = useFolderImpl('Workspaces');
-  const [{ workspace }] = useWorkspaceState();
+  const { workspace, setWorkspace } = useSnapshot(Workspace);
   const workspaceRef = useRef(workspace);
   workspaceRef.current = workspace
-  const appRegistry: Record<string, React.ComponentType<AppInfo>> = {
+  const appRegistry = proxy<Record<string, React.ComponentType<AppInfo>>>({
     ...(Apps.appRegistry || {}),
     ...Apps.defaultTab.tabs.reduce((acc: Record<string, React.ComponentType<AppInfo>>, t: any) => {
       acc[t.appname] = t.App;
       return acc;
     }, {})
-  };
+  });
   const [mounted, setMounted] = useState(false);
   const [isCreateTask, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: false });
   const [, setAnimateExit] = useState(false);
@@ -186,7 +188,7 @@ export default function Container({ Apps }: { Apps: Project }) {
   };
 
   const [browsers, , { ready }] = useDatabaseImpl<Record<string, ControllableBrowser>>('ControllableBrowser', { initialValue: {} });
-  const [snaptheme] = useThemeState();
+  const snaptheme = useSnapshot(Theme);
   const currentLayout = snaptheme.layout;
   const [intializeTheme, setInitializeTheme] = useState(false);
   const [intializeBrowser, setInitializeBrowser] = useState(false);
@@ -265,35 +267,49 @@ export default function Container({ Apps }: { Apps: Project }) {
 
         if (!allRef.current?.find((wv) => wv.label === label)) {
           console.warn("Browser : ", browser);
+          await AsyncLock.acquire()
+          const __url__ = (browser.url && /^https?:\/\//i.test(browser.url)) ? browser.url : "about:blank";
           const w = await createWebview(label, {
-            url: 'about:blank',
+            url: "about:blank",
             width: size?.width,
             height: size?.height,
             x: position?.x,
             y: position?.y,
           });
 
-
-          if (browser.url && /^https?:\/\//.test(browser.url)) setTimeout(async () => {
-            await pyInvoke('eval', { label, script: `window.location.href = '${browser.url}'` })
-          }
-            , 250);
-
           if (w) {
-            await w.once('tauri://error', (e) => {
-              console.error(`Webview "${label}" failed to create:`, e);
-            });
 
-            await w.listen('page_loaded', (event) => {
-              window.dispatchEvent(new CustomEvent('page_loaded', { detail: event.payload }));
-              if (snaptabsRef.current && !snaptabsRef.current[uuid]) {
-                invoke('set_webview_muted', { label: label, muted: true })
+            // const goTo = async () => {
+            //   if (__url__ && /^https?:\/\//i.test(__url__)) {
+            //     await invoke('eval_in_webview', {
+            //       label: label,
+            //       script: `if(window.location.href === 'about:blank') window.location.href = '${__url__}'`,
+            //     });
+            //   }
+            // }
+
+            // let intervalId = setInterval(async () => {
+            //   await goTo()
+            // }, 250)
+
+            // if (!/^https?:\/\//i.test(__url__)) {
+            //   clearInterval(intervalId);
+            // }
+
+            await w.listen('page_loaded', (event: { payload: { target: string }; }) => {
+              if (event.payload.target === label) {
+                AsyncLock.release()
+                window.dispatchEvent(new CustomEvent('page_loaded', { detail: event.payload }));
+                // clearInterval(intervalId);
+                if (snaptabsRef.current && !snaptabsRef.current[uuid]) {
+                  invoke('set_webview_muted', { label: label, muted: true })
+                }
               }
               console.warn("page_loaded:", event.payload);
             });
 
             await w.listen('fullscreen_changed', (event: { payload: { label: string, isFullscreen: boolean; }; }) => {
-              if(snaptabsRef.current && snaptabsRef.current[uuid]) window.dispatchEvent(new CustomEvent('fullscreen_changed', { detail: event.payload }));
+              if (snaptabsRef.current && snaptabsRef.current[uuid]) window.dispatchEvent(new CustomEvent('fullscreen_changed', { detail: event.payload }));
             });
 
 
@@ -443,8 +459,8 @@ export default function Container({ Apps }: { Apps: Project }) {
         }
         console.warn("Initial Theme :", savedTheme[0]?.theme, savedTheme[0]?.layout);
         // 4. Apply theme
-        setTheme(savedTheme[0]?.theme ?? 'dark');
-        setThemeLayout(savedTheme[0]?.layout ?? defaultLayout);
+        Theme.theme = savedTheme[0]?.theme ?? 'dark';
+        Theme.layout = savedTheme[0]?.layout ?? defaultLayout;
       }
       setInitializeTheme(true);
     })();
@@ -515,6 +531,7 @@ export default function Container({ Apps }: { Apps: Project }) {
     (async () => {
       const res = await fetch("/api/get_plugin_dirs");
       const data = await res.json();
+      (window as any).BASE_URL = data.BASE_URL;
       (window as any).PROJECT_ROOT = data.PROJECT_ROOT;
       (window as any).PYTHON_ROOT = data.PYTHON_ROOT;
       (window as any).BACKENDS_DIR = data.BACKENDS_DIR;
@@ -538,11 +555,11 @@ export default function Container({ Apps }: { Apps: Project }) {
   }, [workspaces.length])
   const [isSearchChatOpen, setIsSearchChatOpen] = useState(false);
   const searchRef = useRef<any>(null);
-  const [snaptabs] = useTabState();
+  const snaptabs = useSnapshot(TabState);
   const snaptabsRef = useRef(snaptabs)
   snaptabsRef.current = snaptabs
   const [tabs, setTabs] = useState<Record<string, React.ReactNode>>({});
-  const [{ children, layout, active }] = useTabInfo();
+  const { children, layout, active, SetActive } = useSnapshot(TabInfo);
   const activeRef = useRef(active)
   activeRef.current = active
   const actives = (() => {
@@ -566,38 +583,30 @@ export default function Container({ Apps }: { Apps: Project }) {
       allRef,
       emptyRef,
       useWorkspace: () => {
-        const [{ workspace }] = useWorkspaceState();
+        const { workspace, setWorkspace } = useSnapshot(Workspace);
         return { workspace: workspace ?? "global", setWorkspace };
       },
       tabId,
       appId,
       settings: settings,
       useActiveTabId: () => {
-        const [{ active }] = useTabInfo();
+        const { active } = useSnapshot(TabInfo);
         return active;
       },
       useTitle: () => {
-        const [_tabs] = useTabState();
+        const _tabs = useSnapshot(TabState);
         return typeof _tabs[tabId]?.title === "string" ? _tabs[tabId]?.title : null;
       },
       setTitle: (title: string) => {
-        const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
-        if (tabState[tabId] && typeof tabState[tabId].childrenProps !== "undefined") {
-          tabState[tabId].title = title;
-          setGlobal("TabState", { ...tabState });
-        }
+        if (TabState[tabId] && typeof TabState[tabId].childrenProps !== "undefined") TabState[tabId] = { ...TabState[tabId], title };
       },
       setIcon: (icon: string) => {
-        const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
-        if (tabState[tabId] && typeof tabState[tabId].childrenProps !== "undefined") {
-          tabState[tabId].iconOverride = icon;
-          setGlobal("TabState", { ...tabState });
-        }
+        if (TabState[tabId] && typeof TabState[tabId].childrenProps !== "undefined") TabState[tabId] = { ...TabState[tabId], iconOverride: icon };
       },
       useNotchVisible: () => {
         const slotIndex = children.indexOf(tabId);
         if (slotIndex === -1) return false;
-        const [{ layout: _layout }] = useThemeState();
+        const { layout: _layout } = useSnapshot(Theme)
         const isRightToLeft = _layout === "rightToLeft";
         if (isRightToLeft) {
           // Top-Left corner
@@ -630,10 +639,10 @@ export default function Container({ Apps }: { Apps: Project }) {
         }
       },
       useTheme: () => {
-        return useThemeState()[0];
+        return useSnapshot(Theme);
       },
       useTab: () => {
-        const [_tabs] = useTabState();
+        const _tabs = useSnapshot(TabState);
         return _tabs[tabId] as ITab;
       },
       addTab: (tabs: { app: string; data?: Record<string, any> }[] | { app: string; data?: Record<string, any> }, layout?: string) => {
@@ -721,7 +730,7 @@ export default function Container({ Apps }: { Apps: Project }) {
         return {};
       },
       useTool: () => {
-        const [{ workspace }] = useWorkspaceState();
+        const { workspace } = useSnapshot(Workspace);
         return async (tool: string, parameters: Record<string, any>) => {
           return await pyInvoke("tools/execute", { tool, workspace, tabId, ...parameters });
         }
@@ -801,7 +810,7 @@ export default function Container({ Apps }: { Apps: Project }) {
   }, [snaptabs]);
 
   useEffect(() => {
-    if (Object.keys(snaptabs).length == 0) setMenuBarAppId('')
+    if (Object.keys(snaptabs).length == 0) MenuBar.appId = ''
   }, [snaptabs])
 
   const prevMutedRef = useRef<Record<string, boolean>>({});
@@ -961,11 +970,10 @@ export default function Container({ Apps }: { Apps: Project }) {
       activeElement instanceof HTMLInputElement ||
       activeElement instanceof HTMLTextAreaElement ||
       (activeElement instanceof HTMLElement && activeElement.isContentEditable);
-    const currentTabInfo = getGlobal<TabInfoState>("TabInfo")!;
-    if (currentTabInfo.layout !== "single" && !isInputFocused) {
-      setTabInfoProp("switchMode", true);
+    if (TabInfo.layout !== "single" && !isInputFocused) {
+      TabInfo.switchMode = true;
     } else {
-      setTabInfoProp("switchMode", false);
+      TabInfo.switchMode = false;
     }
   }, ["control", "shift"]);
 
@@ -999,30 +1007,12 @@ export default function Container({ Apps }: { Apps: Project }) {
     if (!mounted) return;
     // Input
     function onKeyDown(event: KeyboardEvent) {
-      setKey(event.key.toLowerCase(), true);
-      setCtrl(event.ctrlKey);
-      setShift(event.shiftKey);
-      setAlt(event.altKey);
+      KeyState.setKey(event.key.toLowerCase(), true);
+      KeyState.setCtrl(event.ctrlKey);
+      KeyState.setShift(event.shiftKey);
+      KeyState.setAlt(event.altKey);
       if (event.ctrlKey && event.key >= '1' && event.key <= '9') {
-        event.preventDefault();
-        const n = parseInt(event.key);
-        const tabIndex = n === 9 ? -1 : n - 1;
-        const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
-        const tabEntries = Object.entries(tabState);
-        const pinned = tabEntries.filter(([_, tab]) => tab.group === 'pinned');
-        const nonPinned = tabEntries.filter(([_, tab]) => tab.group !== 'pinned');
-        const orderedTabs = [...pinned, ...nonPinned];
-        
-        if (orderedTabs.length > 0) {
-          let targetIndex = tabIndex;
-          if (tabIndex === -1) {
-            targetIndex = orderedTabs.length - 1;
-          }
-          if (targetIndex >= 0 && targetIndex < orderedTabs.length) {
-            const [tabId] = orderedTabs[targetIndex];
-            setActive(tabId);
-          }
-        }
+
       }
       // Block F12
       if (event.key === 'F12') {
@@ -1035,13 +1025,13 @@ export default function Container({ Apps }: { Apps: Project }) {
       }
     }
     function onKeyUp(event: KeyboardEvent) {
-      setKey(event.key.toLowerCase(), false);
-      setCtrl(event.ctrlKey);
-      setShift(event.shiftKey);
-      setAlt(event.altKey);
+      KeyState.setKey(event.key.toLowerCase(), false);
+      KeyState.setCtrl(event.ctrlKey);
+      KeyState.setShift(event.shiftKey);
+      KeyState.setAlt(event.altKey);
     }
     function onBlur() {
-      clearKeys();
+      KeyState.clearKeys();
     }
     const blockContextMenu = (e: MouseEvent) => {
       // const target = e.target as HTMLElement;
@@ -1089,11 +1079,10 @@ export default function Container({ Apps }: { Apps: Project }) {
 
       const label = data.label;
       const key = label.replace("webview-", "");
-      const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
-      const tabId = Object.keys(tabState).find((id) => tabState[id].children.includes(key));
+      const tabId = Object.keys(TabState).find((id) => TabState[id].children.includes(key));
 
-      if (tabId && tabState[tabId]) {
-        setIsPlayingRegistry(prev => ({ ...prev, [tabId]: data.playing ?? false }))
+      if (tabId && TabState[tabId]) {
+        setIsPlayingRegistry((prev: Record<string, boolean>) => ({ ...prev, [tabId]: data.playing ?? false }))
       }
     }
 
@@ -1129,23 +1118,22 @@ export default function Container({ Apps }: { Apps: Project }) {
       const data = event.detail;
       if (!data) return;
       const tabIndex = data.tab_index;
-      
-      const tabState = getGlobal<Record<string, ITab>>("TabState") ?? {};
-      const tabEntries = Object.entries(tabState);
+
+      const tabEntries = Object.entries(TabState);
       const pinned = tabEntries.filter(([_, tab]) => tab.group === 'pinned');
       const nonPinned = tabEntries.filter(([_, tab]) => tab.group !== 'pinned');
       const orderedTabs = [...pinned, ...nonPinned];
-      
+
       if (orderedTabs.length === 0) return;
-      
+
       let targetIndex = tabIndex;
       if (tabIndex === -1) {
         targetIndex = orderedTabs.length - 1;
       }
-      
+
       if (targetIndex >= 0 && targetIndex < orderedTabs.length) {
         const [tabId] = orderedTabs[targetIndex];
-        setActive(tabId);
+        TabInfo.SetActive(tabId);
       }
     };
 
@@ -1187,13 +1175,11 @@ export default function Container({ Apps }: { Apps: Project }) {
   const mobileSearchInputRef = useRef<HTMLInputElement>(null);
   const [vieweportRef, { width: viewportWidth, height: viewportHeight, overflowX: viewportOverflowX, overflowY: viewportOverflowY, aspectRatio: viewportAspectRatio }] = useElementSize<HTMLDivElement>();
   useEffect(() => {
-    setViewport({
-      width: viewportWidth,
-      height: viewportHeight,
-      overflowX: viewportOverflowX,
-      overflowY: viewportOverflowY,
-      aspectRatio: viewportAspectRatio
-    });
+    Viewport.width = viewportWidth;
+    Viewport.height = viewportHeight;
+    Viewport.overflowX = viewportOverflowX;
+    Viewport.overflowY = viewportOverflowY;
+    Viewport.aspectRatio = viewportAspectRatio;
   }, [viewportWidth, viewportHeight, viewportOverflowX, viewportOverflowY, viewportAspectRatio])
   const [warmup, setWarmup] = useState(true);
   useEffect(() => {
@@ -1596,7 +1582,7 @@ export default function Container({ Apps }: { Apps: Project }) {
                         {Object.entries(snaptabs).filter(([, item]) => (item.title || "Untitled").toLowerCase().includes(mobileSearchText.toLowerCase())).map(([key, item], i) => (
                           <div
                             onClick={() => {
-                              setActive(key)
+                              SetActive(key)
                               setIsMobileSearching(false);
                             }}
                             key={i}
@@ -1628,7 +1614,7 @@ export default function Container({ Apps }: { Apps: Project }) {
                     <div className='p-1 bg-white/10 rounded-lg'>
                       {isMobileSearching
                         ? <Search className='w-4 h-4' />
-                        : (typeof snaptabs[active]?.icon === 'function' ? snaptabs[active].icon({ className: "w-4 h-4" }) : <Search className='w-4 h-4' />)
+                        : TabInfo.icon({ className: "w-4 h-4" })
                       }
                     </div>
                   </div>

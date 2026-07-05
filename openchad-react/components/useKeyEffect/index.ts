@@ -1,9 +1,10 @@
 import { useEffect } from "react";
 import type { EffectCallback } from "react";
-import { useKeyStateData } from "../../utils/state";
+import { useSnapshot } from "valtio";
+import { KeyState } from "../../utils/state";
 
 export default function useKeyEffect(callback: EffectCallback, keys: string[]) {
-    const [{ keys: KEYS }] = useKeyStateData();
+    const { keys: KEYS } = useSnapshot(KeyState);
     useEffect(() => {
         // Check if all keys are active
         const active = keys.every(key => KEYS[key]);

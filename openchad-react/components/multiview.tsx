@@ -1,8 +1,8 @@
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "./ui/resizable";
 import React, { useRef, useEffect, useLayoutEffect, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
-import { useDragState, useKeyStateData, useTabInfo, useTabState, useViewport, setTabInfoProp, DragState, TabInfo, TabState, reorderChildren, setGlobal, getGlobal } from "../utils/state";
-import type { ITab } from "../utils/state";
+import { useSnapshot } from "valtio";
+import { DragState, KeyState, reorderChildren, TabInfo, TabState, Viewport } from "../utils/state";
 import { cn } from "../lib/utils";
 import type { ImperativePanelHandle } from "react-resizable-panels";
 
@@ -26,10 +26,9 @@ interface MultiViewProps {
 
 const ViewSlot = ({ node, id }: { node: HTMLElement | undefined, id: string }) => {
   const ref = useRef<HTMLDivElement>(null);
-  const [{ record }] = useDragState();
-  const [tabInfo] = useTabInfo();
-  const [{ ctrl, shift }] = useKeyStateData();
-  const active = ctrl && shift && tabInfo.switchMode;
+  const { record } = useSnapshot(DragState);
+  const tabInfo = useSnapshot(TabInfo);  
+  const active = tabInfo.switchMode;
   // Replace all drag state with pointer state
   const isDragging = useRef(false);
   const startPos = useRef({ x: 0, y: 0 });
@@ -71,6 +70,7 @@ const ViewSlot = ({ node, id }: { node: HTMLElement | undefined, id: string }) =
       const toIndex = TabInfo.children.findIndex(c => c === toId);
       if (fromIndex !== -1 && toIndex !== -1) {
         TabInfo.children = reorderChildren(tabInfo.active, fromIndex, toIndex);
+        setTimeout(() => window.dispatchEvent(new CustomEvent("mainOnResize")), 250);
         TabInfo.switchMode = false;
       }
     } else if (!isDragging.current) {
@@ -98,8 +98,8 @@ const ViewSlot = ({ node, id }: { node: HTMLElement | undefined, id: string }) =
     >
       <div className={cn(
         "w-full h-full absolute transform",
-        active && "scale-[0.85] shadow-md transition-all duration-100 hover:ring-2 hover:ring-blue-500",
-        active && id === record["id"] && "cursor-grab"
+        active && "shadow-md transition-all duration-100 inset-ring-5 inset-ring-blue-500/50 hover:inset-ring-blue-500",
+        active && (id === record["id"] ? "cursor-grabbing" : "cursor-grab")
       )}>
         <div className={cn(
           "w-full h-full relative overflow-hidden",
@@ -223,28 +223,24 @@ export default function MultiView({
     const node = key ? nodesRef.current.get(key) : undefined;
     return <ViewSlot key={key || `slot-${slotIndex}`} node={node} id={key} />;
   };
-  const [{ size, active }] = useTabInfo();
-  const [{ aspectRatio }] = useViewport();
-  const [tabState] = useTabState();
+  const { size, active } = useSnapshot(TabInfo);
+  const { aspectRatio } = useSnapshot(Viewport);
+  const tabState = useSnapshot(TabState);
   const renderLayout = useCallback(() => {
-    const [{ ctrl, shift }] = useKeyStateData();
-    const [tabInfo] = useTabInfo();
+    const tabInfo = useSnapshot(TabInfo);
     const isSwitchModeActive = tabInfo.switchMode;
     const dragEvent = {
-      className: ctrl && shift && isSwitchModeActive ? "bg-accent/50 dark:bg-accent/25" : "bg-[hsl(var(--chat-border))]/50 dark:bg-[hsl(var(--chat-border))]",
+      className: isSwitchModeActive ? "bg-accent/50 dark:bg-accent/25" : "bg-[hsl(var(--chat-border))]/50 dark:bg-[hsl(var(--chat-border))]",
     }
     function handleResize(e: number, index: number) {
-      if (active !== "" && size[index] !== undefined) {
-        const newSize = [...size];
-        newSize[index] = e;
-        setTabInfoProp("size", newSize);
-        console.warn("TabInfo.size[index]", newSize[index]);
+
+      if (active !== "" && size[index]) {
+        TabInfo.size[index] = e;
+        console.warn("TabInfo.size[index]", TabInfo.size[index])
       }
-      if (tabState[active]?.size?.[index] !== undefined) {
-        const curTabState = getGlobal<Record<string, ITab>>("TabState")!;
-        curTabState[active].size[index] = e;
-        setGlobal("TabState", { ...curTabState });
-        console.warn("tabState[active].size[index]", curTabState[active].size);
+      if (tabState[active] && tabState[active].size && tabState[active].size[index]) {
+        TabState[active].size[index] = e;
+        console.warn("tabState[active].size[index]", tabState[active].size)
       }
     }
     const refs = [

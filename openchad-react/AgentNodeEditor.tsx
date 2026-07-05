@@ -32,13 +32,10 @@ import {
 import { ref, useFolder, useTheme, type AppInfo, Dropdown, useAvailableModels, uuidv4, usePythonEvent, useGlobal } from 'openchad-react'
 import clsx from 'clsx'
 import type { Model } from './utils'
-import { setMenuBarAppId } from './utils/state'
+import { MenuBar } from './utils/state'
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
-
-
-
 
 //  Types 
 
@@ -1165,7 +1162,7 @@ const AgentEditor = ({
             {skillPath.split(/[\\/]/).pop()}
           </p>
           <p
-            onClick={(e)=>{
+            onClick={(e) => {
               e.stopPropagation()
               revealItemInDir(skillPath)
             }}
@@ -1639,7 +1636,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
 
   useEffect(() => {
     if (activeTabId == tabId) {
-      setMenuBarAppId(appId);
+      MenuBar.appId = ''
     }
   }, [activeTabId])
 
@@ -1652,28 +1649,58 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
   }, [activeTabId, availableModels, modelsLoading])
 
   const loadAllToolFields = async () => {
-    try {
-      const extendedRes = await pyInvoke('tools/list_extended') as any
-      const allTools: any[] = extendedRes?.tools ?? []
-      const newToolFields: Record<string, any[]> = {}
-      for (const t of allTools) {
-        if (Array.isArray(t.fields) && t.fields.length > 0) {
-          newToolFields[t.name] = t.fields
+    const fieldsPaths = toolsRef.current.filter(p => p.endsWith('/fields.ts'))
+    const newToolFields: Record<string, any[]> = {}
+
+    await Promise.all(fieldsPaths.map(async (fieldsPath) => {
+      try {
+        const folderParts = fieldsPath.split('/')
+        folderParts.pop()
+        const toolFolder = folderParts.join('/')
+        const dirName = folderParts[folderParts.length - 1]
+
+        let toolName = dirName
+        const manifestPath = `${toolFolder}/manifest.json`
+        const hasManifest = toolsRef.current.includes(manifestPath)
+        if (hasManifest) {
+          const manifestRes = await pyInvoke('file', {
+            command: 'read',
+            filename: manifestPath,
+            base_dir: 'Tools'
+          }) as any
+          if (manifestRes?.data?.content) {
+            const manifest = JSON.parse(manifestRes.data.content)
+            if (manifest.name) {
+              toolName = manifest.name
+            }
+          }
         }
+
+        const fieldsRes = await pyInvoke('file', {
+          command: 'read',
+          filename: fieldsPath,
+          base_dir: 'Tools'
+        }) as any
+
+        if (fieldsRes?.data?.content) {
+          const content = fieldsRes.data.content
+          const parsed = parseFields(content)
+          if (parsed && parsed.length > 0) {
+            newToolFields[toolName] = parsed
+          }
+        }
+      } catch (e) {
+        console.error('Failed to load fields for', fieldsPath, e)
       }
-      setToolFields(newToolFields)
-    } catch (e) {
-      console.error('Failed to load tool fields:', e)
-    }
+    }))
+
+    setToolFields(newToolFields)
   }
 
-
-
   useEffect(() => {
-    if (!availableTools || availableTools.length === 0) return
+    if (!tools || tools.length === 0) return
     loadAllToolFields()
-  }, [availableTools, pyInvoke])
-
+  }, [tools, pyInvoke])
 
   const fetchTools = async () => {
     try {
@@ -2232,8 +2259,12 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
     const onKeyDown = (e: KeyboardEvent) => {
       const ctrl = e.ctrlKey || e.metaKey
       if (!ctrl) return
-      const tag = (e.target as HTMLElement).tagName
-      if (tag === 'INPUT' || tag === 'TEXTAREA') return
+      const activeElement = document.activeElement;
+      const isInputFocused =
+        activeElement instanceof HTMLInputElement ||
+        activeElement instanceof HTMLTextAreaElement ||
+        (activeElement instanceof HTMLElement && activeElement.isContentEditable);
+      if (isInputFocused) return
       if (e.key === 'z' && !e.shiftKey) {
         e.preventDefault()
         handleUndo()

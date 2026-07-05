@@ -141,12 +141,10 @@ const DIRS_TO_COPY = [
   "ModelProvider",
   "Pipeline",
   "Tools",
-  "Extensions",
-  "SKILLS",
+  "python",
   "Settings",
   "frontend",
   "icons",
-  "python",
   "capabilities"
 ];
 

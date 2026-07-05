@@ -4,12 +4,12 @@ import { Checkbox } from "./ui/checkbox";
 import { ScrollArea } from "./ui/scroll-area";
 import { Table, TableBody, TableCell, TableRow } from "./ui/table";
 import { usePython, usePythonEvent } from "./usePython";
-import { formatTaskTime, LucideIcons, addTab, setActive, TabState, deleteTabWithGroupSelection } from "../utils/state";
+import { formatTaskTime, LucideIcons, addTab, TabInfo, TabState, deleteTabWithGroupSelection } from "../utils/state";
 import { Spinner } from "./ui/spinner";
 import clsx from "clsx";
 import { useGlobal } from "./useGlobal";
 import { useDatabaseImpl } from "./useDatabase";
-import { generateIdFromString, useAvailableAgents } from "../index";
+import { generateIdFromString, useAvailableAgents, useSnapshot } from "../index";
 import { Button } from "./ui";
 import type { Model } from "../utils/utils";
 import {  INTERVAL_OPTIONS } from "./composer";
@@ -990,6 +990,7 @@ export default function Tasks({
     query: string;
     openInTab?: boolean;
 }) {
+    const { SetActive } = useSnapshot(TabInfo);
     const [, setChatId] = useGlobal<string | null>('chatId', { initialValue: null })
     const { pyInvoke } = usePython();
     const { agents, isLoading } = useAvailableAgents()
@@ -1204,7 +1205,7 @@ export default function Tasks({
                         }
                     }
                 });
-                setActive(id);
+                SetActive(id);
             } else {
                 setChatId(tab.id)
             }
