@@ -1652,58 +1652,28 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
   }, [activeTabId, availableModels, modelsLoading])
 
   const loadAllToolFields = async () => {
-    const fieldsPaths = toolsRef.current.filter(p => p.endsWith('/fields.ts'))
-    const newToolFields: Record<string, any[]> = {}
-
-    await Promise.all(fieldsPaths.map(async (fieldsPath) => {
-      try {
-        const folderParts = fieldsPath.split('/')
-        folderParts.pop()
-        const toolFolder = folderParts.join('/')
-        const dirName = folderParts[folderParts.length - 1]
-
-        let toolName = dirName
-        const manifestPath = `${toolFolder}/manifest.json`
-        const hasManifest = toolsRef.current.includes(manifestPath)
-        if (hasManifest) {
-          const manifestRes = await pyInvoke('file', {
-            command: 'read',
-            filename: manifestPath,
-            base_dir: 'Tools'
-          }) as any
-          if (manifestRes?.data?.content) {
-            const manifest = JSON.parse(manifestRes.data.content)
-            if (manifest.name) {
-              toolName = manifest.name
-            }
-          }
+    try {
+      const extendedRes = await pyInvoke('tools/list_extended') as any
+      const allTools: any[] = extendedRes?.tools ?? []
+      const newToolFields: Record<string, any[]> = {}
+      for (const t of allTools) {
+        if (Array.isArray(t.fields) && t.fields.length > 0) {
+          newToolFields[t.name] = t.fields
         }
-
-        const fieldsRes = await pyInvoke('file', {
-          command: 'read',
-          filename: fieldsPath,
-          base_dir: 'Tools'
-        }) as any
-
-        if (fieldsRes?.data?.content) {
-          const content = fieldsRes.data.content
-          const parsed = parseFields(content)
-          if (parsed && parsed.length > 0) {
-            newToolFields[toolName] = parsed
-          }
-        }
-      } catch (e) {
-        console.error('Failed to load fields for', fieldsPath, e)
       }
-    }))
-
-    setToolFields(newToolFields)
+      setToolFields(newToolFields)
+    } catch (e) {
+      console.error('Failed to load tool fields:', e)
+    }
   }
 
+
+
   useEffect(() => {
-    if (!tools || tools.length === 0) return
+    if (!availableTools || availableTools.length === 0) return
     loadAllToolFields()
-  }, [tools, pyInvoke])
+  }, [availableTools, pyInvoke])
+
 
   const fetchTools = async () => {
     try {

@@ -3,7 +3,7 @@ import clsx from "clsx"
 import { Aspan } from "./animated"
 import { motion, AnimatePresence } from "motion/react"
 import { useRef, useState, useEffect, Fragment, useCallback, memo } from "react"
-import { ChevronDown, GitBranch, Plus, Settings, X, Pin, ChevronRight, ArrowLeftRight, Key, HardDrive, Globe, Drama, EarthIcon, Scroll, AlarmCheck, Volume2, VolumeX } from "lucide-react"
+import { ChevronDown, GitBranch, Plus, Settings, X, Pin, ChevronRight, ArrowLeftRight, Key, HardDrive, Globe, Drama, EarthIcon, Scroll, AlarmCheck, Volume2, VolumeX, Wrench } from "lucide-react"
 import { Dialog as DialogUI, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog"
 import { Dropdown } from "./dropdown"
 import { TabState, addTab, TabInfo, reorderTabsInGroup, deleteTabWithGroupSelection, setTabGroup, type ITab, Theme, LucideIcons, clearAllTabs } from '../utils/state'
@@ -43,7 +43,8 @@ import Tasks from "./Tasks"
 import { useGlobal } from "./useGlobal"
 import Agents from "./Agents"
 import ControllableBrowsers from "./ControllableBrowsers"
-import { AsyncLock, generateIdFromString } from "./../index"
+import Tools from "./Tools"
+import { AsyncLock, generateIdFromString, uuidv4 } from "./../index"
 import { getCurrentWebview } from "@tauri-apps/api/webview"
 import { getCurrentWindow } from "@tauri-apps/api/window"
 
@@ -381,7 +382,7 @@ function TabGroup({
                     onMouseLeave={onTabMouseLeave}
                     onContextMenu={onTabContextMenu}
                     onDelete={() => onTabDelete(uuid)}
-                    onMuteToggle={() => { if(TabState[uuid]) TabState[uuid].isMuted = !isMuted; }}
+                    onMuteToggle={() => { if (TabState[uuid]) TabState[uuid].isMuted = !isMuted; }}
                     isActive={activeTabId === uuid}
                     onClick={() => onTabClick(uuid)}
                     isMuted={isMuted}
@@ -502,6 +503,7 @@ export default function Sidebar({
   const [showControllableBrowsersDialog, setShowControllableBrowsersDialog] = useGlobal('showControllableBrowsersDialog', { initialValue: false });
   const [showAgentsDialog, setShowAgentsDialog] = useGlobal('showAgentsDialog', { initialValue: false });
   const [showCodeDialog, setShowCodeDialog] = useGlobal('showCodeDialog', { initialValue: false });
+  const [showToolsDialog, setShowToolsDialog] = useGlobal('showToolsDialog', { initialValue: false });
   const [, setSettingsDropdown] = useGlobal('settingsDropdown', { initialValue: false });
   const isFirstRender = useRef(true);
   const lastWorkspaceRef = useRef<string | null | undefined>(undefined);
@@ -999,6 +1001,15 @@ export default function Sidebar({
                 setShowTaskDialog(true);
               }
             },
+            {
+              content: <div> Tools </div>,
+              shortcut: <Wrench size={16} />,
+              children: null,
+              separator: false,
+              trigger: () => {
+                setShowToolsDialog(true);
+              }
+            },
             ...(typeof window !== 'undefined' && !!(window as any).__TAURI__ && llamaCppOrMlxIsInstalled) ? [{
               content: <div> Local Models </div>,
               shortcut: <HardDrive size={16} />,
@@ -1083,7 +1094,16 @@ export default function Sidebar({
         <svg
           onClick={() => {
             if (isTauri) {
-              openUrl('https://discord.gg/JWeqhecqBD')
+              addTab({
+                childrenProps: {
+                  [uuidv4()]: {
+                    icon: "Compass",
+                    title: null,
+                    appname: "main-app",
+                    data: { url: 'https://discord.gg/JWeqhecqBD' }
+                  }
+                }
+              });
             } else {
               window.open('https://discord.gg/JWeqhecqBD', '_blank')
             }
@@ -1099,7 +1119,16 @@ export default function Sidebar({
           onClick={
             () => {
               if (isTauri) {
-                openUrl(repository || 'https://github.com/openchad/openchad')
+                addTab({
+                  childrenProps: {
+                    [uuidv4()]: {
+                      icon: "Compass",
+                      title: null,
+                      appname: "main-app",
+                      data: { url: repository || 'https://github.com/openchad/openchad' }
+                    }
+                  }
+                });
               } else {
                 window.open(repository || 'https://github.com/openchad/openchad', '_blank')
               }
@@ -1373,6 +1402,16 @@ export default function Sidebar({
             addEndpoint={addEndpoint}
             deleteEndpoint={deleteEndpoint}
           />
+        </DialogContent>
+      </DialogUI>
+      <DialogUI open={showToolsDialog} onOpenChange={setShowToolsDialog}>
+        <DialogContent className="max-w-4xl h-[80vh] flex flex-col border-accent/20 bg-card p-0 overflow-hidden shadow-2xl">
+          <DialogHeader>
+            <DialogTitle className="hidden">
+              Tools
+            </DialogTitle>
+          </DialogHeader>
+          <Tools isOpen={showToolsDialog} />
         </DialogContent>
       </DialogUI>
     </div>

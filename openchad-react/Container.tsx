@@ -159,7 +159,7 @@ export default function Container({ Apps }: { Apps: Project }) {
   const [codeId] = useGlobal('codeId', { initialValue: "" });
   const [isSaved, setIsSaved] = useState(false);
   const [isFullscreen, setIsFullscreen] = useGlobal('isFullscreen', { initialValue: false });
-  const [isPlayingRegistry, setIsPlayingRegistry] = useGlobal<Record<string, boolean>>('isPlayingRegistry', { initialValue: {}});
+  const [isPlayingRegistry, setIsPlayingRegistry] = useGlobal<Record<string, boolean>>('isPlayingRegistry', { initialValue: {} });
   const [focus, setFocus] = useGlobal('focusOnApp', { initialValue: false })
   const focusRef = useRef(focus)
   focusRef.current = focus
@@ -287,11 +287,16 @@ export default function Container({ Apps }: { Apps: Project }) {
 
             await w.listen('page_loaded', (event) => {
               window.dispatchEvent(new CustomEvent('page_loaded', { detail: event.payload }));
-              if(snaptabsRef.current && !snaptabsRef.current[uuid]){
+              if (snaptabsRef.current && !snaptabsRef.current[uuid]) {
                 invoke('set_webview_muted', { label: label, muted: true })
               }
               console.warn("page_loaded:", event.payload);
             });
+
+            await w.listen('fullscreen_changed', (event: { payload: { label: string, isFullscreen: boolean; }; }) => {
+              if(snaptabsRef.current && snaptabsRef.current[uuid]) window.dispatchEvent(new CustomEvent('fullscreen_changed', { detail: event.payload }));
+            });
+
 
             await w.listen('focus', (event) => {
               window.dispatchEvent(new CustomEvent('focus', { detail: event.payload }));
@@ -810,6 +815,7 @@ export default function Container({ Apps }: { Apps: Project }) {
     const checkFullscreen = async () => {
       try {
         const full = await getCurrentWindow().isFullscreen();
+        console.warn("Fullscreen", full);
         setIsFullscreen(full);
       } catch (e) {
         console.error(e);
@@ -817,7 +823,11 @@ export default function Container({ Apps }: { Apps: Project }) {
     };
     checkFullscreen();
     window.addEventListener('resize', checkFullscreen);
-    return () => window.removeEventListener('resize', checkFullscreen);
+    window.addEventListener('fullscreen_changed', checkFullscreen);
+    return () => {
+      window.removeEventListener('resize', checkFullscreen);
+      window.removeEventListener('fullscreen_changed', checkFullscreen);
+    }
   }, []);
 
   useEffect(() => {
@@ -987,7 +997,23 @@ export default function Container({ Apps }: { Apps: Project }) {
       KeyState.setAlt(event.altKey);
       if (event.ctrlKey && event.key >= '1' && event.key <= '9') {
         event.preventDefault();
-        // TODO
+        const n = parseInt(event.key);
+        const tabIndex = n === 9 ? -1 : n - 1;
+        const tabEntries = Object.entries(TabState);
+        const pinned = tabEntries.filter(([_, tab]) => tab.group === 'pinned');
+        const nonPinned = tabEntries.filter(([_, tab]) => tab.group !== 'pinned');
+        const orderedTabs = [...pinned, ...nonPinned];
+        
+        if (orderedTabs.length > 0) {
+          let targetIndex = tabIndex;
+          if (tabIndex === -1) {
+            targetIndex = orderedTabs.length - 1;
+          }
+          if (targetIndex >= 0 && targetIndex < orderedTabs.length) {
+            const [tabId] = orderedTabs[targetIndex];
+            TabInfo.SetActive(tabId);
+          }
+        }
       }
       // Block F12
       if (event.key === 'F12') {
@@ -1089,6 +1115,29 @@ export default function Container({ Apps }: { Apps: Project }) {
       }
     }
 
+    const onSwitchTab = (event: any) => {
+      const data = event.detail;
+      if (!data) return;
+      const tabIndex = data.tab_index;
+      
+      const tabEntries = Object.entries(TabState);
+      const pinned = tabEntries.filter(([_, tab]) => tab.group === 'pinned');
+      const nonPinned = tabEntries.filter(([_, tab]) => tab.group !== 'pinned');
+      const orderedTabs = [...pinned, ...nonPinned];
+      
+      if (orderedTabs.length === 0) return;
+      
+      let targetIndex = tabIndex;
+      if (tabIndex === -1) {
+        targetIndex = orderedTabs.length - 1;
+      }
+      
+      if (targetIndex >= 0 && targetIndex < orderedTabs.length) {
+        const [tabId] = orderedTabs[targetIndex];
+        TabInfo.SetActive(tabId);
+      }
+    };
+
     const onFocusApp = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (target && !target.closest('.browser-tab') && !target.closest('.resize-handle')) {
@@ -1097,6 +1146,7 @@ export default function Container({ Apps }: { Apps: Project }) {
     }
 
     // true = capture phase → fires before ANY child handler
+    window.addEventListener('switch_tab', onSwitchTab)
     window.addEventListener('report_audio_state', onReportAudioState)
     window.addEventListener('mousemove', onFocusApp);
     window.addEventListener('contextmenu', blockContextMenu);
@@ -1106,6 +1156,7 @@ export default function Container({ Apps }: { Apps: Project }) {
     document.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
     return () => {
+      window.removeEventListener('switch_tab', onSwitchTab)
       window.removeEventListener('report_audio_state', onReportAudioState)
       window.removeEventListener('mousemove', onFocusApp);
       window.removeEventListener('contextmenu', blockContextMenu);

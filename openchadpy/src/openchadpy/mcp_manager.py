@@ -35,7 +35,7 @@ class MCPTool(ToolBase):
         self.name = mcp_tool_name
         self.description = description
         self.input_schema = input_schema
-        self.allowed_callers = ["direct", "code_execution"]
+        self.allowed_callers = ["direct"]
 
 
     async def execute(self, **kwargs) -> Dict[str, Any]:
@@ -373,7 +373,7 @@ class MCPManager:
         Find and execute an MCP tool by name, enforcing caller permissions.
         Args:
             tool_name: The name of the MCP tool to execute.
-            caller:    The caller context (e.g. "direct", "code_execution").
+            caller:    The caller context.
             **kwargs:  Arguments forwarded to the tool.
         Returns:
             A dict with a "result" key on success, or an "error" key on failure.

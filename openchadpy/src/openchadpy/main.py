@@ -437,6 +437,192 @@ app.add_middleware(
 )
 
 # =+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+=
+# Shared Tool Management Handlers
+# =+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+=
+
+async def handle_tool_reload(tool_name: Optional[str]) -> Dict[str, Any]:
+    if not tool_name:
+        return {"error": "Missing 'tool' parameter"}
+    success = tool_manager.reload_tool(tool_name)
+    if success:
+        await event_emitter.emit("tools_reloaded", {})
+    return {"success": success, "tool": tool_name}
+
+async def handle_tool_list_extended() -> Dict[str, Any]:
+    return {"tools": tool_manager.list_tools_extended()}
+
+async def handle_tool_get_fields(tool_name: Optional[str]) -> Dict[str, Any]:
+    if not tool_name:
+        return {"error": "Missing 'tool_name' parameter", "fields": None}
+    tool = tool_manager.get_tool(tool_name)
+    if tool is None:
+        return {"fields": None}
+    fields = getattr(tool, "fields", None) or []
+    return {"fields": fields, "tool_name": tool_name}
+
+import logging
+
+_logger = logging.getLogger(__name__)
+
+
+async def handle_tool_upgrade(pkg_name: Optional[str], tool_name: Optional[str]) -> Dict[str, Any]:
+    if not pkg_name:
+        return {"error": "Missing 'pkg_name' parameter"}
+    import asyncio as _asyncio, subprocess as _subprocess
+    proj_dir = os.environ.get("OPENCHAD_UV_PROJECT_DIR", _PROJECT_ROOT)
+
+    try:
+        proc = await _asyncio.create_subprocess_exec(
+            uv_path, "pip", "install", "--upgrade", pkg_name,
+            cwd=proj_dir,
+            stdout=_subprocess.PIPE,
+            stderr=_subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            return {"success": False, "error": stderr.decode(errors="replace")}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+    # Force a fresh scan of installed distributions so newly-installed
+    # metadata is visible (packages_distributions() itself isn't cached,
+    # but the underlying path finder caches directory listings).
+    import importlib.metadata as _meta
+    import importlib as _importlib
+    try:
+        _meta.MetadataPathFinder.invalidate_caches()
+        _importlib.invalidate_caches()  # rescan sys.path so updated .py files are found
+    except Exception:
+        _logger.warning("importlib cache invalidation failed", exc_info=True)
+
+    try:
+        if tool_name:
+            unloaded_ok = tool_manager.unload_tool(tool_name)
+            if not unloaded_ok:
+                _logger.warning("unload_tool(%s) reported failure before reload", tool_name)
+
+        discovered = await _asyncio.to_thread(tool_manager._discover_venv_items)
+        norm = pkg_name.replace("-", "_").lower()
+        new_keys = [k for k, _ in discovered if norm in k.lower()]
+
+        if not new_keys:
+            return {
+                "success": True,
+                "pkg_name": pkg_name,
+                "tools": [],
+                "warning": f"Package '{pkg_name}' upgraded, but no matching tool module was discovered.",
+            }
+
+        loaded_names = []
+        failed_keys = []
+        for key in new_keys:
+            ok = await tool_manager.load_tool(key)
+            if ok:
+                mod_suffix = key.replace("-", "_")
+                loaded_names.extend([
+                    n for n, m in tool_manager._tool_module_name.items()
+                    if mod_suffix in m
+                ])
+            else:
+                failed_keys.append(key)
+
+        tool_manager.export_all_tools(mcp_instance)
+        await event_emitter.emit("tools_reloaded", {})
+        extended = tool_manager.list_tools_extended()
+        updated_tools = [t for t in extended if t["name"] in loaded_names]
+
+        result: Dict[str, Any] = {"success": True, "pkg_name": pkg_name, "tools": updated_tools}
+        if failed_keys:
+            result["success"] = False
+            result["error"] = f"Package upgraded, but failed to load tool module(s): {failed_keys}"
+            
+        return result
+
+    except Exception as exc:
+        _logger.exception("Post-upgrade tool reload failed for %s", pkg_name)
+        return {"success": False, "error": f"Package '{pkg_name}' upgraded, but tool reload failed: {exc}"}
+
+async def handle_tool_uninstall(pkg_name: Optional[str], tool_name: Optional[str]) -> Dict[str, Any]:
+    if not pkg_name:
+        return {"error": "Missing 'pkg_name' parameter"}
+    import asyncio as _asyncio, subprocess as _subprocess
+    # Unload the tool first
+    if tool_name:
+        tool_manager.unload_tool(tool_name)
+    # Run uv remove in project directory
+    proj_dir = os.environ.get("OPENCHAD_UV_PROJECT_DIR", _PROJECT_ROOT)
+    try:
+        proc = await _asyncio.create_subprocess_exec(
+            "uv", "remove", pkg_name,
+            cwd=proj_dir,
+            stdout=_subprocess.PIPE,
+            stderr=_subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode == 0:
+            await event_emitter.emit("tools_reloaded", {})
+            return {"success": True, "pkg_name": pkg_name}
+        else:
+            return {"success": False, "error": stderr.decode(errors="replace")}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+async def handle_tool_install(pkg_name: Optional[str]) -> Dict[str, Any]:
+    if not pkg_name:
+        return {"error": "Missing 'pkg_name' parameter"}
+    import asyncio as _asyncio, subprocess as _subprocess
+    proj_dir = os.environ.get("OPENCHAD_UV_PROJECT_DIR", _PROJECT_ROOT)
+    # Step 1: uv add
+    try:
+        proc = await _asyncio.create_subprocess_exec(
+            "uv", "add", pkg_name,
+            cwd=proj_dir,
+            stdout=_subprocess.PIPE,
+            stderr=_subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            return {"success": False, "error": stderr.decode(errors="replace")}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+    # Step 2: discover and load to verify it is a valid tool
+    import importlib.metadata as _meta
+    try:
+        _meta.packages_distributions.cache_clear()  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    discovered = await _asyncio.to_thread(tool_manager._discover_venv_items)
+    norm = pkg_name.replace("-", "_").lower()
+    new_keys = [k for k, _ in discovered if norm in k.lower()]
+    loaded_names = []
+    for key in new_keys:
+        ok = await tool_manager.load_tool(key)
+        if ok:
+            mod_suffix = key.replace("-", "_")
+            loaded_names.extend([
+                n for n, m in tool_manager._tool_module_name.items()
+                if mod_suffix in m
+            ])
+    if not loaded_names:
+        # Not a tool – remove the package to keep environment clean
+        try:
+            rm_proc = await _asyncio.create_subprocess_exec(
+                "uv", "remove", pkg_name,
+                cwd=proj_dir,
+                stdout=_subprocess.PIPE,
+                stderr=_subprocess.PIPE,
+            )
+            await rm_proc.communicate()
+        except Exception:
+            pass
+        return {"success": False, "error": f"'{pkg_name}' was installed but contains no valid Tool class. It has been removed."}
+    tool_manager.export_all_tools(mcp_instance)
+    await event_emitter.emit("tools_reloaded", {})
+    extended = tool_manager.list_tools_extended()
+    new_tools = [t for t in extended if t["name"] in loaded_names]
+    return {"success": True, "pkg_name": pkg_name, "tools": new_tools}
+
+# =+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+=
 # Stream Control Registry
 # =+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+=
 
@@ -727,7 +913,7 @@ async def handle_pytauri_chat(msg_id: str, body: Dict[str, Any]):
                             "content": query
                         }
                     ]
-                max_retries = body.get("max_retries", 99)
+                max_retries = body.get("max_retries", 99 if requested_model.startswith("custombackend/") else 3)
                 max_retries_ctx.set(max_retries)
                 retry_delay = 1.0
                 for attempt in range(max_retries):
@@ -1080,11 +1266,17 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
                     logger.error(f"Failed to execute tool: {e}", exc_info=True)
                     return {"error": str(e)}
             case "tools/reload":
-                tool_name = request.get("tool")
-                if not tool_name:
-                    return {"error": "Missing 'tool' parameter"}
-                success = tool_manager.reload_tool(tool_name)
-                return {"success": success, "tool": tool_name}
+                return await handle_tool_reload(request.get("tool"))
+            case "tools/list_extended":
+                return await handle_tool_list_extended()
+            case "tools/get_fields":
+                return await handle_tool_get_fields(request.get("tool_name"))
+            case "tools/upgrade":
+                return await handle_tool_upgrade(request.get("pkg_name"), request.get("tool"))
+            case "tools/uninstall":
+                return await handle_tool_uninstall(request.get("pkg_name"), request.get("tool"))
+            case "tools/install":
+                return await handle_tool_install(request.get("pkg_name"))
             case "get_last_startup_status":
                 return startup_tracker.get_status()
             # Settings commands
@@ -1372,11 +1564,50 @@ async def reload_tool_api(request: Request):
         body = await request.json()
     except:
         return {"error": "Invalid JSON body"}
-    tool_name = body.get("tool")
-    if not tool_name:
-        return {"error": "Missing 'tool' parameter"}
-    success = tool_manager.reload_tool(tool_name)
-    return {"success": success, "tool": tool_name}
+    return await handle_tool_reload(body.get("tool"))
+
+@app.get("/api/tools/list_extended")
+async def list_tools_extended_api():
+    """List all tools with source info (local vs venv), folder path, and pkg_name."""
+    return await handle_tool_list_extended()
+
+@app.post("/api/tools/get_fields")
+async def get_fields_api(request: Request):
+    """Get the contents of fields.ts for a tool. Body: {"tool_name": "counter"}"""
+    try:
+        body = await request.json()
+    except:
+        return {"error": "Invalid JSON body", "content": None}
+    return await handle_tool_get_fields(body.get("tool_name"))
+
+@app.post("/api/tools/upgrade")
+async def upgrade_tool_api(request: Request):
+    """Upgrade a venv tool package. Body: {"pkg_name": "greetingtool", "tool": "greet"}"""
+    try:
+        body = await request.json()
+    except:
+        return {"error": "Invalid JSON body"}
+    return await handle_tool_upgrade(body.get("pkg_name"), body.get("tool"))
+
+@app.post("/api/tools/uninstall")
+async def uninstall_tool_api(request: Request):
+    """Uninstall a venv tool. Body: {"pkg_name": "greetingtool", "tool": "greet"}"""
+    try:
+        body = await request.json()
+    except:
+        return {"error": "Invalid JSON body"}
+    return await handle_tool_uninstall(body.get("pkg_name"), body.get("tool"))
+
+@app.post("/api/tools/install")
+async def install_tool_api(request: Request):
+    """Install a package via uv and verify it contains a valid Tool class.
+    Body: {"pkg_name": "greetingtool"}
+    """
+    try:
+        body = await request.json()
+    except:
+        return {"error": "Invalid JSON body"}
+    return await handle_tool_install(body.get("pkg_name"))
 
 @app.get("/Apps/{path_name:path}")
 async def serve_app_components(path_name: str):
@@ -1900,11 +2131,17 @@ async def handle_ws_command(conn_id: str, data: dict, send_func: Callable[[dict]
                     logger.error(f"Failed to execute tool: {e}", exc_info=True)
                     return {"error": str(e)}
             case "tools/reload":
-                tool_name = body.get("tool")
-                if not tool_name:
-                    return {"error": "Missing 'tool' parameter"}
-                success = tool_manager.reload_tool(tool_name)
-                return {"success": success, "tool": tool_name}
+                return await handle_tool_reload(body.get("tool"))
+            case "tools/list_extended":
+                return await handle_tool_list_extended()
+            case "tools/get_fields":
+                return await handle_tool_get_fields(body.get("tool_name"))
+            case "tools/upgrade":
+                return await handle_tool_upgrade(body.get("pkg_name"), body.get("tool"))
+            case "tools/uninstall":
+                return await handle_tool_uninstall(body.get("pkg_name"), body.get("tool"))
+            case "tools/install":
+                return await handle_tool_install(body.get("pkg_name"))
             case "get_last_startup_status":
                 return startup_tracker.get_status()
             # Settings commands

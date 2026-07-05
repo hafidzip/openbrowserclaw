@@ -3,12 +3,15 @@ Tool Manager - Discovers, loads, and manages tools from the Tools/ directory.
 """
 import os
 import sys
+import ast
 import logging
 import importlib
 import importlib.util
+import importlib.metadata
 import re
 import hashlib
 import json
+import tomllib
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from pathlib import Path
@@ -115,6 +118,150 @@ class ToolManager:
             logger.warning(f"Invalid name: {name}, generating hash")
             return hashlib.sha256(name.encode()).hexdigest()[:9]
         return name
+
+    def _get_pyproject_toml_path(self) -> Optional[Path]:
+        """Get the path to pyproject.toml."""
+        proj_dir = os.environ.get("OPENCHAD_UV_PROJECT_DIR")
+        if proj_dir:
+            path = Path(proj_dir) / "pyproject.toml"
+            if path.exists():
+                return path
+        path = Path(__file__).parent.parent.parent / "pyproject.toml"
+        if path.exists():
+            return path
+        return None
+
+    def _get_pyproject_dependencies(self) -> List[str]:
+        """Parse pyproject.toml and return a list of dependency package names."""
+        path = self._get_pyproject_toml_path()
+        if not path:
+            return []
+        try:
+            with open(path, "rb") as f:
+                data = tomllib.load(f)
+            deps = data.get("project", {}).get("dependencies", [])
+            pkg_names = []
+            for dep in deps:
+                match = re.match(r"^([a-zA-Z0-9_-]+)", dep)
+                if match:
+                    pkg_names.append(match.group(1).replace("-", "_"))
+            return pkg_names
+        except Exception as e:
+            logger.warning(f"Failed to read/parse pyproject.toml at {path}: {e}")
+            return []
+
+    def _get_site_packages_dirs(self) -> List[Path]:
+        """Get the site-packages directories for the current python environment."""
+        dirs = []
+        sys_prefix = Path(sys.prefix).resolve()
+        
+        win_path = sys_prefix / "Lib" / "site-packages"
+        if win_path.exists():
+            dirs.append(win_path)
+            
+        lib_path = sys_prefix / "lib"
+        if lib_path.exists():
+            for p in lib_path.glob("python*/site-packages"):
+                dirs.append(p)
+                
+        for p in sys.path:
+            p_path = Path(p).resolve()
+            if p_path.name == "site-packages" and p_path.exists() and p_path not in dirs:
+                dirs.append(p_path)
+                
+        return dirs
+
+    def _is_valid_tool_class(self, content: str) -> bool:
+        """Parse Python content to check if it contains a valid ToolBase subclass with execute and required attributes."""
+        try:
+            tree = ast.parse(content)
+        except Exception:
+            return False
+            
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef):
+                inherits_tool_base = False
+                for base in node.bases:
+                    if isinstance(base, ast.Name) and base.id == "ToolBase":
+                        inherits_tool_base = True
+                        break
+                    elif isinstance(base, ast.Attribute) and base.attr == "ToolBase":
+                        inherits_tool_base = True
+                        break
+                
+                if inherits_tool_base:
+                    has_execute = False
+                    class_attrs = set()
+                    for body_node in node.body:
+                        if isinstance(body_node, (ast.FunctionDef, ast.AsyncFunctionDef)) and body_node.name == "execute":
+                            has_execute = True
+                        elif isinstance(body_node, ast.Assign):
+                            for target in body_node.targets:
+                                if isinstance(target, ast.Name):
+                                    class_attrs.add(target.id)
+                        elif isinstance(body_node, ast.AnnAssign):
+                            if isinstance(body_node.target, ast.Name):
+                                class_attrs.add(body_node.target.id)
+                                
+                    required_attrs = {"name", "description", "allowed_callers", "input_schema"}
+                    if has_execute and required_attrs.issubset(class_attrs):
+                        return True
+        return False
+
+    def _discover_venv_items(self) -> List[Tuple[str, Path]]:
+        """Scan registered pyproject dependencies in site-packages for tools."""
+        items: List[Tuple[str, Path]] = []
+        deps = self._get_pyproject_dependencies()
+        if not deps:
+            return items
+
+        for pkg_name in deps:
+            # First try using importlib.metadata to locate the package files
+            main_py = None
+            manifest_path = None
+            try:
+                pkg_files = importlib.metadata.files(pkg_name)
+                if pkg_files:
+                    for f in pkg_files:
+                        f_path = Path(f)
+                        if f_path.name == "main.py":
+                            main_py = Path(f.locate())
+                        elif f_path.name == "manifest.json":
+                            manifest_path = Path(f.locate())
+            except importlib.metadata.PackageNotFoundError:
+                pass
+
+            # Fallback to direct directory scan in site-packages
+            if not main_py:
+                site_packages_dirs = self._get_site_packages_dirs()
+                for sp_dir in site_packages_dirs:
+                    if not sp_dir.exists():
+                        continue
+                    pkg_dir = sp_dir / pkg_name
+                    if pkg_dir.exists() and pkg_dir.is_dir():
+                        candidate_main = pkg_dir / "main.py"
+                        if candidate_main.exists():
+                            main_py = candidate_main
+                            candidate_manifest = pkg_dir / "manifest.json"
+                            if candidate_manifest.exists():
+                                manifest_path = candidate_manifest
+                            break
+
+            if main_py and main_py.exists():
+                try:
+                    content = main_py.read_text(encoding="utf-8", errors="ignore")
+                    if self._is_valid_tool_class(content):
+                        storage_key = f"venv_{pkg_name}"
+                        items.append((storage_key, main_py))
+                        
+                        if manifest_path and manifest_path.exists():
+                            self._metadata[storage_key] = self._load_metadata_from_manifest(
+                                manifest_path, pkg_name
+                            )
+                        logger.debug(f"Discovered venv tool: {storage_key}")
+                except Exception as e:
+                    logger.warning(f"Error checking potential tool in {main_py}: {e}")
+        return items
     
     # Discovery
     def _discover_local_items(self, directory: Path) -> List[Tuple[str, Path]]:
@@ -150,8 +297,10 @@ class ToolManager:
         return items
 
     def discover_tools(self) -> List[Tuple[str, Path]]:
-        """Scan the Tools/ directory. Returns (storage_key, main_py_path) pairs."""
-        return self._discover_local_items(self.tools_directory)
+        """Scan the Tools/ directory and dependencies. Returns (storage_key, main_py_path) pairs."""
+        local_tools = self._discover_local_items(self.tools_directory)
+        venv_tools = self._discover_venv_items()
+        return local_tools + venv_tools
     
     # Manager injection
     def set_managers(self, **kwargs):
@@ -174,21 +323,59 @@ class ToolManager:
             _rebuild:    Unused; kept for call-site compatibility with the
                          concurrent loader (which passes ``_rebuild=False``).
         """
-        parts = storage_key.split("_")
-        if len(parts) < 2:
-            logger.error(f"Invalid tool key: {storage_key} (expected publisher_plugin)")
-            return False
-        publisher_name = parts[0]
-        plugin_name = "_".join(parts[1:])
-        tool_path = self.tools_directory / publisher_name / plugin_name / "main.py"
-        module_name = f"tool_{storage_key}"
-        if not tool_path.exists():
-            logger.error(f"Tool not found: {storage_key} (no main.py at {tool_path})")
-            return False
-        # Ensure the plugin directory is importable
-        plugin_path = str(tool_path.parent.resolve())
-        if plugin_path not in sys.path:
-            sys.path.insert(0, plugin_path)
+        if storage_key.startswith("venv_"):
+            pkg_name = storage_key[5:]
+            tool_path = None
+            
+            try:
+                pkg_files = importlib.metadata.files(pkg_name)
+                if pkg_files:
+                    for f in pkg_files:
+                        f_path = Path(f)
+                        if f_path.name == "main.py":
+                            tool_path = Path(f.locate())
+                            break
+            except importlib.metadata.PackageNotFoundError:
+                pass
+                
+            if not tool_path:
+                for sp_dir in self._get_site_packages_dirs():
+                    candidate = sp_dir / pkg_name / "main.py"
+                    if candidate.exists():
+                        tool_path = candidate
+                        break
+            
+            if not tool_path:
+                logger.error(f"Venv tool package '{pkg_name}' main.py not found in site-packages")
+                return False
+                
+            module_name = f"tool_{storage_key}"
+            
+            # Ensure site-packages is importable
+            if tool_path.parent.name == "site-packages":
+                sp_path = str(tool_path.parent.resolve())
+            else:
+                sp_path = str(tool_path.parent.parent.resolve())
+                
+            if sp_path not in sys.path:
+                sys.path.insert(0, sp_path)
+        else:
+            parts = storage_key.split("_")
+            if len(parts) < 2:
+                logger.error(f"Invalid tool key: {storage_key} (expected publisher_plugin)")
+                return False
+            publisher_name = parts[0]
+            plugin_name = "_".join(parts[1:])
+            tool_path = self.tools_directory / publisher_name / plugin_name / "main.py"
+            module_name = f"tool_{storage_key}"
+            if not tool_path.exists():
+                logger.error(f"Tool not found: {storage_key} (no main.py at {tool_path})")
+                return False
+            # Ensure the plugin directory is importable
+            plugin_path = str(tool_path.parent.resolve())
+            if plugin_path not in sys.path:
+                sys.path.insert(0, plugin_path)
+                
         # Ensure project root is importable
         project_dir = os.environ.get("OPENCHAD_UV_PROJECT_DIR")
         if project_dir:
@@ -240,10 +427,15 @@ class ToolManager:
         
         # If not found, try to resolve from plugin_key / storage_key
         if tool is None:
-            storage_key = re.sub(r"[:/\\]", "_", tool_name)
-            target_module_name = f"tool_{storage_key}"
+            if tool_name.startswith("venv_"):
+                pkg_name = tool_name[5:]
+                target_module_names = [f"{pkg_name}.main", f"tool_venv_{pkg_name}", f"tool_{tool_name}"]
+            else:
+                storage_key = re.sub(r"[:/\\]", "_", tool_name)
+                target_module_names = [f"tool_{storage_key}", f"{storage_key}.main"]
+                
             for t_name, m_name in list(self._tool_module_name.items()):
-                if m_name == target_module_name:
+                if m_name in target_module_names:
                     tool_name = t_name
                     tool = self.loaded_tools.get(tool_name)
                     break
@@ -265,9 +457,13 @@ class ToolManager:
     
     def get_tool_by_storage_key(self, storage_key: str) -> Optional[ToolBase]:
         """Retrieve a loaded tool by its storage key (publisher_plugin)."""
-        target_module_name = f"tool_{storage_key}"
+        if storage_key.startswith("venv_"):
+            pkg_name = storage_key[5:]
+            target_module_names = [f"{pkg_name}.main", f"tool_venv_{pkg_name}"]
+        else:
+            target_module_names = [f"tool_{storage_key}"]
         for t_name, m_name in self._tool_module_name.items():
-            if m_name == target_module_name:
+            if m_name in target_module_names:
                 return self.loaded_tools.get(t_name)
         return None
 
@@ -282,39 +478,69 @@ class ToolManager:
         module_name = self._tool_module_name.get(tool_name)
         if module_name and module_name.startswith("tool_"):
             storage_key = module_name[len("tool_"):]
+        elif module_name and module_name.endswith(".main"):
+            storage_key = f"venv_{module_name[:-5]}"
         else:
             # Fallback: derive storage_key from tool_name
             storage_key = re.sub(r"[:/\\]", "_", tool_name)
         # Locate the tool directory to purge submodules
-        parts = storage_key.split("_")
-        if len(parts) >= 2:
-            tool_dir = self.tools_directory / parts[0] / "_".join(parts[1:])
-            tool_dir_str = str(tool_dir.resolve()) if tool_dir.exists() else None
+        if storage_key.startswith("venv_"):
+            pkg_name = storage_key[5:]
+            tool_dir = None
+            for sp_dir in self._get_site_packages_dirs():
+                candidate = sp_dir / pkg_name
+                if candidate.exists():
+                    tool_dir = candidate
+                    break
+            tool_dir_str = str(tool_dir.resolve()) if tool_dir else None
+            full_module_name = f"{pkg_name}.main"
         else:
-            tool_dir_str = None
-        full_module_name = f"tool_{storage_key}"
+            parts = storage_key.split("_")
+            if len(parts) >= 2:
+                tool_dir = self.tools_directory / parts[0] / "_".join(parts[1:])
+                tool_dir_str = str(tool_dir.resolve()) if tool_dir.exists() else None
+            else:
+                tool_dir_str = None
+            full_module_name = f"tool_{storage_key}"
+            
         # Purge stale modules (top-level + any helpers the tool imported)
-        stale = [
-            k for k, v in list(sys.modules.items())
-            if k == full_module_name
-            or k.startswith(f"{full_module_name}.")
-            or (
-                tool_dir_str
-                and (spec   := getattr(v, "__spec__", None))
-                and (origin := getattr(spec, "origin", None))
-                and str(Path(origin).resolve()).startswith(tool_dir_str)
-            )
-        ]
+        stale = []
+        for k, v in list(sys.modules.items()):
+            spec = getattr(v, "__spec__", None)
+            origin = getattr(spec, "origin", None)
+            origin_str = str(Path(origin).resolve()) if origin else None
+            
+            if storage_key.startswith("venv_"):
+                pkg_name = storage_key[5:]
+                is_stale = (
+                    k == pkg_name
+                    or k.startswith(f"{pkg_name}.")
+                    or (tool_dir_str and origin_str and origin_str.startswith(tool_dir_str))
+                )
+            else:
+                is_stale = (
+                    k == full_module_name
+                    or k.startswith(f"{full_module_name}.")
+                    or (tool_dir_str and origin_str and origin_str.startswith(tool_dir_str))
+                )
+            if is_stale:
+                stale.append(k)
+                
         for mod in stale:
             sys.modules.pop(mod, None)
         if stale:
             logger.debug(f"Purged {len(stale)} stale module(s) for '{tool_name}'")
 
         # Unload any tool currently loaded under this storage_key
-        target_module_name = f"tool_{storage_key}"
+        if storage_key.startswith("venv_"):
+            pkg_name = storage_key[5:]
+            target_module_names = [f"{pkg_name}.main", f"tool_venv_{pkg_name}"]
+        else:
+            target_module_names = [f"tool_{storage_key}"]
+            
         old_tool_names = [
             t_name for t_name, m_name in list(self._tool_module_name.items())
-            if m_name == target_module_name
+            if m_name in target_module_names
         ]
         for old_name in old_tool_names:
             self.unload_tool(old_name)
@@ -476,6 +702,54 @@ class ToolManager:
             {"id": name, **tool.get_schema()}
             for name, tool in self.loaded_tools.items()
         ]
+
+    def list_tools_extended(self) -> List[Dict[str, Any]]:
+        """Return metadata for all loaded tools with source info (local vs venv)."""
+        result = []
+        for tool_name, tool in self.loaded_tools.items():
+            module_name = self._tool_module_name.get(tool_name, "")
+            # Determine if tool came from venv or local Tools/ directory
+            if module_name.startswith("tool_venv_"):
+                pkg_name = module_name[len("tool_venv_"):]
+                # Resolve the actual directory in site-packages
+                folder_path = None
+                for sp_dir in self._get_site_packages_dirs():
+                    candidate = sp_dir / pkg_name
+                    if candidate.exists():
+                        folder_path = str(candidate.resolve())
+                        break
+                entry = {
+                    "name": tool_name,
+                    "description": tool.description,
+                    "source": "venv",
+                    "pkg_name": pkg_name,
+                    "folder_path": folder_path,
+                    "allowed_callers": getattr(tool, "allowed_callers", []),
+                    "fields": getattr(tool, "fields", []) or [],
+                }
+            else:
+                # local tool: storage_key is publisher_plugin
+                storage_key = module_name[len("tool_"):] if module_name.startswith("tool_") else ""
+                if storage_key:
+                    parts = storage_key.split("_")
+                    if len(parts) >= 2:
+                        tool_dir = self.tools_directory / parts[0] / "_".join(parts[1:])
+                        folder_path = str(tool_dir.resolve()) if tool_dir.exists() else None
+                    else:
+                        folder_path = None
+                else:
+                    folder_path = None
+                entry = {
+                    "name": tool_name,
+                    "description": tool.description,
+                    "source": "local",
+                    "pkg_name": None,
+                    "folder_path": folder_path,
+                    "allowed_callers": getattr(tool, "allowed_callers", []),
+                    "fields": getattr(tool, "fields", []) or [],
+                }
+            result.append(entry)
+        return result
 
     def get_openai_schemas(self) -> List[Dict[str, Any]]:
         """Return OpenAI-compatible function tool schemas for direct-callable tools."""

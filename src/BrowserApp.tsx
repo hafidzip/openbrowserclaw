@@ -318,6 +318,8 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
 
   const [lastUrl, setLastUrl] = useState("")
 
+  const [isFullscreen] = useGlobal('isFullscreen', { initialValue: false });
+
   // Register handlers in the global BrowserHandlers registry for this appId.
   // BrowserBar reads these directly — no re-render needed.
   useEffect(() => {
@@ -549,6 +551,10 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
               window.dispatchEvent(new CustomEvent('page_loaded', { detail: event.payload }));
             });
 
+            await wvw.listen('fullscreen_changed', (event: { payload: { label: string, isFullscreen: boolean; }; }) => {
+              window.dispatchEvent(new CustomEvent('fullscreen_changed', { detail: event.payload }));
+            });
+
             wvw.listen('update_location', (event) => {
               window.dispatchEvent(new CustomEvent('update_location', { detail: event.payload }));
             })
@@ -693,6 +699,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
     }
 
     const onTabDelete = async () => {
+      if(isFullscreen) await mainWindowRef.current?.setFullscreen(false)
       await deleteActiveTabWithGroupSelection()
       setFocus(false);
       setRefresh(prev => (prev + 1) % 2)

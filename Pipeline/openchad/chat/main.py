@@ -3071,6 +3071,7 @@ class Chat(PipelineBase):
                                                 break  # exit the tool loop
                                             # Tool finished normally  retrieve result.
                                             tool_result = tool_task.result()
+                                            logger.info("[%s] start | tool '%s' result: %s", self.__class__.__name__, name, tool_result)
                                         else:
                                             tool_result = await tool_task
                                     except asyncio.CancelledError:

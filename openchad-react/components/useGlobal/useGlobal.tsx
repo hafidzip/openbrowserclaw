@@ -1,190 +1,149 @@
-import { proxy, useSnapshot } from "valtio";
+import { useSyncExternalStore, useCallback } from "react";
 import type { SetStateAction, Dispatch } from "react";
+
 // ============================================================================
-// Type Utilities for useState-like experience
+// Types
 // ============================================================================
-/**
- * Supported primitive types that can be stored globally
- */
-type Primitive = string | number | boolean | null | undefined;
-/**
- * Supported data types for useGlobal
- */
-type GlobalValue =
-    | Primitive
-    | Primitive[]
-    | Record<string, unknown>
-    | unknown[];
+
 /**
  * The setter function type - identical to React's useState setter
  */
 type GlobalSetter<T> = Dispatch<SetStateAction<T>>;
+
 /**
  * The return type of useGlobal - a tuple like useState
  * [data, setData]
  */
 type UseGlobalReturn<T> = readonly [T, GlobalSetter<T>];
+
+type Primitive = string | number | boolean | null | undefined;
+type GlobalValue =
+    | Primitive
+    | Primitive[]
+    | Record<string, unknown>
+    | unknown[];
+
 // ============================================================================
-// Internal Wrapper for Primitives
+// Lightweight Store — no Valtio, no proxy, no wrapping
 // ============================================================================
 
-const PRIMITIVE_KEY = "__value__";
-interface PrimitiveWrapper<T> {
-    [PRIMITIVE_KEY]: T;
-}
+/** Sentinel so we know a key has truly never been initialised */
+const UNINITIALISED = Symbol("UNINITIALISED");
+
+const store = new Map<string, unknown>();
+const listeners = new Map<string, Set<() => void>>();
+
 /**
- * Check if a value is a primitive (not object/array)
+ * Ensure a key exists.  Only writes the initial value the very first time
+ * the key is registered — subsequent calls with a different initialValue from
+ * another component are silently ignored so the first writer wins.
  */
-
-function isPrimitive(value: unknown): value is Primitive {
-    return value === null ||
-        value === undefined ||
-        typeof value === 'string' ||
-        typeof value === 'number' ||
-        typeof value === 'boolean';
-}
-/**
- * Check if stored data is our primitive wrapper
- */
-
-function isWrappedPrimitive<T>(data: unknown): data is PrimitiveWrapper<T> {
-    return typeof data === 'object' &&
-        data !== null &&
-        PRIMITIVE_KEY in data &&
-        Object.keys(data).length === 1;
-}
-/**
- * Wrap a primitive value for storage
- */
-
-function wrapPrimitive<T>(value: T): PrimitiveWrapper<T> {
-    return { [PRIMITIVE_KEY]: value } as PrimitiveWrapper<T>;
-}
-/**
- * Unwrap a primitive value from storage
- */
-
-function unwrapPrimitive<T>(data: PrimitiveWrapper<T>): T {
-    return data[PRIMITIVE_KEY];
-}
-// ============================================================================
-// Internal Implementation
-// ============================================================================
-interface IGlobal {
-    data: unknown;
-    setData: (data: SetStateAction<unknown>) => void;
-    // Track if this global stores a primitive value
-    _isPrimitive: boolean;
-}
-
-const globalStore = proxy<Record<string, IGlobal>>({});
-
-function createGlobal<T>(key: string, initialValue?: T): void {
-    // Determine if this is a primitive type based on initial value
-    const primitiveMode = initialValue !== undefined && isPrimitive(initialValue);
-    // For primitives, wrap the initial value
-    // For objects/arrays, use as-is
-    let internalData: unknown;
-    if (primitiveMode) {
-        internalData = wrapPrimitive(initialValue);
-    } else if (initialValue !== undefined) {
-        internalData = initialValue;
-    } else {
-        internalData = {};
+function ensureKey<T>(key: string, initialValue: T | typeof UNINITIALISED): void {
+    if (!store.has(key)) {
+        store.set(key, initialValue === UNINITIALISED ? undefined : initialValue);
+        listeners.set(key, new Set());
     }
-    globalStore[key] = {
-        data: internalData,
-        _isPrimitive: primitiveMode,
-        setData: (data: SetStateAction<unknown>) => {
-            const store = globalStore[key];
-            let newUserData: unknown;
-            // Get the current user-facing value (unwrapped if primitive)
-            const currentUserData = store._isPrimitive && isWrappedPrimitive(store.data)
-                ? unwrapPrimitive(store.data)
-                : store.data;
-            if (typeof data === "function") {
-                newUserData = (data as (prevState: unknown) => unknown)(currentUserData);
-            } else {
-                newUserData = data;
-            }
-            // Determine new internal data
-            let newInternalData: unknown;
-            // Check if the new value is primitive
-            if (isPrimitive(newUserData)) {
-                // Mark as primitive mode and wrap
-                store._isPrimitive = true;
-                newInternalData = wrapPrimitive(newUserData);
-            } else {
-                // Not primitive - store directly
-                store._isPrimitive = false;
-                newInternalData = newUserData;
-            }
-            // Update state
-            store.data = newInternalData;
-        },
-    };
 }
+
+function getSnapshot<T>(key: string): T {
+    return store.get(key) as T;
+}
+
+function notifyListeners(key: string): void {
+    listeners.get(key)?.forEach((fn) => fn());
+}
+
+function subscribe(key: string, listener: () => void): () => void {
+    if (!listeners.has(key)) {
+        listeners.set(key, new Set());
+    }
+    listeners.get(key)!.add(listener);
+    return () => listeners.get(key)?.delete(listener);
+}
+
+function setGlobal<T>(key: string, action: SetStateAction<T>): void {
+    const current = store.get(key) as T;
+    const next =
+        typeof action === "function"
+            ? (action as (prev: T) => T)(current)
+            : action;
+
+    // Bail out if unchanged — avoids spurious re-renders
+    if (Object.is(current, next)) return;
+
+    store.set(key, next);
+    notifyListeners(key);
+}
+
 // ============================================================================
-// Public API - useState-like Hook
+// Public API — useState-like Hook
 // ============================================================================
+
 /**
  * A global state hook with a useState-like API.
- * Uses valtio for reactive state management across components.
- * 
- * @example
- * // String value (requires initial value)
- * const [name, setName] = useGlobal("username", "");
- * setName("John");
- * 
+ * Uses React's useSyncExternalStore for reactive, concurrent-safe state
+ * management across all components. Works correctly with every value type:
+ * boolean, null, undefined, string, number, arrays, and objects.
+ *
  * @example
  * // Boolean flag
  * const [enabled, setEnabled] = useGlobal("settings.enabled", false);
  * setEnabled(true);
- * 
+ *
  * @example
- * // Number counter
- * const [count, setCount] = useGlobal("counter", 0);
- * setCount(prev => prev + 1);
- * 
+ * // Toggle with updater function
+ * const [open, setOpen] = useGlobal("modal.open", false);
+ * setOpen(prev => !prev);
+ *
  * @example
- * // Simple string array
- * const [tags, setTags] = useGlobal<string[]>("tags", []);
- * setTags(prev => [...prev, "new-tag"]);
- * 
+ * // Nullable value (starts as null)
+ * const [selectedId, setSelectedId] = useGlobal<string | null>("selectedId", null);
+ *
  * @example
- * // Record/Object with typed values
+ * // Object with typed values
  * interface User { name: string; age: number; }
- * const [users, setUsers] = useGlobal<Record<string, User>>("users", {});
- * setUsers(prev => ({ ...prev, user1: { name: "John", age: 30 } }));
- * 
- * @param key - The unique key for this global state
- * @param initialValue - Optional initial value (required for primitives to enable type inference)
- * @returns A tuple [data, setData] similar to useState
+ * const [user, setUser] = useGlobal<User | null>("currentUser", null);
+ *
+ * @example
+ * // Record/map
+ * const [registry, setRegistry] = useGlobal<Record<string, boolean>>("registry", {});
+ * setRegistry(prev => ({ ...prev, [id]: true }));
+ *
+ * @param key          - Unique global key for this state slice
+ * @param initialValue - Initial value (required for type inference on primitives)
+ * @returns            A tuple [value, setValue] identical to useState
  */
 
+// Overload 1: no initial value → T defaults to Record<string, unknown>
 export function useGlobal<T = Record<string, unknown>>(key: string): UseGlobalReturn<T>;
-/**
- * Overload with initial value for type inference (required for primitives)
- */
 
+// Overload 2: with initial value → T inferred from initialValue
 export function useGlobal<T>(key: string, initialValue: T): UseGlobalReturn<T>;
 
 export function useGlobal<T = Record<string, unknown>>(
     key: string,
     initialValue?: T
 ): UseGlobalReturn<T> {
-    if (!globalStore[key]) {
-        createGlobal<T>(key, initialValue);
-    }
-    const snap = useSnapshot(globalStore[key]);
-    // Bridge: unwrap primitive values for seamless user experience
-    const userData = snap._isPrimitive && isWrappedPrimitive<T>(snap.data)
-        ? unwrapPrimitive<T>(snap.data)
-        : snap.data as T;
-    // Bridge: the setter already handles wrapping internally
-    const setUserData = snap.setData as GlobalSetter<T>;
-    return [userData, setUserData] as const;
+    // Register the key exactly once per key (first caller wins)
+    ensureKey<T>(key, arguments.length >= 2 ? initialValue! : UNINITIALISED as any);
+
+    // useSyncExternalStore gives React full control: tearing-free, concurrent-mode
+    // compatible, and SSR-ready.
+    const value = useSyncExternalStore<T>(
+        useCallback((listener) => subscribe(key, listener), [key]),
+        useCallback(() => getSnapshot<T>(key), [key]),
+        // Server snapshot: same as client (this is a client-only store)
+        useCallback(() => getSnapshot<T>(key), [key])
+    );
+
+    const setValue = useCallback(
+        (action: SetStateAction<T>) => setGlobal<T>(key, action),
+        [key]
+    );
+
+    return [value, setValue] as const;
 }
+
 // ============================================================================
 // Type Exports for Advanced Usage
 // ============================================================================
