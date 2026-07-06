@@ -11,10 +11,12 @@ import { Button } from "./ui";
 import { useDatabaseImpl } from "./useDatabase";
 import { getAllWebviews } from "@tauri-apps/api/webview";
 
-const truncate = (text: string, length = 50) => {
-    if (!text) return "";
-    if (text.length <= length) return text;
-    return text.slice(0, length) + "...";
+const truncate = (text: unknown, length = 50) => {
+    if (text === null || text === undefined) return "";
+    const str = typeof text === "string" ? text : String(text);
+    if (!str) return "";
+    if (str.length <= length) return str;
+    return str.slice(0, length) + "...";
 };
 
 const TabIcon = memo(({ iconVal }: { iconVal: string | undefined }) => {

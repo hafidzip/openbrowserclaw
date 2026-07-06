@@ -1,3 +1,4 @@
+from openchadpy.context import additional_args_ctx
 from openchadpy.context import fields_ctx
 from openchadpy.context import pipeline_ctx
 from openchadpy.context import console_messages
@@ -813,7 +814,10 @@ async def handle_pytauri_chat(msg_id: str, body: Dict[str, Any]):
                 model_id_ctx.set(agent_model_id)
                 fields = json.loads(agent_node.get("toolValues", "{}"))
                 fields_ctx.set(fields)
+                additional_args = json.loads(agent_node.get("additionalArgs", "{}"))
+                additional_args_ctx.set(additional_args)
                 logger.info(f"Fields: {fields}")
+                logger.info(f"Additional Args: {additional_args}")
                 logger.info("!!!AGENT_MODEL_ID: %s", agent_model_id)
 
     requested_model = agent_model_id if agent_model_id else body.get("model", "")    

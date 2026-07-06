@@ -78,13 +78,8 @@ export function BrowserBar({ appId }: { appId: string }) {
         'flex items-center gap-2 px-4 pointer-events-auto',
       )}>
         {layout !== "single" && <Columns3Cog
-          onClick={() => {
-            const activeElement = document.activeElement;
-            const isInputFocused =
-              activeElement instanceof HTMLInputElement ||
-              activeElement instanceof HTMLTextAreaElement ||
-              (activeElement instanceof HTMLElement && activeElement.isContentEditable);
-            if (TabInfo.layout !== "single" && !isInputFocused) {
+          onClick={async () => {
+            if (TabInfo.layout !== "single") {
               TabInfo.switchMode = true;
               window.dispatchEvent(new CustomEvent('switchMode'));
             } else {

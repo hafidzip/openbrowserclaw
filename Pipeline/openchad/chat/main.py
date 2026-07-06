@@ -1,3 +1,4 @@
+from openchadpy.context import additional_args_ctx
 from typing import Union
 from anyio import Path
 from openchadpy.tool_base import ToolRegistry
@@ -367,10 +368,14 @@ def _create_agent_query_tool(pipeline: "Chat", agent_node: dict) -> ToolRegistry
                 old_agent = agent_ctx.get()
                 old_model = model_id_ctx.get()
                 old_fields = fields_ctx.get()
+                old_additional_args = additional_args_ctx.get()
                 
                 agent_ctx.set({sub_agent_id: sub_agent_tree})
                 sub_model = sub_agent_tree.get("model")
+                
                 fields_ctx.set(json.loads(sub_agent_tree.get("toolValues", "{}")))
+                additional_args_ctx.set(json.loads(sub_agent_tree.get("additionalArgs", "{}")))
+
                 if sub_model:
                     model_id_ctx.set(sub_model)
 
@@ -455,6 +460,7 @@ def _create_agent_query_tool(pipeline: "Chat", agent_node: dict) -> ToolRegistry
                     agent_ctx.set(old_agent)
                     model_id_ctx.set(old_model)
                     fields_ctx.set(old_fields)
+                    additional_args_ctx.set(old_additional_args)
             else:
                 agent_results.append({
                     "agent_id": sub_agent_id,

@@ -6,6 +6,7 @@ if TYPE_CHECKING:
 # Context variable
 pipeline_ctx: ContextVar[Optional[PipelineBase]] = ContextVar("pipeline", default=None)
 fields_ctx: ContextVar[Dict[str, Any]] = ContextVar("fields", default={})
+additional_args_ctx: ContextVar[Dict[str, Any]] = ContextVar("additional_args", default={})
 agent_ctx:ContextVar[Optional[Dict[str, Any]]] = ContextVar("agent", default=None) 
 workspace_ctx: ContextVar[Optional[str]] = ContextVar("workspace", default="global")
 tab_id_ctx: ContextVar[Optional[str]] = ContextVar("tab_id", default="global")

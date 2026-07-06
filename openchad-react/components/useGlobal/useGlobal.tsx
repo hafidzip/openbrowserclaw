@@ -23,7 +23,7 @@ type GlobalSetter<T> = Dispatch<SetStateAction<T>>;
  * The return type of useGlobal - a tuple like useState
  * [data, setData]
  */
-type UseGlobalReturn<T> = readonly [T, GlobalSetter<T>];
+export type UseGlobalReturn<T> = readonly [T, GlobalSetter<T>];
 // ============================================================================
 // Internal Wrapper for Primitives
 // ============================================================================
@@ -185,3 +185,11 @@ export function useGlobal<T = Record<string, unknown>>(
     const setUserData = snap.setData as GlobalSetter<T>;
     return [userData, setUserData] as const;
 }
+
+export function setGlobal<T>(key: string, value: SetStateAction<T>): void {
+    if (!globalStore[key]) {
+        createGlobal(key, value);
+    }
+    globalStore[key].setData(value as SetStateAction<unknown>);
+}
+

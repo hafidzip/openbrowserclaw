@@ -6,7 +6,7 @@ import { useDatabaseImplBase } from "./components/useDatabase/useDatabase"
 import { useFileImpl } from "./components/useFile";
 import { useFolderImpl } from "./components/useFolder";
 import useElementSize from "./components/hooks/useElementSize";
-import { useGlobal as useGlobalImpl } from "./components/useGlobal";
+import { useGlobal as useGlobalImpl, setGlobal } from "./components/useGlobal";
 import type { MessageState } from "./components/default-page";
 import { OpenChadIcon } from "./components/open-chad-icon";
 import ContainerSingleApp from "./ContainerSingleApp";
@@ -301,6 +301,7 @@ export {
     useFolder,
     useElementSize,
     useGlobal,
+    setGlobal,
     generateIdFromString,
     usePython,
     usePythonEvent,

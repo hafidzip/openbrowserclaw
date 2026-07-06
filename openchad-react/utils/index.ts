@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Webview } from "@tauri-apps/api/webview";
-import { AsyncLock } from "openchad-react";
+import { AsyncLock, setGlobal } from "openchad-react";
 
 export * from "../utils/utils"
 
@@ -25,16 +25,16 @@ export async function createWebview(
     options: CreateWebviewOptions = {}
 ): Promise<Webview | undefined> {
     await AsyncLock.acquire();
+    const url = options.url ?? 'about:blank';
     try {
         let w = await Webview.getByLabel(label);
-        
         if (!w) {
             console.warn("Creating webview :", label, "with options :", options)
-            await invoke('create_webview', {
+            const createdLabel = await invoke<string>('create_webview', {
                 args: {
                     parentLabel: 'main',
                     label,
-                    url: options.url ?? 'about:blank',
+                    url: "about:blank",
                     x: options.x ?? 0,
                     y: options.y ?? 0,
                     width: options.width ?? 100,
@@ -43,15 +43,88 @@ export async function createWebview(
                     userAgent: options.userAgent,
                 },
             });
+            w = await Webview.getByLabel(createdLabel);
+
+            if (w) {
+                const webview = w;
+                if (url === "about:blank") {
+                    setGlobal(`loading-${label}`, false)
+                } else {
+                    await new Promise(resolve => setTimeout(resolve, 250));
+                    setGlobal(`loading-${label}`, false)
+                    await invoke("eval_in_webview", {
+                        label,
+                        script: `window.location.replace("${url}")`
+                    })
+                    await new Promise<void>((resolve) => {
+                        let unlisten: (() => void) | undefined;
+                        let resolved = false;
+
+                        const cleanUp = () => {
+                            if (resolved) return;
+                            resolved = true;
+                            if (unlisten) unlisten();
+                            resolve(undefined);
+                        };
+
+                        webview.listen('page_loaded', (event: { payload: { target: string } }) => {
+                            if (event.payload.target === label) {
+                                cleanUp();
+                            }
+                        }).then((unlistenFn) => {
+                            unlisten = unlistenFn;
+                            if (resolved) {
+                                unlistenFn();
+                            }
+                        });
+
+                        setTimeout(cleanUp, 5000);
+                    });
+                }
+
+                console.log("Webview : ", webview);
+                console.log("createdLabel : ", createdLabel);
+                await webview.once('tauri://error', (e) => {
+                    console.error(`Webview "${label}" failed to create:`, e);
+                });
+
+                await webview.listen('fullscreen_changed', (event: { payload: { label: string, isFullscreen: boolean; }; }) => {
+                    window.dispatchEvent(new CustomEvent('fullscreen_changed', { detail: event.payload }));
+                });
+
+                await webview.listen('update_location', (event) => {
+                    window.dispatchEvent(new CustomEvent('update_location', { detail: event.payload }));
+                })
+                await webview.listen('update_location_title_icon', (event) => {
+                    window.dispatchEvent(new CustomEvent('update_location_title_icon', { detail: event.payload }));
+                })
+                await webview.listen('report_audio_state', (event) => {
+                    window.dispatchEvent(new CustomEvent('report_audio_state', { detail: event.payload }));
+                })
+                await webview.listen('delete_tab', async (event) => {
+                    window.dispatchEvent(new CustomEvent('delete_tab', { detail: event.payload }));
+                })
+
+                await webview.listen('switch_tab', async (event) => {
+                    window.dispatchEvent(new CustomEvent('switch_tab', { detail: event.payload }));
+                })
+
+                await webview.listen('create_task', async (event) => {
+                    window.dispatchEvent(new CustomEvent('create_task', { detail: event.payload }));
+                })
+
+                await webview.listen('focus', async (event) => {
+                    window.dispatchEvent(new CustomEvent('focus', { detail: event.payload }));
+                })
+            }
         }
 
-        w = await Webview.getByLabel(label);
         window.dispatchEvent(new CustomEvent('update_cdp_ports'))
         if (!w) throw new Error(`Webview "${label}" not found after creation`);
         return w;
-    } catch (e){
+    } catch (e) {
         console.error(e)
-    } 
+    }
     finally {
         AsyncLock.release()
     }

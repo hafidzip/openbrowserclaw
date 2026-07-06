@@ -5,10 +5,10 @@ import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi'
 import clsx from 'clsx'
 import { deleteActiveTabWithGroupSelection, MenuBar, BrowserHandlers, BrowserNavState, TabState } from 'openchad-react/utils/state';
 
-import { createWebview, uuidv4 } from 'openchad-react/utils';
+import { createWebview } from 'openchad-react/utils';
 import { useDatabaseImpl } from 'openchad-react/components/useDatabase';
 import type { ControllableBrowser } from 'openchad-react/components/ControllableBrowsers';
-import { invoke } from '@tauri-apps/api/core'
+import { Spinner } from 'openchad-react/ui'
 
 const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
 
@@ -203,8 +203,8 @@ const cleanUrl = (u?: string | null) => {
   return u.replace(/\/$/, "");
 };
 
-export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, emptyRef, useWorkspace, setTitle, setIcon, pyInvoke, useActiveTabId, useTheme, tabId, appId, useTab }: AppInfo) {
-  const { childrenProps, layout: tabLayout, children } = useTab() ?? {};
+export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, emptyRef, initializedBrowsersRef, useWorkspace, setTitle, setIcon, pyInvoke, useActiveTabId, useTheme, tabId, appId, useTab }: AppInfo) {
+  const { childrenProps, layout: tabLayout, children } = useTab();
   const tabLayoutRef = useRef(tabLayout);
   tabLayoutRef.current = tabLayout;
 
@@ -271,6 +271,8 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   }
 
   const handleNavigate = async (newUrl: string) => {
+    if (!initializedBrowsersRef.current?.has(appId)) return;
+    setLoading(true)
     console.log('new url', newUrl);
     const targetUrl = normalizeUrl(newUrl)
     if (!targetUrl) return
@@ -278,6 +280,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   }
 
   const handleBack = async () => {
+    if (!initializedBrowsersRef.current?.has(appId)) return;
     if (currentIndex > 0) {
       pendingNav.current = 'back'
       await pyInvoke('eval', {
@@ -288,6 +291,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   }
 
   const handleForward = async () => {
+    if (!initializedBrowsersRef.current?.has(appId)) return;
     if (currentIndex < history.length - 1) {
       pendingNav.current = 'forward'
       await pyInvoke('eval', {
@@ -298,6 +302,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   }
 
   const handleRefresh = async () => {
+    if (!initializedBrowsersRef.current?.has(appId)) return;
     await pyInvoke('eval', {
       label,
       script: `window.location.reload()`
@@ -323,6 +328,11 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   const [lastUrl, setLastUrl] = useState("")
 
   const [isFullscreen] = useGlobal('isFullscreen', { initialValue: false });
+
+  const [loading, setLoading] = useGlobal(`loading-${label}`, { initialValue: true });
+
+  // const loadingRef = useRef(loading);
+  // loadingRef.current = loading;
 
   // Register handlers in the global BrowserHandlers registry for this appId.
   // BrowserBar reads these directly — no re-render needed.
@@ -384,7 +394,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
       // DB is still at the default "about:blank" — show the palette
       setShowPalette(true)
     }
-  }, [ready])
+  }, [ready, children])
 
   // Activate this app's bar when tab becomes active
   useEffect(() => {
@@ -433,9 +443,8 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
         await AsyncLock.run(async () => {
           const existing = await getByLabel(label)
           if (mainWindowRef.current) {
-            if (existing && initialized && mainWindowRef.current) {
+            if (existing && initialized && mainWindowRef.current && initializedBrowsersRef.current?.has(appId)) {
               await existing.reparent(mainWindowRef.current)
-              await existing.show();
             }
             if (mainWebviewRef.current) await mainWebviewRef.current.reparent(mainWindowRef.current)
             setFocus(false);
@@ -451,17 +460,17 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
 
   useEffect(() => {
     const now = Date.now();
-    if (now - lastReparentTimeRef.current < 500) return;
+    if (now - lastReparentTimeRef.current < 100) return;
     lastReparentTimeRef.current = now;
 
     (async () => {
-      if (activeTabIdRef.current !== tabId && MenuBar.appId !== appId) return;
+      if (activeTabIdRef.current !== tabId && MenuBar.appId !== appId && initializedBrowsersRef.current?.has(appId)) return;
       await AsyncLock.run(async () => {
         if (!mainWindowRef.current || !mainWebviewRef.current) return;
         if (focus) {
           const existing = await getByLabel(label);
           await mainWebviewRef.current.reparent(mainWindowRef.current);
-          if (existing && initialized) {
+          if (existing && initialized && initializedBrowsersRef.current?.has(appId)) {
             await existing.reparent(mainWindowRef.current);
           }
         } else {
@@ -475,7 +484,12 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   const [, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: true });
 
 
+  useEffect(() => {
+    console.warn('[loading]: ', loading);
+  }, [loading]);
+
   const syncSize = async () => {
+    if (!initializedBrowsersRef.current?.has(appId)) return;
     const container = containerRef.current
     if (!allRef.current) return;
     const wvw = allRef.current.find(webview => webview.label === label)
@@ -484,7 +498,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
     const rect = container.getBoundingClientRect()
 
     try {
-      if (rect.width < 500 && rect.height < 500) return;
+      if (rect.width < 10 && rect.height < 10) return;
       await Promise.all([
         wvw.setPosition(new LogicalPosition(rect.x, rect.y)),
         wvw.setSize(new LogicalSize(Math.round(rect.width), Math.round(rect.height))),
@@ -513,8 +527,12 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
     if (!ready || !containerRef.current) return
 
     (async () => {
+      await AsyncLock.acquire();
       const existing = await getByLabel(label)
+      AsyncLock.release();
+
       if (existing || label.startsWith('webview-agent')) {
+        initializedBrowsersRef.current?.add(appId);
         setFocus(false)
         setRefresh(prev => (prev + 1) % 2)
       } else {
@@ -522,10 +540,20 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
         const initWebview = async (): Promise<void> => {
           const container = containerRef.current
           if (!container) return
-          const rect = container.getBoundingClientRect()
-          if (rect.width === 0 || rect.height === 0) return
-
-          // resolve when ready are true
+          let rect = container.getBoundingClientRect()
+          if (rect.width === 0 || rect.height === 0) {
+            await new Promise<void>((resolve) => {
+              const check = () => {
+                rect = container.getBoundingClientRect()
+                if (rect.width !== 0 && rect.height !== 0) {
+                  resolve();
+                } else {
+                  setTimeout(check, 50);
+                }
+              };
+              check();
+            });
+          }
           if (!readyRef.current) {
             await new Promise<void>((resolve) => {
               const check = () => {
@@ -538,77 +566,21 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
               check();
             });
           }
-
-          const __url__ = (urlRef.current && /^https?:\/\//i.test(urlRef.current)) ? urlRef.current : "about:blank";
-          const wvw = await createWebview(label, {
-            url: "about:blank",
+          MenuBar.appId = appId
+          MenuBar.tabId = tabId
+          await createWebview(label, {
+            url: (urlRef.current && /^https?:\/\//.test(urlRef.current)) ? urlRef.current : 'about:blank',
             width: Math.round(rect.width),
             height: Math.round(rect.height),
-            x: screenX,
-            y: screenY
+            x: Math.round(rect.x),
+            y: Math.round(rect.y)
           })
-
-          if (mainWindowRef.current) await mainWebviewRef.current?.reparent(mainWindowRef.current)
-
-
-          if (wvw) {
-            const goTo = async () => {
-              if (__url__ && /^https?:\/\//i.test(__url__)) {
-                await invoke('eval_in_webview', {
-                  label: label,
-                  script: `if(window.location.href === 'about:blank') window.location.href = '${__url__}'`,
-                });
-              }
-            }
-
-            let intervalId = setInterval(async () => {
-              await goTo()
-            }, 250)
-
-            if (!/^https?:\/\//i.test(__url__)) {
-              clearInterval(intervalId);
-            }
-
-            wvw.listen('page_loaded', (event: { payload: { target: string } }) => {
-              if (event.payload.target === label) {
-                clearInterval(intervalId);
-                window.dispatchEvent(new CustomEvent('page_loaded', { detail: event.payload }));
-              }
-            });
-
-            await wvw.listen('fullscreen_changed', (event: { payload: { label: string, isFullscreen: boolean; }; }) => {
-              window.dispatchEvent(new CustomEvent('fullscreen_changed', { detail: event.payload }));
-            });
-
-            wvw.listen('update_location', (event) => {
-              window.dispatchEvent(new CustomEvent('update_location', { detail: event.payload }));
-            })
-            wvw.listen('update_location_title_icon', (event) => {
-              window.dispatchEvent(new CustomEvent('update_location_title_icon', { detail: event.payload }));
-            })
-            wvw.listen('report_audio_state', (event) => {
-              window.dispatchEvent(new CustomEvent('report_audio_state', { detail: event.payload }));
-            })
-            wvw.listen('delete_tab', async (event) => {
-              window.dispatchEvent(new CustomEvent('delete_tab', { detail: event.payload }));
-            })
-
-            wvw.listen('switch_tab', async (event) => {
-              window.dispatchEvent(new CustomEvent('switch_tab', { detail: event.payload }));
-            })
-
-            wvw.listen('create_task', async (event) => {
-              window.dispatchEvent(new CustomEvent('create_task', { detail: event.payload }));
-            })
-
-            wvw.listen('focus', async (event) => {
-              window.dispatchEvent(new CustomEvent('focus', { detail: event.payload }));
-            })
-          }
         }
         await initWebview()
+        initializedBrowsersRef.current?.add(appId);
       }
     })()
+
 
     const cleanups: (() => void)[] = []
 
@@ -672,7 +644,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
 
     const onLocationChange = async (event: any) => {
       await AsyncLock.run(async () => {
-        setRefresh((prev) => (prev + 1) % 2)
+        setLoading(false);
         const data = event.detail as any
         if (data.target == label) {
           setUrl({ url: data.url })
@@ -724,7 +696,6 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
     }
 
     const onTabDelete = async () => {
-      if (isFullscreen) await mainWindowRef.current?.setFullscreen(false)
       await deleteActiveTabWithGroupSelection()
       setFocus(false);
       setRefresh(prev => (prev + 1) % 2)
@@ -807,28 +778,44 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
           <MyModal onOpen={hideChildWebview} onClose={showChildWebview} />
       */}
 
+
+      {loading &&
+        <div
+          className={clsx(
+            "flex items-center justify-center w-full h-full absolute left-0 top-0",
+          )}
+        >
+          <Spinner />
+        </div>
+      }
+
       <div
         ref={containerRef}
         id={label}
         onWheelCapture={() => {
+          if (loading) return;
           if (MenuBar.appId !== appId) {
             MenuBar.appId = appId
             MenuBar.tabId = tabId
+          } else {
+            setFocus(true)
+            setRefresh(prev => (prev + 1) % 2)
           }
-          setFocus(true)
-          setRefresh(prev => (prev + 1) % 2)
 
         }}
         onPointerDown={() => {
+          if (loading) return;
           if (MenuBar.appId !== appId) {
             MenuBar.appId = appId
             MenuBar.tabId = tabId
+          } else {
+            setFocus(true)
+            setRefresh(prev => (prev + 1) % 2)
           }
-          setFocus(true)
-          setRefresh(prev => (prev + 1) % 2)
 
         }}
         onMouseMove={() => {
+          if (loading) return;
           if (MenuBar.appId !== appId && tabLayout !== "single") return;
           setFocus(true)
           setRefresh(prev => (prev + 1) % 2)

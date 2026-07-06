@@ -1,4 +1,4 @@
-import { useGlobal as useGlobalImpl } from "./useGlobal";
+import { useGlobal as useGlobalImpl, setGlobal } from "./useGlobal";
 import type { UseGlobalReturn } from "./useGlobal";
 
 export function useGlobal<T = Record<string, unknown>>(
@@ -8,4 +8,5 @@ export function useGlobal<T = Record<string, unknown>>(
     return typeof options?.initialValue === 'undefined' ? useGlobalImpl<T>(tb) : useGlobalImpl<T>(tb, options.initialValue);
 }
 
+export { setGlobal };
 export type { UseGlobalReturn };

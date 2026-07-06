@@ -27,6 +27,7 @@ os.environ["OPENCHAD_EXTENSION_PATH"] = os.path.join(_PROJECT_ROOT, "Extensions"
 os.environ["OPENCHAD_CONFIG_PATH"] = CONFIG_JSON
 os.environ["OPENCHAD_CDP_PORT"] = "9222"
 os.environ["_PYTAURI_DIST"] = "openchad-webview"
+os.environ["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
 
 
 from openchadpy.main import main

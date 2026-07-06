@@ -24,7 +24,7 @@ import AppLoading from './components/app-loading'
 import { useFolderImpl } from './components/useFolder'
 import type { AppInfo, Model } from './utils/utils'
 import { sha256 } from 'js-sha256';
-import { useGlobal } from './components/useGlobal'
+import { setGlobal, useGlobal } from './components/useGlobal'
 import { useSettings } from './components/useSettings'
 import { Dropdown } from './components/dropdown'
 import { invoke } from '@tauri-apps/api/core';
@@ -53,11 +53,14 @@ if (typeof window !== 'undefined') {
 
 const TabItem = React.memo(({ children, isOpened }: { children: React.ReactNode, isOpened: boolean }) => {
   const [loaded, setLoaded] = useState(false);
+
   useEffect(() => {
     if (isOpened && !loaded) {
       setLoaded(true);
     }
   }, [isOpened])
+
+
   return <div className={clsx(
     "w-full h-full",
     !loaded && "bg-card"
@@ -235,17 +238,14 @@ export default function Container({ Apps }: { Apps: Project }) {
   useEffect(() => {
     if (!ready) return;
     if (!intializeTheme) return;
+    setInitializeBrowser(true);
 
     (async () => {
       if (!allRef.current) allRef.current = await getAllWebviews();
       if (!mainWindowRef.current) mainWindowRef.current = await getCurrentWindow();
       if (!mainWebviewRef.current) mainWebviewRef.current = await getCurrentWebview();
 
-      console.warn("Controllable Browser:", browsers)
-
       const browserEntries = Object.entries(browsers);
-
-      console.warn("browserEntries:", browserEntries)
 
       // Find only the UUIDs that haven't been initialized yet.
       // This handles both the initial load and browsers added at runtime.
@@ -259,90 +259,22 @@ export default function Container({ Apps }: { Apps: Project }) {
       const size = await mainWebviewRef.current?.size();
       const position = await mainWebviewRef.current?.position();
 
-      await Promise.all(newEntries.map(async ([uuid, browser]) => {
+      for (const [uuid, browser] of newEntries) {
         const label = `webview-${uuid}`;
 
         // Mark as initialized immediately so concurrent effect runs don't duplicate work.
         initializedBrowsersRef.current.add(uuid);
 
         if (!allRef.current?.find((wv) => wv.label === label)) {
-          console.warn("Browser : ", browser);
-          await AsyncLock.acquire()
-          const __url__ = (browser.url && /^https?:\/\//i.test(browser.url)) ? browser.url : "about:blank";
-          const w = await createWebview(label, {
-            url: "about:blank",
+          await createWebview(label, {
+            url: (browser.url && /^https?:\/\//.test(browser.url)) ? browser.url : 'about:blank',
             width: size?.width,
             height: size?.height,
             x: position?.x,
             y: position?.y,
           });
-
-          if (w) {
-
-            // const goTo = async () => {
-            //   if (__url__ && /^https?:\/\//i.test(__url__)) {
-            //     await invoke('eval_in_webview', {
-            //       label: label,
-            //       script: `if(window.location.href === 'about:blank') window.location.href = '${__url__}'`,
-            //     });
-            //   }
-            // }
-
-            // let intervalId = setInterval(async () => {
-            //   await goTo()
-            // }, 250)
-
-            // if (!/^https?:\/\//i.test(__url__)) {
-            //   clearInterval(intervalId);
-            // }
-
-            await w.listen('page_loaded', (event: { payload: { target: string }; }) => {
-              if (event.payload.target === label) {
-                AsyncLock.release()
-                window.dispatchEvent(new CustomEvent('page_loaded', { detail: event.payload }));
-                // clearInterval(intervalId);
-                if (snaptabsRef.current && !snaptabsRef.current[uuid]) {
-                  invoke('set_webview_muted', { label: label, muted: true })
-                }
-              }
-              console.warn("page_loaded:", event.payload);
-            });
-
-            await w.listen('fullscreen_changed', (event: { payload: { label: string, isFullscreen: boolean; }; }) => {
-              if (snaptabsRef.current && snaptabsRef.current[uuid]) window.dispatchEvent(new CustomEvent('fullscreen_changed', { detail: event.payload }));
-            });
-
-
-            await w.listen('focus', (event) => {
-              window.dispatchEvent(new CustomEvent('focus', { detail: event.payload }));
-            });
-
-            await w.listen('update_location', (event) => {
-              window.dispatchEvent(new CustomEvent('update_location', { detail: event.payload }));
-            });
-
-            await w.listen('update_location_title_icon', (event) => {
-              window.dispatchEvent(new CustomEvent('update_location_title_icon', { detail: event.payload }));
-            });
-
-            w.listen('report_audio_state', (event) => {
-              window.dispatchEvent(new CustomEvent('report_audio_state', { detail: event.payload }));
-            })
-
-            await w.listen('delete_tab', (event) => {
-              window.dispatchEvent(new CustomEvent('delete_tab', { detail: event.payload }));
-            });
-
-            await w.listen('switch_tab', (event) => {
-              window.dispatchEvent(new CustomEvent('switch_tab', { detail: event.payload }));
-            });
-
-            await w.listen('create_task', async (event) => {
-              window.dispatchEvent(new CustomEvent('create_task', { detail: event.payload }));
-            });
-          }
         }
-      }));
+      }
 
       if (!intializeBrowser) setInitializeBrowser(true);
     })();
@@ -582,6 +514,7 @@ export default function Container({ Apps }: { Apps: Project }) {
       mainWebviewRef,
       allRef,
       emptyRef,
+      initializedBrowsersRef,
       useWorkspace: () => {
         const { workspace, setWorkspace } = useSnapshot(Workspace);
         return { workspace: workspace ?? "global", setWorkspace };
@@ -600,6 +533,7 @@ export default function Container({ Apps }: { Apps: Project }) {
       setTitle: (title: string) => {
         if (TabState[tabId] && typeof TabState[tabId].childrenProps !== "undefined") TabState[tabId] = { ...TabState[tabId], title };
       },
+      // here
       setIcon: (icon: string) => {
         if (TabState[tabId] && typeof TabState[tabId].childrenProps !== "undefined") TabState[tabId] = { ...TabState[tabId], iconOverride: icon };
       },
@@ -643,7 +577,7 @@ export default function Container({ Apps }: { Apps: Project }) {
       },
       useTab: () => {
         const _tabs = useSnapshot(TabState);
-        return _tabs[tabId] as ITab;
+        return _tabs[tabId] as ITab ?? {};
       },
       addTab: (tabs: { app: string; data?: Record<string, any> }[] | { app: string; data?: Record<string, any> }, layout?: string) => {
         const childrenProps: Record<string, any> = {};
@@ -817,35 +751,79 @@ export default function Container({ Apps }: { Apps: Project }) {
   useEffect(() => {
     const prev = prevMutedRef.current;
     const next: Record<string, boolean> = {};
-    Object.entries(snaptabs).forEach(([tabId, tab]) => {
+
+    const tasks = Object.entries(snaptabs).flatMap(([tabId, tab]) => {
       const muted = tab.isMuted ?? false;
       next[tabId] = muted;
-      if (prev[tabId] !== muted) {
-        invoke('set_webview_muted', { label: `webview-${tabId}`, muted }).catch(() => { });
+      if (prev[tabId] === muted) return [];
+      return (tab.children ?? []).map((childAppId) => {
+        if (initializedBrowsersRef.current.has(childAppId)) invoke('set_webview_muted', { label: `webview-${childAppId}`, muted }).catch((e) => console.error(`Failed to mute ${childAppId}:`, e))
       }
+      );
     });
-    prevMutedRef.current = next;
+
+    Promise.all(tasks).then(() => {
+      prevMutedRef.current = next;
+    });
   }, [snaptabs]);
 
+  const isLastMaximizedRef = useRef<boolean>(false);
   useEffect(() => {
+    const win = getCurrentWindow();
+    let fixing = false; // re-entrancy guard
+    
+
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
     const checkFullscreen = async () => {
+      if (fixing) return; // ignore events we caused ourselves
+      await AsyncLock.acquire();
+
       try {
-        const full = await getCurrentWindow().isFullscreen();
-        console.warn("Fullscreen", full);
+        const [full, maximized] = await Promise.all([
+          win.isFullscreen(),
+          win.isMaximized(),
+        ]);
+
+        if (full && maximized) {
+          isLastMaximizedRef.current = true
+          fixing = true;
+          try {
+            await win.setFullscreen(false);
+            await sleep(50);
+            await win.unmaximize();
+            await sleep(50);
+            await win.setFullscreen(true);
+            await sleep(50);
+          } finally {
+            fixing = false;
+          }
+        }else{
+          if(isLastMaximizedRef.current){
+            await win.maximize()
+            isLastMaximizedRef.current = false
+          }
+        }
+
+        console.warn("Fullscreen", full, { full, maximized });
         setIsFullscreen(full);
       } catch (e) {
         console.error(e);
       }
+      
+      AsyncLock.release();
     };
-    checkFullscreen();
+
     window.addEventListener('resize', checkFullscreen);
+    window.addEventListener('fullscreenchange', checkFullscreen);
     window.addEventListener('fullscreen_changed', checkFullscreen);
     return () => {
       window.removeEventListener('resize', checkFullscreen);
+      window.removeEventListener('fullscreenchange', checkFullscreen);
       window.removeEventListener('fullscreen_changed', checkFullscreen);
-    }
+    };
   }, []);
-
+  
   useEffect(() => {
     setMounted(true);
 
@@ -902,6 +880,12 @@ export default function Container({ Apps }: { Apps: Project }) {
       })
     })()
   }, [workspace, active])
+
+  useEffect(() => {
+    (async () => {
+      if (isFullscreen) await mainWindowRef.current?.setFullscreen(false)
+    })()
+  }, [active])
 
   useKeyEffect(() => {
     (async () => {
@@ -963,20 +947,6 @@ export default function Container({ Apps }: { Apps: Project }) {
   useKeyEffect(() => {
     setIsCreateTask(false);
   }, ["escape"])
-
-  useKeyEffect(() => {
-    const activeElement = document.activeElement;
-    const isInputFocused =
-      activeElement instanceof HTMLInputElement ||
-      activeElement instanceof HTMLTextAreaElement ||
-      (activeElement instanceof HTMLElement && activeElement.isContentEditable);
-    if (TabInfo.layout !== "single" && !isInputFocused) {
-      TabInfo.switchMode = true;
-    } else {
-      TabInfo.switchMode = false;
-    }
-  }, ["control", "shift"]);
-
 
   const lastDeleteTimeRef = useRef<any>(null);
 
