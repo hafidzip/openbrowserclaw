@@ -22,12 +22,12 @@ export interface MessageState {
     initialized: boolean;
     dontStop: boolean;
     context: string;
+    isRead: boolean;
 }
 
 export default function DefaultPage(AppInfo: AppInfo) {
     const { layout } = AppInfo.useTheme();
     const { workspace } = AppInfo.useWorkspace();
-    const workspaceRef = useRef(workspace);
     const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
     const msgBottomRef = useRef<HTMLDivElement>(null);
     const [scrollContainerRef] = useElementSize<HTMLDivElement>();
@@ -47,8 +47,9 @@ export default function DefaultPage(AppInfo: AppInfo) {
             errorMsg: "",
             initialized: false,
             isStreaming: false,
-            dontStop: false,
+            dontStop: true,
             context: "",
+            isRead: false,
         },
     });
     const readyRef = useRef(ready);
@@ -84,7 +85,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
 
     async function syncAgentFromTask() {
         const oldData: any = await pyInvoke('sqlite', {
-            db: workspaceRef.current ?? "global",
+            db: workspace,
             command: "query",
             sql: `SELECT * FROM tasks WHERE id = ?`,
             params: [tabId],
@@ -114,7 +115,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
         if (selectedAgent.id && loadAgentFromTaskRef.current) {
             (async () => {
                 const oldData: any = await pyInvoke('sqlite', {
-                    db: workspaceRef.current ?? "global",
+                    db: workspace,
                     command: "query",
                     sql: `SELECT * FROM tasks WHERE id = ?`,
                     params: [tabId],
@@ -123,7 +124,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
                     try {
                         const data = JSON.parse(oldData.data[0].metadata);
                         await pyInvoke('sqlite', {
-                            db: workspaceRef.current ?? "global",
+                            db: workspace,
                             command: "execute",
                             sql: `INSERT OR REPLACE INTO tasks (id, metadata) VALUES (?, ?)`,
                             params: [tabId, JSON.stringify({
@@ -174,6 +175,22 @@ export default function DefaultPage(AppInfo: AppInfo) {
         if (activeId == tabId) {
             scrollToBottom('instant');
             setJustOpen(false);
+            (async () => {
+                await new Promise<void>((resolve) => {
+                    const check = () => {
+                        if (readyRef.current && messageStateRef.current) {
+                            resolve();
+                        } else {
+                            setTimeout(check, 50);
+                        }
+                    };
+                    check();
+                });
+                setMessageState((prev) => ({
+                    ...messageStateRef.current,
+                    isRead: true
+                }))
+            })()
         } else {
             setJustOpen(true);
         }
@@ -205,12 +222,37 @@ export default function DefaultPage(AppInfo: AppInfo) {
     };
 
     useEffect(() => {
+        if (mounted) {
+            (async () => {
+                await new Promise<void>((resolve) => {
+                    const check = () => {
+                        if (readyRef.current && messageStateRef.current) {
+                            resolve();
+                        } else {
+                            setTimeout(check, 50);
+                        }
+                    };
+                    check();
+                });
+                if (messageStateRef.current.isStreaming && messageStateRef.current.activeId.length > 0) {
+                    await pyInvoke("v1/chat/stop", { id: messageStateRef.current.activeId });
+                    setMessageState(() => ({
+                        ...messageStateRef.current,
+                        isStreaming: false,
+                        activeId: ""
+                    }))
+                }
+            })()
+        }
+    }, [mounted])
+
+    useEffect(() => {
         const tabUpdate = (event: Event) => {
             const { tabId: targetTabId, title: newTitle, icon: newIcon } = (event as CustomEvent).detail;
             (async () => {
-                if (workspaceRef.current && newTitle && targetTabId && newIcon && targetTabId === tabId) {
+                if (workspace && newTitle && targetTabId && newIcon && targetTabId === tabId) {
                     const oldData: any = await pyInvoke('sqlite', {
-                        db: workspaceRef.current ?? "global",
+                        db: workspace,
                         command: "query",
                         sql: `SELECT * FROM tasks WHERE id = ?`,
                         params: [tabId],
@@ -226,7 +268,7 @@ export default function DefaultPage(AppInfo: AppInfo) {
                             }
                             const data = JSON.parse(oldData.data[0].metadata);
                             await pyInvoke('sqlite', {
-                                db: workspaceRef.current ?? "global",
+                                db: workspace,
                                 command: "execute",
                                 sql: `INSERT OR REPLACE INTO tasks (id, metadata) VALUES (?, ?)`,
                                 params: [tabId, JSON.stringify({

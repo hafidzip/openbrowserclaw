@@ -9,10 +9,10 @@ import { Spinner } from "./ui/spinner";
 import clsx from "clsx";
 import { useGlobal } from "./useGlobal";
 import { useDatabaseImpl } from "./useDatabase";
-import { generateIdFromString, useAvailableAgents, useSnapshot } from "../index";
+import { generateIdFromString, MessageState, useAvailableAgents, useSnapshot } from "../index";
 import { Button } from "./ui";
 import type { Model } from "../utils/utils";
-import {  INTERVAL_OPTIONS } from "./composer";
+import { INTERVAL_OPTIONS } from "./composer";
 import type { ScheduleInterval } from "./composer";
 import { Dropdown } from "./dropdown";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -266,14 +266,16 @@ const TabRow = memo((
     }, [tab.id, onDelete]);
 
     const tbName = generateIdFromString(tab.id + "/" + "message_state");
-    const [messageState] = useDatabaseImpl<any>(tbName, {
+    const [messageState] = useDatabaseImpl<MessageState>(tbName, {
         initialValue: {
             title: null,
             activeId: "",
             errorMsg: "",
             initialized: false,
             isStreaming: false,
+            dontStop: true,
             context: "",
+            isRead: false,
         },
     });
 
@@ -725,7 +727,15 @@ const TabRow = memo((
                 <TabIcon iconVal={tab.icon} />
             </TableCell>
             <TableCell onClick={handleOpen} className="w-8 text-xs text-muted-foreground">
-                {messageState.isStreaming ? <Spinner /> : <div></div>}
+                {messageState.isStreaming
+                    ? <Spinner />
+                    :
+                    <div className={clsx(
+                        "w-1 h-1",
+                        messageState.isRead ? "bg-transparent" : "bg-accent animate-scale",
+                        "rounded-full",
+                    )}/>
+                }
             </TableCell>
             {/* Query Cell */}
             {isEditingQuery ? (
@@ -1150,7 +1160,7 @@ export default function Tasks({
             }
         }
     }, [workspace, pyInvoke])
-    
+
     //  Delete 
     const handleDelete = useCallback(async (id?: string) => {
         const ids = id ? [id] : Array.from(selectedIds);

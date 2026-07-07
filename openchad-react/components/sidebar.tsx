@@ -6,7 +6,7 @@ import { useRef, useState, useEffect, Fragment, useCallback, memo } from "react"
 import { ChevronDown, GitBranch, Plus, Settings, X, Pin, ChevronRight, ArrowLeftRight, Key, HardDrive, Globe, Drama, EarthIcon, Scroll, AlarmCheck, Volume2, VolumeX, Wrench } from "lucide-react"
 import { Dialog as DialogUI, DialogContent, DialogHeader, DialogTitle } from "./ui/dialog"
 import { Dropdown } from "./dropdown"
-import { TabState, addTab, TabInfo, reorderTabsInGroup, deleteTabWithGroupSelection, setTabGroup, type ITab, Theme, LucideIcons, clearAllTabs } from '../utils/state'
+import { TabState, addTab, TabInfo, reorderTabsInGroup, deleteTabWithGroupSelection, setTabGroup, type ITab, Theme, LucideIcons } from '../utils/state'
 import { useSnapshot } from 'valtio'
 import {
   DndContext,
@@ -492,7 +492,7 @@ export default function Sidebar({
   const [searchTaskQuery, setSearchTaskQuery] = useState("");
   const [searchAgentsQuery, setSearchAgentsQuery] = useState("");
   const [searchControllableBrowsersQuery, setSearchControllableBrowsersQuery] = useState("");
-  const [, setIsSwitchWorkspace] = useGlobal('isSwitchWorkspace', { initialValue: false });
+  // const [, setIsSwitchWorkspace] = useGlobal('isSwitchWorkspace', { initialValue: false });
   const [showSearchDialog, setShowSearchDialog] = useGlobal('showSearchDialog', { initialValue: false });
   const [showMcpDialog, setShowMcpDialog] = useGlobal('showMcpDialog', { initialValue: false });
   const [showCredentialsDialog, setShowCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false });
@@ -505,14 +505,8 @@ export default function Sidebar({
   const [showCodeDialog, setShowCodeDialog] = useGlobal('showCodeDialog', { initialValue: false });
   const [showToolsDialog, setShowToolsDialog] = useGlobal('showToolsDialog', { initialValue: false });
   const [, setSettingsDropdown] = useGlobal('settingsDropdown', { initialValue: false });
-  const isFirstRender = useRef(true);
-  const lastWorkspaceRef = useRef<string | null | undefined>(undefined);
 
   useEffect(() => {
-    if (isFirstRender.current) {
-      isFirstRender.current = false;
-      return;
-    }
     setIsTransitioning(true);
     const timer = setTimeout(() => {
       setIsTransitioning(false);
@@ -562,31 +556,26 @@ export default function Sidebar({
   const { pyInvoke } = usePython();
   useEffect(() => {
     if (mounted) {
-      if (workspace !== lastWorkspaceRef.current) {
-        lastWorkspaceRef.current = workspace;
-        setLoaded(false);
-        (async () => {
-          await clearAllTabs(pyInvoke, workspace);
-          const t = await savedTabsQuery(`SELECT * FROM tabs`);
-          setLoaded(true);
-          let needAdd = true;
-          if (Array.isArray(t)) {
-            t.forEach(tab => {
-              needAdd = false;
-              addTab({
-                uuid: tab.id,
-                title: tab.title,
-                layout: tab.layout,
-                iconOverride: tab.iconOverride,
-                group: tab.group,
-                childrenProps: tab.childrenProps,
-                size: tab.size
-              });
-            })
-          }
-          if (needAdd) addTab();
-        })();
-      }
+      (async () => {
+        const t = await savedTabsQuery(`SELECT * FROM tabs`);
+        setLoaded(true);
+        let needAdd = true;
+        if (Array.isArray(t)) {
+          t.forEach(tab => {
+            needAdd = false;
+            addTab({
+              uuid: tab.id,
+              title: tab.title,
+              layout: tab.layout,
+              iconOverride: tab.iconOverride,
+              group: tab.group,
+              childrenProps: tab.childrenProps,
+              size: tab.size
+            });
+          })
+        }
+        if (needAdd) addTab();
+      })();
     }
   }, [mounted, workspace, savedTabsQuery]);
   useEffect(() => {
@@ -964,15 +953,15 @@ export default function Sidebar({
       )}>
         <Dropdown onOpenChange={setSettingsDropdown}
           content={[
-            {
-              content: <div> Switch Workspace </div>,
-              shortcut: <ArrowLeftRight size={16} />,
-              children: null,
-              separator: false,
-              trigger: () => {
-                setIsSwitchWorkspace(true);
-              }
-            },
+            // {
+            //   content: <div> Switch Workspace </div>,
+            //   shortcut: <ArrowLeftRight size={16} />,
+            //   children: null,
+            //   separator: false,
+            //   trigger: () => {
+            //     setIsSwitchWorkspace(true);
+            //   }
+            // },
 
             {
               content: <div> Agents </div>,

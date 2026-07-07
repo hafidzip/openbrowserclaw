@@ -510,10 +510,12 @@ async def _fan_out_single_branch(
     old_agent = agent_ctx.get()
     old_model = model_id_ctx.get()
     old_fields = fields_ctx.get()
+    old_additional_args = additional_args_ctx.get()
     
     agent_ctx.set({child_id: child_node})
     child_model = child_node.get("model")
     fields_ctx.set(json.loads(child_node.get("toolValues", "{}")))
+    additional_args_ctx.set(json.loads(child_node.get("additionalArgs", "{}")))
     if child_model:
         model_id_ctx.set(child_model)
 
@@ -638,6 +640,7 @@ async def _fan_out_single_branch(
         agent_ctx.set(old_agent)
         model_id_ctx.set(old_model)
         fields_ctx.set(old_fields)
+        additional_args_ctx.set(old_additional_args)
 
     logger.info(
         "[_fan_out_single_branch] completed %d branch tasks for '%s'",
@@ -2905,10 +2908,12 @@ class Chat(PipelineBase):
                                                                 old_agent = agent_ctx.get()
                                                                 old_model = model_id_ctx.get()
                                                                 old_fields = fields_ctx.get()
+                                                                old_additional_args = additional_args_ctx.get()
                                                                 
                                                                 agent_ctx.set({sub_agent_id: sub_agent_tree})
                                                                 sub_model = sub_agent_tree.get("model")
                                                                 fields_ctx.set(json.loads(sub_agent_tree.get("toolValues", "{}")))
+                                                                additional_args_ctx.set(json.loads(sub_agent_tree.get("additionalArgs", "{}")))
                                                                 if sub_model:
                                                                     model_id_ctx.set(sub_model)
                                                                 
@@ -3000,6 +3005,7 @@ class Chat(PipelineBase):
                                                                     agent_ctx.set(old_agent)
                                                                     model_id_ctx.set(old_model)
                                                                     fields_ctx.set(old_fields)
+                                                                    additional_args_ctx.set(old_additional_args)
                                                             else:
                                                                 logger.info(f"[agent result error]: Error: Agent '{sub_agent_id}' not found.")
                                                                 agent_results.append({

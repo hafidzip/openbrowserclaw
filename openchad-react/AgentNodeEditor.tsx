@@ -1785,17 +1785,14 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
   const [toolFields, setToolFields] = useState<Record<string, any[]>>({})
   const { models: availableModels, isLoading: modelsLoading } = useAvailableModels()
   const { workspace } = useWorkspace()
-  const workspaceRef = useRef(workspace)
-  workspaceRef.current = workspace
-
 
   useEffect(() => {
     const tabUpdate = (event: Event) => {
       const { tabId: targetTabId, title, icon } = (event as CustomEvent).detail;
       (async () => {
-        if (workspaceRef.current && title && targetTabId && icon && targetTabId === tabId) {
+        if (workspace && title && targetTabId && icon && targetTabId === tabId) {
           await pyInvoke('sqlite', {
-            db: workspaceRef.current ?? "global",
+            db: workspace ?? "global",
             command: "execute",
             sql: `INSERT OR REPLACE INTO agents (id, metadata) VALUES (?, ?)`,
             params: [tabId, JSON.stringify({ name: title, icon: icon, timestamp: Date.now() })],
@@ -2020,6 +2017,13 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
 
   const [canvasDimensions, setCanvasDimensions] = useState({ width: 800, height: 600 })
 
+
+  // dialog state
+  const [isCreateTask] = useGlobal('overlay-create-task', { initialValue: false });
+  const [showCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false });
+  const [showLocalModelDialog] = useGlobal('showLocalModelDialog', { initialValue: false });
+  const [showCustomEndpointDialog] = useGlobal('showCustomEndpointDialog', { initialValue: false });
+  const [showCodeDialog] = useGlobal('showCodeDialog', { initialValue: false });
 
 
   //  Layout computation (Reingold-Tilford) 
@@ -2449,6 +2453,8 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
   }, [])
 
   const handleUndo = useCallback(() => {
+    if (isCreateTask || showCredentialsDialog || showLocalModelDialog || showCustomEndpointDialog || showCodeDialog) return;
+    
     const h = historyRef.current
     if (historyDebounceRef.current) {
       clearTimeout(historyDebounceRef.current)
@@ -2468,6 +2474,8 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
   }, [findChangedAgentId])
 
   const handleRedo = useCallback(() => {
+    if (isCreateTask || showCredentialsDialog || showLocalModelDialog || showCustomEndpointDialog || showCodeDialog) return;
+    
     const h = historyRef.current
     if (h.index >= h.stack.length - 1) return
     const prevSnapshot = h.stack[h.index]

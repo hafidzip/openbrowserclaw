@@ -9,7 +9,7 @@ from openchadpy.tool_base import ToolRegistry
 from typing import Any, Optional, List, Dict, Callable, Awaitable, Tuple, TYPE_CHECKING
 import asyncio
 from pathlib import Path
-from .context import workspace_ctx, tab_id_ctx, model_id_ctx
+from .context import workspace_ctx, tab_id_ctx, model_id_ctx, additional_args_ctx, parse_additional_args
 from .database import Database
 if TYPE_CHECKING:
     from .code_sandbox import CodeSandbox
@@ -901,7 +901,7 @@ class PipelineBase:
                                     messages=messages,
                                     model_id=model_id,
                                     stream=False,
-                                    **chat_kwargs
+                                    **{**chat_kwargs, **parse_additional_args()}
                                 )
                         assert isinstance(response, dict), f"Expected dict, got {type(response)}"
                         logger.info(f"[llm_tool] query {query}")

@@ -27,7 +27,7 @@ export interface MessageState {
 
 export default function Chat({ id, open }: { id: string, open: boolean }) {
     const [chatId, setChatId] = useGlobal<string | null>('chatId', { initialValue: null })
-    const { workspace } = useSnapshot(Workspace);
+    const workspace = "global";
     const { settings } = useSettings();
     const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
     const msgBottomRef = useRef<HTMLDivElement>(null);

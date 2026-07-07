@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useMemo, useCallback, memo } from 'react';
 import { X } from 'lucide-react';
 import { motion, AnimatePresence, useMotionValue, useAnimationFrame } from 'motion/react';
-import { useAvailableAgents, usePython, usePythonEvent, useSnapshot, useGlobal, generateIdFromString, type IAgent } from './index';
-import { useDatabaseImpl } from './components/useDatabase';
-import { Workspace } from './utils/state';
-import { plainToBlocks } from './components/composer';
+import { useAvailableAgents, usePython, usePythonEvent, useSnapshot, useGlobal, generateIdFromString, type IAgent, type MessageState } from '../openchad-react/index';
+import { useDatabaseImpl } from '../openchad-react/components/useDatabase';
+import { Workspace } from '../openchad-react/utils/state';
+import { plainToBlocks } from '../openchad-react/components/composer';
 
 //  Character Registry 
 
@@ -218,14 +218,16 @@ const PatrollingAgent = memo(function PatrollingAgent({ agent, containerWidth }:
     // Must match the key used in MessageContainer / Tasks.tsx:
     // generateIdFromString(agent.id + "/" + "message_state"), then useDatabaseImpl (no extra hash).
     const tbName = generateIdFromString((agent.id || '') + "/" + "message_state");
-    const [messageState] = useDatabaseImpl<any>(tbName, {
+    const [messageState] = useDatabaseImpl<MessageState>(tbName, {
         initialValue: {
             title: null,
             activeId: "",
             errorMsg: "",
             initialized: false,
             isStreaming: false,
+            dontStop: true,
             context: "",
+            isRead: true,
         }
     });
     const isStreaming = !!messageState?.isStreaming;
@@ -234,7 +236,7 @@ const PatrollingAgent = memo(function PatrollingAgent({ agent, containerWidth }:
     const x = useMotionValue(initialX.current);
     const xRef = useRef(initialX.current);
 
-    const [currentState, setCurrentState] = useState<'walk' | 'attack'>('walk');
+    const [currentState, setCurrentState] = useState<'walk' | 'attack' | "done">('walk');
     const [direction, setDirection] = useState<'left' | 'right'>(Math.random() > 0.5 ? 'right' : 'left');
     const [targetX, setTargetX] = useState(initialX.current);
     const [speed, setSpeed] = useState(25 + Math.random() * 25);
@@ -638,17 +640,14 @@ const PatrollingAgent = memo(function PatrollingAgent({ agent, containerWidth }:
 
 function useAvailableTasks() {
     const { pyInvoke } = usePython();
-    const { workspace } = useSnapshot(Workspace);
     const { agents } = useAvailableAgents();
     const [tasks, setTasks] = useState<IAgent[]>([]);
     const [isLoading, setLoading] = useState(true);
 
-    const workspaceRef = useRef(workspace);
-    workspaceRef.current = workspace;
 
     const fetchTasks = useCallback(async (cancelledRef?: { current: boolean }) => {
         try {
-            const db = workspaceRef.current ?? "global";
+            const db = "global";
             const res: any = await pyInvoke('sqlite', {
                 db,
                 command: 'query',
@@ -736,7 +735,7 @@ function useAvailableTasks() {
     }, [pyInvoke, agents]);
 
     useEffect(() => {
-        const dbName = workspace ?? "global";
+        const dbName = "global";
         let active = true;
 
         pyInvoke('db_subscribe', { db: dbName, table: 'tasks' })
@@ -749,9 +748,9 @@ function useAvailableTasks() {
             active = false;
             pyInvoke('db_unsubscribe', { db: dbName, table: 'tasks' }).catch(() => {});
         };
-    }, [workspace, fetchTasks, pyInvoke]);
+    }, [fetchTasks, pyInvoke]);
 
-    const dbName = workspace ?? "global";
+    const dbName = "global";
     usePythonEvent(`db_changed:${dbName}.tasks`, () => {
         fetchTasks();
     });

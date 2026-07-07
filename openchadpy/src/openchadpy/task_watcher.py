@@ -162,6 +162,7 @@ async def reschedule_task(workspace_name: str, task_id: str, metadata: dict, set
             "isStreaming": {"_v": True},
             "context": {"_v": ""},
             "dontStop": {"_v": True},
+            "isRead": {"_v": False},
         }
         await sqlite({
             "db": workspace_name,

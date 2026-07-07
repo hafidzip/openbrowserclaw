@@ -1,10 +1,11 @@
 import { invoke } from "@tauri-apps/api/core";
 import { Webview } from "@tauri-apps/api/webview";
 import { AsyncLock, setGlobal } from "openchad-react";
-
+import { Window as TauriWindow } from "@tauri-apps/api/window";
 export * from "../utils/utils"
 
 export { default as uuidv4 } from "../utils/uuid"
+export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 export interface CreateWebviewOptions {
     url?: string;
@@ -22,6 +23,9 @@ export interface CreateWebviewOptions {
  */
 export async function createWebview(
     label: string,
+    mainWindow: TauriWindow,
+    main: Webview,
+    empty: Webview,
     options: CreateWebviewOptions = {}
 ): Promise<Webview | undefined> {
     await AsyncLock.acquire();
@@ -32,7 +36,7 @@ export async function createWebview(
             console.warn("Creating webview :", label, "with options :", options)
             const createdLabel = await invoke<string>('create_webview', {
                 args: {
-                    parentLabel: 'main',
+                    parentLabel: main.label,
                     label,
                     url: "about:blank",
                     x: options.x ?? 0,
@@ -47,6 +51,14 @@ export async function createWebview(
 
             if (w) {
                 const webview = w;
+                await empty.reparent(mainWindow)
+                console.warn("reparent: empty");
+                await sleep(50)
+                window.dispatchEvent(new CustomEvent('refresh-webview-order'))
+                await sleep(50);
+                await main.reparent(mainWindow)
+
+
                 if (url === "about:blank") {
                     setGlobal(`loading-${label}`, false)
                 } else {

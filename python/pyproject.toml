@@ -11,6 +11,7 @@ dependencies = [
     "huggingface_hub",
     "llama-cpp-python>=0.3.30",
     "playwright>=1.49.0",
+    "greetingtool>=0.1.1",
 ]
 
 [tool.uv.sources]

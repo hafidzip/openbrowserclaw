@@ -1,5 +1,5 @@
 from __future__ import annotations
-from openchadpy.context import fields_ctx
+from openchadpy.context import fields_ctx, coerce_scalar
 import inspect
 import json
 import logging
@@ -63,9 +63,13 @@ class ToolBase(ABC):
         if val is None and self.name:
             # Fallback: fields are nested under the tool name,
             # e.g. {'delegate': {'Target Agent': '...'}}
-            tool_fields = f.get(self.name, {})
+            tool_fields = f.get(self.name)
             if isinstance(tool_fields, dict):
-                val = tool_fields.get(name, None)
+                _v = tool_fields.get(name)
+                if _v: 
+                    val = coerce_scalar(_v)
+                
+                
         return val
 
     async def llm_tool(

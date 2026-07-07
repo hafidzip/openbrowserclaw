@@ -9,7 +9,6 @@ import useElementSize from "./components/hooks/useElementSize";
 import { useGlobal as useGlobalImpl, setGlobal } from "./components/useGlobal";
 import type { MessageState } from "./components/default-page";
 import { OpenChadIcon } from "./components/open-chad-icon";
-import ContainerSingleApp from "./ContainerSingleApp";
 import ContainerOverlayApp from "./ContainerOverlayApp";
 import { proxy, ref, useSnapshot } from "valtio";
 import { MenuBar, Theme, Workspace } from "./utils/state";
@@ -20,28 +19,22 @@ import { Dropdown, type DropdownMenuItemProps } from "./components/dropdown";
 import { type AgentNode, AgentNodeEditor } from "./AgentNodeEditor";
 
 function generateIdFromString(input: string): string {
-    /**
-     * Generate consistent 32-character hex ID from string.
-     * Uses SHA-256 hash truncated to 128 bits (32 hex chars).
-     */
     return "tb" + "_" + sha256(input).slice(0, 32);
 }
 
 const useTool = <T,>() => {
     const { pyInvoke } = usePython()
-    const { workspace } = useSnapshot(Workspace);
     const tabId = "global";
     return (tool: string, parameters: Record<string, any>) => {
-        return pyInvoke<T>("tools/execute", { tool, workspace: workspace ?? "global", tabId, ...parameters });
+        return pyInvoke<T>("tools/execute", { tool, workspace: "global", tabId, ...parameters });
     }
 }
 
 const useDatabase = <T,>(tb: string, options?: { initialValue?: T }) => {
-    const { workspace } = useSnapshot(Workspace);
-    const hashed = generateIdFromString(`${workspace ?? "global"}/${tb}`);
+    const hashed = generateIdFromString(`global/${tb}`);
     return (options?.initialValue !== undefined)
-        ? useDatabaseImplBase<T>(workspace ?? "global", hashed, options.initialValue)
-        : useDatabaseImplBase<T>(workspace ?? "global", hashed);
+        ? useDatabaseImplBase<T>("global", hashed, options.initialValue)
+        : useDatabaseImplBase<T>("global", hashed);
 }
 
 const useFile = (filename: string, options?: {
@@ -91,12 +84,6 @@ const useMenuBar = () => {
     return snap;
 }
 
-
-// ── HMR-safe AsyncLock singleton ─────────────────────────────────────────────
-// On hot reload, the module re-executes and a new instance would be created,
-// orphaning any pending `await acquire()` calls on the old one (deadlock).
-// We persist the instance via import.meta.hot.data so every reload reuses it,
-// and drain the queue in dispose() so in-flight waiters resolve cleanly.
 if (import.meta.hot) {
     import.meta.hot.dispose((data: any) => {
         // Drain all parked waiters so nothing hangs after the module is replaced
@@ -207,18 +194,12 @@ interface IAgent {
 
 function useAvailableAgents() {
     const { pyInvoke } = usePython()
-    const { workspace } = useSnapshot(Workspace)
     const [agents, setAgents] = useState<IAgent[]>([])
     const [isLoading, setLoading] = useState(true)
 
-    // Keep workspace in a ref so fetchAgents doesn't need it as a dep
-    // (same pattern as fetchModels which only depends on pyInvoke)
-    const workspaceRef = useRef(workspace)
-    workspaceRef.current = workspace
-
     const fetchAgents = useCallback(async (cancelledRef?: { current: boolean }) => {
         try {
-            const db = workspaceRef.current ?? "global"
+            const db = "global"
             const res: any = await pyInvoke('sqlite', {
                 db,
                 command: 'query',
@@ -268,14 +249,6 @@ function useAvailableAgents() {
         return () => { cancelled.current = true }
     }, [fetchAgents])
 
-    // Re-fetch when workspace changes (without recreating fetchAgents)
-    useEffect(() => {
-        if (!workspace) return
-        const cancelled = { current: false }
-        fetchAgents(cancelled)
-        return () => { cancelled.current = true }
-    }, [workspace])
-
     return { agents, isLoading, fetchAgents }
 }
 
@@ -291,7 +264,6 @@ export {
     useSnapshot,
     useMenuBar,
     ContainerOverlayApp,
-    ContainerSingleApp,
     Container,
     Dropdown,
     type DropdownMenuItemProps,

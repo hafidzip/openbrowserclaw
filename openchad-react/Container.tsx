@@ -9,7 +9,20 @@ import useElementSize from './components/hooks/useElementSize'
 import { Button } from './components/ui/button'
 import uuidv4 from './utils/uuid'
 import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener'
-import { KeyState, TabInfo, TabState, Viewport, Workspace, Theme, MenuBar, addTab, closeTab, detachTab, type ITab, deleteTab, deleteTabWithGroupSelection, deleteActiveTabWithGroupSelection } from './utils/state'
+import {
+  KeyState,
+  TabInfo,
+  TabState,
+  Viewport,
+  Workspace,
+  Theme,
+  MenuBar,
+  addTab,
+  closeTab,
+  detachTab,
+  type ITab,
+  deleteTabWithGroupSelection
+} from './utils/state'
 import { proxy, useSnapshot } from 'valtio'
 import MultiView, { type LayoutType } from './components/multiview'
 import { Spinner } from './components/ui/spinner'
@@ -19,7 +32,7 @@ import DefaultPage from './components/default-page'
 import { usePython, usePythonEvent } from './components/usePython'
 import { useDatabaseImpl } from './components/useDatabase'
 import useKeyEffect from './components/useKeyEffect'
-import { SelectWorkspace } from './components/select-workspace'
+// import { SelectWorkspace } from './components/select-workspace'
 import AppLoading from './components/app-loading'
 import { useFolderImpl } from './components/useFolder'
 import type { AppInfo, Model } from './utils/utils'
@@ -115,8 +128,8 @@ import { getCurrentWebviewWindow, WebviewWindow } from '@tauri-apps/api/webviewW
 import Chat from './components/chat'
 import Composer, { type ScheduleInterval } from './components/composer'
 import { toast } from 'sonner'
-import { createWebview } from './utils'
-import TaskBarAgent from './TaskBarAgent'
+import { createWebview, sleep } from './utils'
+
 
 export default function Container({ Apps }: { Apps: Project }) {
   if (Apps.defaultTab.tabs.length === 0) {
@@ -133,10 +146,8 @@ export default function Container({ Apps }: { Apps: Project }) {
   pyInvokeRef.current = pyInvoke
   const { settings } = useSettings();
   const [startupStatus] = useState<any>(null);
-  const [test, , { folders }] = useFolderImpl('Workspaces');
-  const { workspace, setWorkspace } = useSnapshot(Workspace);
-  const workspaceRef = useRef(workspace);
-  workspaceRef.current = workspace
+  const workspace = "global";
+
   const appRegistry = proxy<Record<string, React.ComponentType<AppInfo>>>({
     ...(Apps.appRegistry || {}),
     ...Apps.defaultTab.tabs.reduce((acc: Record<string, React.ComponentType<AppInfo>>, t: any) => {
@@ -145,14 +156,13 @@ export default function Container({ Apps }: { Apps: Project }) {
     }, {})
   });
   const [mounted, setMounted] = useState(false);
-  const [isCreateTask, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: false });
   const [, setAnimateExit] = useState(false);
   const [selectedAgent, setSelectedAgent] = useDatabaseImpl<IAgent>("selected-agent", { initialValue: { name: null, id: null } });
   const [taskInterval, setTaskInterval] = useDatabaseImpl<ScheduleInterval>("taskInterval", { initialValue: 'once' });
   const composerRef = useRef<HTMLTextAreaElement>(null);
-  const [isSwitchWorkspace, setIsSwitchWorkspace] = useGlobal('isSwitchWorkspace', { initialValue: false });
   const [, setShowSearchDialog] = useGlobal('showSearchDialog', { initialValue: false });
   const [, setShowMcpDialog] = useGlobal('showMcpDialog', { initialValue: false });
+  const [isCreateTask, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: false });
   const [showCredentialsDialog, setShowCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false });
   const [showLocalModelDialog, setShowLocalModelDialog] = useGlobal('showLocalModelDialog', { initialValue: false });
   const [showCustomEndpointDialog, setShowCustomEndpointDialog] = useGlobal('showCustomEndpointDialog', { initialValue: false });
@@ -238,12 +248,25 @@ export default function Container({ Apps }: { Apps: Project }) {
   useEffect(() => {
     if (!ready) return;
     if (!intializeTheme) return;
-    setInitializeBrowser(true);
 
     (async () => {
       if (!allRef.current) allRef.current = await getAllWebviews();
       if (!mainWindowRef.current) mainWindowRef.current = await getCurrentWindow();
       if (!mainWebviewRef.current) mainWebviewRef.current = await getCurrentWebview();
+
+      await new Promise<void>((resolve) => {
+        const check = () => {
+          if (emptyRef.current) {
+            resolve();
+          } else {
+            setTimeout(check, 50);
+          }
+        };
+        check();
+      });
+
+      if (!emptyRef.current) return;
+
 
       const browserEntries = Object.entries(browsers);
 
@@ -266,17 +289,28 @@ export default function Container({ Apps }: { Apps: Project }) {
         initializedBrowsersRef.current.add(uuid);
 
         if (!allRef.current?.find((wv) => wv.label === label)) {
-          await createWebview(label, {
-            url: (browser.url && /^https?:\/\//.test(browser.url)) ? browser.url : 'about:blank',
-            width: size?.width,
-            height: size?.height,
-            x: position?.x,
-            y: position?.y,
-          });
+          await createWebview(
+            label,
+            mainWindowRef.current,
+            mainWebviewRef.current,
+            emptyRef.current,
+            {
+              url: (browser.url && /^https?:\/\//.test(browser.url)) ? browser.url : 'about:blank',
+              width: size?.width,
+              height: size?.height,
+              x: position?.x,
+              y: position?.y,
+            });
         }
       }
 
-      if (!intializeBrowser) setInitializeBrowser(true);
+      if (!intializeBrowser) {
+        await emptyRef.current?.reparent(mainWindowRef.current!)
+        await sleep(50)
+        await mainWebviewRef.current?.reparent(mainWindowRef.current!)
+        window.dispatchEvent(new CustomEvent('refresh-webview-order'))
+        setInitializeBrowser(true);
+      }
     })();
   }, [browsers, intializeTheme, ready]);
 
@@ -299,6 +333,7 @@ export default function Container({ Apps }: { Apps: Project }) {
           y: position.y
         })
         await emptyRef.current.once('tauri://created', async () => {
+          await sleep(50)
           await mainWebviewRef.current!.reparent(mainWindowRef.current!)
           AsyncLock.release()
         })
@@ -476,15 +511,6 @@ export default function Container({ Apps }: { Apps: Project }) {
       (window as any).IS_LINUX = data.is_linux;
     })();
   }, []);
-  const workspaces = folders
-    .filter(f => !f.slice(0, -1).includes('/'))
-    .map(f => f.replace(/\/$/, ''))
-    .filter(f => f !== 'Private' && f !== 'global');
-  useEffect(() => {
-    if (workspaces.length === 1) {
-      setWorkspace(workspaces[0]);
-    }
-  }, [workspaces.length])
   const [isSearchChatOpen, setIsSearchChatOpen] = useState(false);
   const searchRef = useRef<any>(null);
   const snaptabs = useSnapshot(TabState);
@@ -516,8 +542,7 @@ export default function Container({ Apps }: { Apps: Project }) {
       emptyRef,
       initializedBrowsersRef,
       useWorkspace: () => {
-        const { workspace, setWorkspace } = useSnapshot(Workspace);
-        return { workspace: workspace ?? "global", setWorkspace };
+        return { workspace: "global" };
       },
       tabId,
       appId,
@@ -664,9 +689,8 @@ export default function Container({ Apps }: { Apps: Project }) {
         return {};
       },
       useTool: () => {
-        const { workspace } = useSnapshot(Workspace);
         return async (tool: string, parameters: Record<string, any>) => {
-          return await pyInvoke("tools/execute", { tool, workspace, tabId, ...parameters });
+          return await pyInvoke("tools/execute", { tool, workspace: "global", tabId, ...parameters });
         }
       },
       useGlobal: <T,>(name: string, options?: { initialValue?: T }) => {
@@ -768,12 +792,12 @@ export default function Container({ Apps }: { Apps: Project }) {
   }, [snaptabs]);
 
   const isLastMaximizedRef = useRef<boolean>(false);
+
   useEffect(() => {
     const win = getCurrentWindow();
     let fixing = false; // re-entrancy guard
-    
 
-    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
 
     const checkFullscreen = async () => {
       if (fixing) return; // ignore events we caused ourselves
@@ -798,8 +822,8 @@ export default function Container({ Apps }: { Apps: Project }) {
           } finally {
             fixing = false;
           }
-        }else{
-          if(isLastMaximizedRef.current){
+        } else {
+          if (isLastMaximizedRef.current) {
             await win.maximize()
             isLastMaximizedRef.current = false
           }
@@ -810,7 +834,7 @@ export default function Container({ Apps }: { Apps: Project }) {
       } catch (e) {
         console.error(e);
       }
-      
+
       AsyncLock.release();
     };
 
@@ -823,7 +847,7 @@ export default function Container({ Apps }: { Apps: Project }) {
       window.removeEventListener('fullscreen_changed', checkFullscreen);
     };
   }, []);
-  
+
   useEffect(() => {
     setMounted(true);
 
@@ -897,7 +921,7 @@ export default function Container({ Apps }: { Apps: Project }) {
         lastDeleteTimeRef.current = now;
         (async () => {
           if (activeRef.current) {
-            const db = workspaceRef.current ?? "global";
+            const db = workspace;
             const initTb = generateIdFromString(activeRef.current + "/" + "message_state");
             await AsyncLock.acquire();
             const res = await pyInvoke("sqlite", {
@@ -1058,29 +1082,19 @@ export default function Container({ Apps }: { Apps: Project }) {
 
     const updateCdpPorts = async () => {
       await AsyncLock.acquire();
-      allRef.current = await getAllWebviews();
-      AsyncLock.release();
-      if (mainWebviewRef.current && mainWindowRef.current) {
-        const _mv = mainWebviewRef.current;
-        const _mw = mainWindowRef.current;
-        if (reparentTimerRef.current) {
-          clearTimeout(reparentTimerRef.current);
+      try {
+        allRef.current = await getAllWebviews();
+        const cdp_ports = await invoke('get_cdp_ports');
+        console.warn("cdp_ports", cdp_ports);
+        if (pyInvokeRef.current) {
+          await pyInvokeRef.current("update_cdp_ports", {
+            cdp_ports
+          })
         }
-        reparentTimerRef.current = setTimeout(async () => {
-          await AsyncLock.acquire();
-          await _mv.reparent(_mw);
-          reparentTimerRef.current = null;
-          AsyncLock.release();
-        }, 100);
-      }
-
-      console.warn("update_cdp_ports")
-      const cdp_ports = await invoke('get_cdp_ports');
-      console.warn("cdp_ports", cdp_ports);
-      if (pyInvokeRef.current) {
-        await pyInvokeRef.current("update_cdp_ports", {
-          cdp_ports
-        })
+      } catch (e) {
+        console.error(e)
+      } finally {
+        AsyncLock.release();
       }
     }
 
@@ -1163,18 +1177,7 @@ export default function Container({ Apps }: { Apps: Project }) {
   if (!intializeTheme || !intializeBrowser) {
     return <AppLoading status={startupStatus} />
   }
-  if (workspace === null || isSwitchWorkspace) {
-    return <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      transition={{ duration: 0.5, delay: isSwitchWorkspace ? 0 : 1 }}
-    >
-      <SelectWorkspace workspaces={workspaces} setWorkspace={(name: string) => {
-        setWorkspace(name);
-        setIsSwitchWorkspace(false);
-      }} />
-    </motion.div>
-  }
+
   return (
     <div className='overflow-hidden'>
       <style>{`
@@ -1360,11 +1363,13 @@ export default function Container({ Apps }: { Apps: Project }) {
                   isStreaming: { _v: true },
                   context: { _v: "" },
                   dontStop: { _v: true },
+                  isRead: { _v: false },
                 }
 
                 await pyInvoke("sqlite", {
                   db, table: initTb, command: 'sync_table', data: initialValue
                 });
+
                 let errorlog: string | null = null;
                 if (selectedAgent?.id && value.trim().length > 0) {
                   try {
@@ -1619,15 +1624,6 @@ export default function Container({ Apps }: { Apps: Project }) {
               <Dropdown
                 onOpenChange={setMobileSettingsDropdown}
                 content={[
-                  {
-                    content: <div> Switch Workspace </div>,
-                    shortcut: <ArrowLeftRight size={16} />,
-                    children: null,
-                    separator: false,
-                    trigger: () => {
-                      setIsSwitchWorkspace(true);
-                    }
-                  },
                   ...(typeof window !== 'undefined' && !!(window as any).__TAURI__) ? [{
                     content: <div> Local Models </div>,
                     shortcut: <HardDrive size={16} />,
@@ -1862,7 +1858,6 @@ export default function Container({ Apps }: { Apps: Project }) {
         </div>
       </>
       }
-      <TaskBarAgent />
     </div>
   )
 }

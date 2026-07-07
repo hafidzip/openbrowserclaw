@@ -37,7 +37,6 @@ export interface AppInfo {
     appname: string;
     useWorkspace: () => {
         workspace: string;
-        setWorkspace: (workspace: string) => void;
     };
     tabId: string;
     appId: string;

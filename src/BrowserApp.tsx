@@ -5,10 +5,12 @@ import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi'
 import clsx from 'clsx'
 import { deleteActiveTabWithGroupSelection, MenuBar, BrowserHandlers, BrowserNavState, TabState } from 'openchad-react/utils/state';
 
-import { createWebview } from 'openchad-react/utils';
+import { createWebview, sleep } from 'openchad-react/utils';
 import { useDatabaseImpl } from 'openchad-react/components/useDatabase';
 import type { ControllableBrowser } from 'openchad-react/components/ControllableBrowsers';
 import { Spinner } from 'openchad-react/ui'
+import { getCurrentWindow } from '@tauri-apps/api/window';
+import { getCurrentWebview, Webview } from '@tauri-apps/api/webview';
 
 const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
 
@@ -230,6 +232,8 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
 
   const [showPalette, setShowPalette] = useState(false)
   const [initialized, setInitialized] = useState(false)
+  const initializedRef = useRef(initialized)
+  initializedRef.current = initialized
 
   const pendingNav = useRef<'back' | 'forward' | null>(null)
 
@@ -315,9 +319,6 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
 
   const layoutRef = useRef(tabLayout)
   layoutRef.current = tabLayout
-
-  const workspaceRef = useRef(workspace)
-  workspaceRef.current = workspace
 
   const browserReadyRef = useRef(browsersReady)
   browserReadyRef.current = browsersReady
@@ -405,7 +406,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   }, [activeTabId])
 
   useEffect(() => {
-    if (initialized && showPalette && activeAppId !== appId) setShowPalette(false)
+    if (initializedRef.current && showPalette && activeAppId !== appId) setShowPalette(false)
   }, [activeAppId])
 
   useEffect(() => {
@@ -442,8 +443,9 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
       (async () => {
         await AsyncLock.run(async () => {
           const existing = await getByLabel(label)
+          await sleep(50)
           if (mainWindowRef.current) {
-            if (existing && initialized && mainWindowRef.current && initializedBrowsersRef.current?.has(appId)) {
+            if (existing && initializedRef.current && mainWindowRef.current && initializedBrowsersRef.current?.has(appId)) {
               await existing.reparent(mainWindowRef.current)
             }
             if (mainWebviewRef.current) await mainWebviewRef.current.reparent(mainWindowRef.current)
@@ -470,7 +472,10 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
         if (focus) {
           const existing = await getByLabel(label);
           await mainWebviewRef.current.reparent(mainWindowRef.current);
-          if (existing && initialized && initializedBrowsersRef.current?.has(appId)) {
+          await sleep(50)
+          if (existing && initializedRef.current && initializedBrowsersRef.current?.has(appId)) {
+            console.warn("reparent: ", label);
+            await sleep(50)
             await existing.reparent(mainWindowRef.current);
           }
         } else {
@@ -489,6 +494,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   }, [loading]);
 
   const syncSize = async () => {
+    await sleep(50);
     if (!initializedBrowsersRef.current?.has(appId)) return;
     const container = containerRef.current
     if (!allRef.current) return;
@@ -531,6 +537,12 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
       const existing = await getByLabel(label)
       AsyncLock.release();
 
+      let main = mainWebviewRef.current ? mainWebviewRef.current : getCurrentWebview();
+      let mainWindow = mainWindowRef.current ? mainWindowRef.current : getCurrentWindow();
+      let empty = emptyRef.current;
+
+      if (!empty) return;
+
       if (existing || label.startsWith('webview-agent')) {
         initializedBrowsersRef.current?.add(appId);
         setFocus(false)
@@ -568,13 +580,18 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
           }
           MenuBar.appId = appId
           MenuBar.tabId = tabId
-          await createWebview(label, {
-            url: (urlRef.current && /^https?:\/\//.test(urlRef.current)) ? urlRef.current : 'about:blank',
-            width: Math.round(rect.width),
-            height: Math.round(rect.height),
-            x: Math.round(rect.x),
-            y: Math.round(rect.y)
-          })
+          await createWebview(
+            label,
+            mainWindow,
+            main,
+            empty,
+            {
+              url: (urlRef.current && /^https?:\/\//.test(urlRef.current)) ? urlRef.current : 'about:blank',
+              width: Math.round(rect.width),
+              height: Math.round(rect.height),
+              x: Math.round(rect.x),
+              y: Math.round(rect.y)
+            })
         }
         await initWebview()
         initializedBrowsersRef.current?.add(appId);
@@ -593,7 +610,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
         console.log("[Browsers data]:", browsers);
         if (data.target == label) {
           setTitle(data.title)
-          const db = workspaceRef.current ?? "global"
+          const db = "global"
           const sql = `INSERT OR REPLACE INTO site_registry (id, metadata) VALUES (?, ?)`
 
           if (browserReadyRef.current && appId.startsWith("agent")) {
@@ -709,12 +726,23 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
       setIsCreateTask(true);
     }
 
+    const onRefreshOrder = async () => {
+      if (activeTabIdRef.current === tabId && initializedRef.current) {
+        const webview = await Webview.getByLabel(label);
+        await sleep(50)
+        if (webview && mainWindowRef.current) {
+          await webview.reparent(mainWindowRef.current)
+        }
+      }
+    }
+
 
 
 
 
     const observer = new ResizeObserver(Sync)
     observer.observe(containerRef.current)
+    window.addEventListener('refresh-webview-order', onRefreshOrder)
     window.addEventListener('update_location', onLocationChange)
     window.addEventListener('update_location_title_icon', onUpdateTitle)
     window.addEventListener('delete_tab', onTabDelete)
@@ -725,10 +753,13 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
     window.addEventListener('mainOnMove', Sync)
     window.addEventListener('mainOnResize', Sync)
     window.addEventListener('mainMove', Sync)
+    window.addEventListener('fullscreenchange', Sync);
+    window.addEventListener('fullscreen_changed', Sync);
     window.addEventListener('hide-popup', onHidePopup);
 
     return () => {
       observer.disconnect()
+      window.removeEventListener('refresh-webview-order', onRefreshOrder)
       window.removeEventListener('update_location', onLocationChange)
       window.removeEventListener('update_location_title_icon', onUpdateTitle)
       window.removeEventListener('delete_tab', onTabDelete)
@@ -739,6 +770,8 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
       window.removeEventListener('mainOnMove', Sync)
       window.removeEventListener('mainOnResize', Sync)
       window.removeEventListener('mainMove', Sync)
+      window.removeEventListener('fullscreenchange', Sync);
+      window.removeEventListener('fullscreen_changed', Sync);
       window.removeEventListener('hide-popup', onHidePopup);
       cleanups.forEach(fn => fn())
     }
@@ -847,7 +880,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
             handleNavigate(targetUrl);
           }}
           onDismiss={() => {
-            if (initialized || /^https?:\/\//.test(url.url)) setShowPalette(false);
+            if (initializedRef.current || /^https?:\/\//.test(url.url)) setShowPalette(false);
             setUrl({ url: lastUrl })
           }}
         />

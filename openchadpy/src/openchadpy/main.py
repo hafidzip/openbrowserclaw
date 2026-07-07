@@ -1,4 +1,4 @@
-from openchadpy.context import additional_args_ctx
+from openchadpy.context import additional_args_ctx, parse_additional_args
 from openchadpy.context import fields_ctx
 from openchadpy.context import pipeline_ctx
 from openchadpy.context import console_messages
@@ -928,7 +928,7 @@ async def handle_pytauri_chat(msg_id: str, body: Dict[str, Any]):
                         break
                     try:
                         logger.info(f"Stream {msg_id} starting chat with messages (attempt {attempt + 1}): {json.dumps(messages, default=str)}")
-                        gen = await model_manager.chat(messages=copy.deepcopy(messages), model_id=requested_model, stream=True, **chat_kwargs)
+                        gen = await model_manager.chat(messages=copy.deepcopy(messages), model_id=requested_model, stream=True, **{**chat_kwargs, **parse_additional_args()})
                         assert hasattr(gen, "__aiter__"), "Expected async generator from model_manager.chat"
                         gen = cast(AsyncGenerator[Any, Any], gen)
                         async for chunk in gen:
@@ -1027,7 +1027,7 @@ async def handle_pytauri_chat(msg_id: str, body: Dict[str, Any]):
                             "content": query
                         }
                     ]                    
-                response = await model_manager.chat(messages=copy.deepcopy(messages), model_id=requested_model, stream=True, **chat_kwargs)
+                response = await model_manager.chat(messages=copy.deepcopy(messages), model_id=requested_model, stream=True, **{**chat_kwargs, **parse_additional_args()})
                 pipeline_response = None
                 if pipeline:
                     try:
@@ -1772,7 +1772,13 @@ async def chat_endpoint_api(request: Request):
                     agent_model_id = agent_node.get("model", None)
                     model_id_ctx.set(agent_model_id)
                     fields_ctx.set(json.loads(agent_node.get("toolValues", "{}")))
-                    raise
+                    fields = json.loads(agent_node.get("toolValues", "{}"))
+                    fields_ctx.set(fields)
+                    additional_args = json.loads(agent_node.get("additionalArgs", "{}"))
+                    additional_args_ctx.set(additional_args)
+                    logger.info(f"Fields: {fields}")
+                    logger.info(f"Additional Args: {additional_args}")
+                    logger.info("!!!AGENT_MODEL_ID: %s", agent_model_id)
 
         requested_model = agent_model_id if agent_model_id else data.get("model")       
         if not model_manager.is_loaded(requested_model):
@@ -1868,7 +1874,7 @@ async def chat_endpoint_api(request: Request):
                                 }
                             ]                            
                         logger.info(f"API Stream {msg_id} starting chat with messages: {json.dumps(messages, default=str)}")
-                        response_generator = await model_manager.chat(messages=copy.deepcopy(messages), model_id=requested_model, stream=True, **chat_kwargs)
+                        response_generator = await model_manager.chat(messages=copy.deepcopy(messages), model_id=requested_model, stream=True, **{**chat_kwargs, **parse_additional_args()})
                         assert hasattr(response_generator, "__aiter__"), "Expected async generator from model_manager.chat"
                         response_generator = cast(AsyncGenerator[Any, Any], response_generator)
                         async for chunk in response_generator:
@@ -1951,7 +1957,7 @@ async def chat_endpoint_api(request: Request):
                                     "content": query
                                 }
                             ]
-                    response = await model_manager.chat(messages=copy.deepcopy(messages), model_id=requested_model, stream=False, **chat_kwargs)
+                    response = await model_manager.chat(messages=copy.deepcopy(messages), model_id=requested_model, stream=False, **{**chat_kwargs, **parse_additional_args()})
                     pipeline_response = None
                     if pipeline:
                         try:
@@ -2216,7 +2222,13 @@ async def handle_ws_chat(msg_id: str, body: dict, send_func: Callable[[dict], Aw
             if agent_node:
                 agent_model_id = agent_node.get("model", None)
                 model_id_ctx.set(agent_model_id)
-                fields_ctx.set(json.loads(agent_node.get("toolValues", "{}")))
+                fields = json.loads(agent_node.get("toolValues", "{}"))
+                fields_ctx.set(fields)
+                additional_args = json.loads(agent_node.get("additionalArgs", "{}"))
+                additional_args_ctx.set(additional_args)
+                logger.info(f"Fields: {fields}")
+                logger.info(f"Additional Args: {additional_args}")
+                logger.info("!!!AGENT_MODEL_ID: %s", agent_model_id)
 
     requested_model = agent_model_id if agent_model_id else body.get("model", "")     
     files = body.get("files", [])
@@ -2321,7 +2333,7 @@ async def handle_ws_chat(msg_id: str, body: dict, send_func: Callable[[dict], Aw
                         }
                     ]                    
                 logger.info(f"WS Stream {msg_id} starting chat with messages: {json.dumps(messages, default=str)}")
-                gen = await model_manager.chat(messages=copy.deepcopy(messages), model_id=requested_model, stream=True, **chat_kwargs)
+                gen = await model_manager.chat(messages=copy.deepcopy(messages), model_id=requested_model, stream=True, **{**chat_kwargs, **parse_additional_args()})
                 assert hasattr(gen, "__aiter__"), "Expected async generator from model_manager.chat"
                 gen = cast(AsyncGenerator[Any, Any], gen)
                 async for chunk in gen:
@@ -2400,7 +2412,7 @@ async def handle_ws_chat(msg_id: str, body: dict, send_func: Callable[[dict], Aw
                             "content": query
                         }
                     ]
-                response = await model_manager.chat(messages=copy.deepcopy(messages), model_id=requested_model, stream=True, **chat_kwargs)
+                response = await model_manager.chat(messages=copy.deepcopy(messages), model_id=requested_model, stream=True, **{**chat_kwargs, **parse_additional_args()})
                 pipeline_response = None
                 if pipeline:
                     try:
