@@ -1,8 +1,66 @@
 import subprocess
 import sys
 import os
+import re
 import threading
 from pathlib import Path
+
+# Optional packages that should only be present if explicitly installed by the user.
+# Tuple: (venv_import_name, pyproject_dep_prefix, platform_check)
+_OPTIONAL_PACKAGES = [
+    ("llama_cpp", "llama-cpp-python", lambda: True),
+    ("mlx_lm",   "mlx-lm",           lambda: sys.platform == "darwin"),
+    ("mlx_vlm",  "mlx-vlm",          lambda: sys.platform == "darwin"),
+]
+
+
+def _is_installed_in_venv(python_runtime: str, import_name: str) -> bool:
+    """Return True if `import_name` is importable inside the bundled venv."""
+    if not os.path.exists(python_runtime):
+        # Venv doesn't exist yet → package is definitely not installed.
+        return False
+    try:
+        result = subprocess.run(
+            [python_runtime, "-c", f"import {import_name}"],
+            capture_output=True,
+            timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def remove_uninstalled_from_pyproject(python_runtime: str, python_dir: str) -> None:
+    """Strip optional package entries from pyproject.toml when they are listed
+    there but not actually installed in the venv.  This prevents uv sync from
+    pulling them in on the next run."""
+    pyproject_path = os.path.join(python_dir, "pyproject.toml")
+    if not os.path.isfile(pyproject_path):
+        return
+
+    with open(pyproject_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    changed = False
+    for import_name, dep_prefix, platform_check in _OPTIONAL_PACKAGES:
+        if not platform_check():
+            continue
+        if _is_installed_in_venv(python_runtime, import_name):
+            continue
+        # Match lines like:  "llama-cpp-python>=0.3.33",
+        pattern = r'[ \t]*"' + re.escape(dep_prefix) + r'[^"]*"[,]?\r?\n'
+        new_content, n = re.subn(pattern, "", content)
+        if n:
+            print(
+                f"[launcher] '{dep_prefix}' is in pyproject.toml but not installed "
+                "→ removing so uv sync skips it."
+            )
+            content = new_content
+            changed = True
+
+    if changed:
+        with open(pyproject_path, "w", encoding="utf-8") as f:
+            f.write(content)
 
 def check_for_updates(uv_path, python_dir, env):
     """
@@ -59,7 +117,9 @@ def main():
     env = os.environ.copy()
     env["UV_PYTHON"] = python_runtime
     env["UV_PYTHON_AUTO_INSTALL"] = "0"
-    # Check for updates before running
+    # Remove optional packages from pyproject.toml if not installed, BEFORE uv sync.
+    remove_uninstalled_from_pyproject(python_runtime, python_dir)
+    # Check for updates (runs uv sync) after the pyproject cleanup.
     check_for_updates(uv_path, python_dir, env)
     # Command to run: uv run python/main.py
     cmd = [uv_path, "run", "python/main.py"]
