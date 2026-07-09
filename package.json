@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "uv sync --directory ./python && node scripts/dev.mjs",
+    "dev": "python scripts/pre_sync.py && uv sync --directory ./python && node scripts/dev.mjs",
     "pre": "uv build ./openchadpy && uv sync ./python",
     "build": "npm run build:ui && tsc -b && vite build && uv build ./openchadpy && node scripts/build.mjs",
     "build:ui": "vite build --config vite.config.ts",
