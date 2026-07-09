@@ -85,16 +85,6 @@ export default defineConfig(({ mode }) => ({
                 changeOrigin: true,
             },
         },
-        headers: {
-            "Content-Security-Policy": [
-                "default-src 'self' ipc: http://ipc.localhost",
-                "connect-src 'self' ipc: http://ipc.localhost https://esm.sh ws://localhost:*",
-                "script-src 'self' 'unsafe-inline' 'unsafe-eval'",
-                "style-src 'self' 'unsafe-inline'",
-                "img-src 'self' asset: https://asset.localhost data: blob:",
-                "frame-src *"
-            ].join("; ")
-        },
     },
     build: {
         outDir: 'frontend',
