@@ -1,11 +1,5 @@
 import { proxy } from 'valtio';
 import uuidv4 from "./uuid";
-import { sha256 } from 'js-sha256';
-import { cleanupPersistentIframe } from "../components/iframe-mirror";
-
-function generateIdFromString(input: string): string {
-    return "tb" + "_" + sha256(input).slice(0, 32);
-}
 import * as Icons from "lucide-react"
 import type { AppInfo } from "./utils";
 import clsx from 'clsx';
@@ -465,7 +459,6 @@ export const deleteTab = (uuid: string) => {
             delete TabState[key];
         }
     });
-    cleanupPersistentIframe(uuid);
 };
 interface AddTabParams {
     uuid?: string;
