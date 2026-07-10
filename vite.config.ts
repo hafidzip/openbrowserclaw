@@ -93,12 +93,7 @@ export default defineConfig(({ mode }) => ({
         rollupOptions: {
             input: {
                 main: path.resolve(__dirname, 'index.html'),
-                overlay: path.resolve(__dirname, 'overlay.html'),
             },
-            // We don't want to bundle these in the main app chunks IF we are loading them from CDN
-            // However, the main app also uses them.
-            // A hybrid approach: Main app bundles them (as usual), but Dynamic Components load them from CDN.
-            // This causes double-loading but ensures easier compatibility.
         }
     },
 }))
