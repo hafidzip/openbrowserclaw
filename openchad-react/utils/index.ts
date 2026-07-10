@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { Webview } from "@tauri-apps/api/webview";
 import { AsyncLock, setGlobal } from "openchad-react";
 import { Window as TauriWindow } from "@tauri-apps/api/window";
+import { TabState } from "./state";
 export * from "../utils/utils"
 
 export { default as uuidv4 } from "../utils/uuid"
@@ -30,12 +31,27 @@ export async function createWebview(
 ): Promise<Webview | undefined> {
     const url = options.url ?? 'about:blank';
 
+    const checkExists = () => {
+        if (label.startsWith("webview-") && label !== "webview-empty") {
+            const appId = label.replace("webview-", "");
+            const exists = Object.values(TabState).some(tab =>
+                tab.children.includes(appId)
+            );
+            return exists;
+        }
+        return true;
+    };
+
     // Hold the lock for webview creation AND the reparenting process of shared webviews (empty/main).
     // This prevents concurrent reparenting operations on the same shared webview instance.
     let w: Webview | undefined;
     let isCreatedNew = false;
     await AsyncLock.acquire();
     try {
+        if (!checkExists()) {
+            console.warn(`Aborting webview creation for ${label} because tab/app was deleted`);
+            return undefined;
+        }
         let existing = await Webview.getByLabel(label);
         if (existing) {
             w = existing;
@@ -54,6 +70,12 @@ export async function createWebview(
                     userAgent: options.userAgent,
                 },
             });
+            if (!checkExists()) {
+                console.warn(`Closing webview ${label} immediately because tab/app was deleted`);
+                const tempW = (await Webview.getByLabel(createdLabel)) ?? undefined;
+                if (tempW) await tempW.close();
+                return undefined;
+            }
             w = (await Webview.getByLabel(createdLabel)) ?? undefined;
             isCreatedNew = true;
         }
@@ -78,16 +100,29 @@ export async function createWebview(
 
     // Lock-free phase: navigate, listen to page loaded, setup general event listeners
     if (w) {
+        if (!checkExists()) {
+            console.warn(`Closing webview ${label} in lock-free phase because tab/app was deleted`);
+            await w.close();
+            return undefined;
+        }
         try {
             const webview = w;
             if (isCreatedNew && url !== "about:blank") {
                 await new Promise(resolve => setTimeout(resolve, 250));
+                if (!checkExists()) {
+                    await webview.close();
+                    return undefined;
+                }
                 setGlobal(`loading-${label}`, false)
                 await invoke("eval_in_webview", {
                     label,
                     script: `window.location.replace("${url}")`
                 })
                 await sleep(50);
+                if (!checkExists()) {
+                    await webview.close();
+                    return undefined;
+                }
                 // Serialized main reparent for navigation case:
                 // We lock here again just to reparent main safely.
                 await AsyncLock.run(async () => {
@@ -117,6 +152,11 @@ export async function createWebview(
 
                     setTimeout(cleanUp, 5000);
                 });
+            }
+
+            if (!checkExists()) {
+                await webview.close();
+                return undefined;
             }
 
             console.log("Webview : ", webview);
@@ -156,6 +196,11 @@ export async function createWebview(
     }
 
     window.dispatchEvent(new CustomEvent('update_cdp_ports'))
-    if (!w) throw new Error(`Webview "${label}" not found after creation`);
+    if (!w) {
+        if (!checkExists()) {
+            return undefined;
+        }
+        throw new Error(`Webview "${label}" not found after creation`);
+    }
     return w;
 }

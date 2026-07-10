@@ -743,7 +743,7 @@ export const deleteTabWithGroupSelection = async (uuid: string): Promise<string 
     const empty = all.find((wv) => wv.label === `webview-empty`)
     const main = all.find((wv) => wv.label === `main`)
     const win = await getCurrentWindow()
-    Object.keys(tabToDelete.childrenProps).map(async (t: string) => {
+    await Promise.all(Object.keys(tabToDelete.childrenProps).map(async (t: string) => {
         const w = all.find((wv) => wv.label === `webview-${t}`)
 
         if (w) {
@@ -758,7 +758,7 @@ export const deleteTabWithGroupSelection = async (uuid: string): Promise<string 
                 window.dispatchEvent(new CustomEvent('refresh-webview-order'))
             }
         }
-    })
+    }))
     if (groupTabs.length > 1) {
         // Try to select next tab in same group
         if (indexInGroup > 0) {
