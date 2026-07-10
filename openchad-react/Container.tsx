@@ -46,24 +46,6 @@ import { Editor, type OnMount } from "monaco";
 import type * as Monaco from 'monaco-editor';
 import { Toaster } from "./components/ui/sonner"
 
-const isTauri = typeof window !== "undefined" && !!(window as any).__TAURI__;
-// Enable iframe mirror debugging in development
-if (typeof window !== 'undefined') {
-  (window as any).React = React;
-  (window as any).ReactDOM = ReactDOM;
-  const isDev = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-  if (isDev) {
-    import('./utils/iframe-mirror-debug').then(({ enableIframeMirrorDebugMode }) => {
-      enableIframeMirrorDebugMode();
-    }).catch(() => {
-      // Silently fail if debug utils not available
-    });
-  }
-}
-
-
-// Component that uses the promise
-
 const TabItem = React.memo(({ children, isOpened }: { children: React.ReactNode, isOpened: boolean }) => {
   const [loaded, setLoaded] = useState(false);
 

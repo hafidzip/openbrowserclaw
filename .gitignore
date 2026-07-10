@@ -33,3 +33,5 @@ openchad.log
 diff.txt
 Tools/
 settings.db
+settings.db-shm
+settings.db-wal
