@@ -1087,7 +1087,7 @@ export default function Tasks({
                 db,
                 command: "query",
                 sql: `SELECT id, metadata FROM tasks ${searchClause} ORDER BY rowid DESC LIMIT ${limit} OFFSET ${offset}`,
-                params: q ? [`%${q}%`, `%${q}%`] : []
+                params: q ? [q, `%${q}%`] : []
             });
             const rows: any[] = res?.data ?? (Array.isArray(res) ? res : []);
             if (!Array.isArray(rows)) return;
