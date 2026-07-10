@@ -1082,7 +1082,7 @@ export default function Tasks({
             const limit = 50;
             const offset = pageNum * limit;
             const q = queryRef.current;
-            const searchClause = q ? "WHERE id LIKE ? OR metadata LIKE ?" : "";
+            const searchClause = q ? "WHERE id = ? OR metadata LIKE ?" : "";
             const res = await pyInvoke("sqlite", {
                 db,
                 command: "query",
