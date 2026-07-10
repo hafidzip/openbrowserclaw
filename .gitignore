@@ -29,3 +29,6 @@ Tools/private
 ModelProvider/private
 Backend/private
 Pipeline/private
+openchad.log
+diff.txt
+Tools/
