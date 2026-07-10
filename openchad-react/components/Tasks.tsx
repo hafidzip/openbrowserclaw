@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, memo, useMemo } from "react";
-import { Plus, Trash2, Edit2, Check, X, ChevronDown, Clock, Repeat, Calendar, Mic, Video, Volume2, FileText, File as FileIcon, FileCode, PowerOff, Terminal } from "lucide-react";
+import { Plus, Trash2, Edit2, Check, X, ChevronDown, Clock, Repeat, Calendar, Mic, Video, Volume2, FileText, File as FileIcon, FileCode, PowerOff, Terminal, Copy } from "lucide-react";
 import { Checkbox } from "./ui/checkbox";
 import { ScrollArea } from "./ui/scroll-area";
 import { Table, TableBody, TableCell, TableRow } from "./ui/table";
@@ -717,6 +717,14 @@ const TabRow = memo((
             },
         }));
     }, [availableModels, handleSaveAgent]);
+    const [copied, setCopied] = useState(false);
+    const handleCopyId = useCallback((e: React.MouseEvent) => {
+        e.stopPropagation(); // Prevents triggering any row-level clicks
+        navigator.clipboard.writeText(tab.id);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 750);
+    }, [tab.id]);
+
 
     return (
         <TableRow className="border-accent/5 hover:bg-accent/5 transition-colors cursor-pointer h-12 group">
@@ -734,7 +742,7 @@ const TabRow = memo((
                         "w-1 h-1",
                         messageState.isRead ? "bg-transparent" : "bg-accent animate-scale",
                         "rounded-full",
-                    )}/>
+                    )} />
                 }
             </TableCell>
             {/* Query Cell */}
@@ -922,6 +930,19 @@ const TabRow = memo((
                 </TableCell>
             ) : (
                 <>
+                    <TableCell onClick={handleOpen} >
+                        <div className="flex items-center gap-2">
+                            <div
+                                title="Copy ID"
+                                onClick={handleCopyId}>
+                                {copied ? (
+                                    <Check className="w-3.5 h-3.5 text-green-500 shrink-0" />
+                                ) : (
+                                    <Copy className="w-3.5 h-3.5 shrink-0 text-muted-foreground hover:text-foreground" />
+                                )}
+                            </div>
+                        </div>
+                    </TableCell>
                     {/* Normal Query Cell */}
                     <TableCell className="w-full font-medium group/query cursor-pointer h-14 py-1" onClick={handleOpen}>
                         <div className="flex items-center gap-1.5 justify-between w-full">
