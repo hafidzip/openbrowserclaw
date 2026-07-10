@@ -47,6 +47,7 @@ import Tools from "./Tools"
 import { AsyncLock, generateIdFromString, uuidv4 } from "./../index"
 import { getCurrentWebview } from "@tauri-apps/api/webview"
 import { getCurrentWindow } from "@tauri-apps/api/window"
+import { Spinner } from "./ui"
 
 // Sortable Tab Item Component
 interface SortableTabItemProps {
@@ -487,6 +488,7 @@ export default function Sidebar({
   const pinnedTabs = Object.fromEntries(Object.entries(allTabs).filter(([_, tab]) => tab.group === "pinned"));
   const s = useSettings();
   const [isCollapsedSidebar, setIsCollapsedSidebar] = useState(true);
+  const [isInstalling, setIsInstalling] = useGlobal('isInstalling', { initialValue: false });
   const [llamaCppOrMlxIsInstalled, setLlamaCppOrMlxIsInstalled] = useGlobal('llamaCppOrMlxIsInstalled', { initialValue: false });
   const [isTransitioning, setIsTransitioning] = useState(false);
   const [searchTaskQuery, setSearchTaskQuery] = useState("");
@@ -999,6 +1001,18 @@ export default function Sidebar({
                 setShowToolsDialog(true);
               }
             },
+            ...(typeof window !== 'undefined' && !!(window as any).__TAURI__ && !llamaCppOrMlxIsInstalled) ? [{
+              content: <div> Local Models </div>,
+              shortcut: isInstalling ? <Spinner /> : <div>Install</div>,
+              children: null,
+              separator: false,
+              trigger: async () => {
+                if (!isInstalling) {
+                  setIsInstalling(true);
+                  await pyInvoke('install_local_backend');
+                }
+              }
+            }] : [],
             ...(typeof window !== 'undefined' && !!(window as any).__TAURI__ && llamaCppOrMlxIsInstalled) ? [{
               content: <div> Local Models </div>,
               shortcut: <HardDrive size={16} />,
