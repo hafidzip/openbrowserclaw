@@ -369,14 +369,11 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   }, [])
 
   useEffect(() => {
-    (async () => {
-      await AsyncLock.run(async () => {
-        if (allRef.current) {
-          const empty = allRef.current.find((wv) => wv.label === 'webview-empty')
-          if (empty) emptyRef.current = empty
-        }
-      })
-    })()
+    // Pure ref read — no lock needed
+    if (allRef.current) {
+      const empty = allRef.current.find((wv) => wv.label === 'webview-empty')
+      if (empty) emptyRef.current = empty
+    }
   }, [])
 
   useEffect(() => {
@@ -489,6 +486,9 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   const [, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: true });
 
   const lastNudgeRef = useRef<number>(0)
+  const lastRectRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null)
+  // RAF gate for Sync: lives at component level so it persists across effect re-runs
+  const rafRef = useRef<number | null>(null)
 
   const nudgeFocus = () => {
     const now = Date.now()
@@ -501,8 +501,6 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   useEffect(() => {
     console.warn('[loading]: ', loading);
   }, [loading]);
-
-  const lastRectRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null)
 
   const syncSize = async () => {
     if (!initializedBrowsersRef.current?.has(appId)) return;
@@ -537,11 +535,8 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   }
 
   useEffect(() => {
-    (async () => {
-      await AsyncLock.run(async () => {
-        await syncSize();
-      })
-    })()
+    // syncSize has its own rect-equality guard — no lock needed here
+    void syncSize();
   }, [layout, activeTabId, refresh])
 
   useEffect(() => {
@@ -625,115 +620,108 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
       setFocus(false);
     }
     const onUpdateTitle = async (event: any) => {
-      await AsyncLock.run(async () => {
-        const data = event.detail as any
-        console.log("[Browsers data]:", browsers);
-        if (data.target == label) {
-          setTitle(data.title)
-          const db = "global"
-          const sql = `INSERT OR REPLACE INTO site_registry (id, metadata) VALUES (?, ?)`
+      const data = event.detail as any
+      console.log("[Browsers data]:", browsers);
+      if (data.target == label) {
+        setTitle(data.title)
+        const db = "global"
+        const sql = `INSERT OR REPLACE INTO site_registry (id, metadata) VALUES (?, ?)`
 
-          if (browserReadyRef.current && appId.startsWith("agent")) {
-            console.log(browsers);
-            setBrowsers((prev) => {
-              const newBrowsers = { ...prev }
-              newBrowsers[appId] = {
-                name: data.title ?? data.url ?? 'Untitled',
-                url: data.url ?? 'about:blank',
-                icon: data.icon ?? 'default',
-                timestamp: Date.now(),
-              }
-              return newBrowsers
-            })
-          }
-
-          await pyInvoke("sqlite", {
-            db,
-            command: "execute",
-            sql: `CREATE TABLE IF NOT EXISTS site_registry (
-                      id    TEXT PRIMARY KEY,
-                      metadata TEXT
-                    )`,
-            params: []
-          })
-
-          if (data.icon && layoutRef.current === "single") {
-            setIcon(data.icon)
-          }
-
-          await pyInvoke("sqlite", {
-            db,
-            command: "execute",
-            sql,
-            params: [
-              data.url,
-              JSON.stringify({
-                title: data.title ?? data.url ?? 'Untitled',
-                url: data.url ?? 'about:blank',
-                icon: data.icon ?? 'default',
-                timestamp: Date.now(),
-              })
-            ]
+        if (browserReadyRef.current && appId.startsWith("agent")) {
+          console.log(browsers);
+          setBrowsers((prev) => {
+            const newBrowsers = { ...prev }
+            newBrowsers[appId] = {
+              name: data.title ?? data.url ?? 'Untitled',
+              url: data.url ?? 'about:blank',
+              icon: data.icon ?? 'default',
+              timestamp: Date.now(),
+            }
+            return newBrowsers
           })
         }
-      })
+
+        await pyInvoke("sqlite", {
+          db,
+          command: "execute",
+          sql: `CREATE TABLE IF NOT EXISTS site_registry (
+                    id    TEXT PRIMARY KEY,
+                    metadata TEXT
+                  )`,
+          params: []
+        })
+
+        if (data.icon && layoutRef.current === "single") {
+          setIcon(data.icon)
+        }
+
+        await pyInvoke("sqlite", {
+          db,
+          command: "execute",
+          sql,
+          params: [
+            data.url,
+            JSON.stringify({
+              title: data.title ?? data.url ?? 'Untitled',
+              url: data.url ?? 'about:blank',
+              icon: data.icon ?? 'default',
+              timestamp: Date.now(),
+            })
+          ]
+        })
+      }
     }
 
     const onLocationChange = async (event: any) => {
-      await AsyncLock.run(async () => {
-        setLoading(false);
+      setLoading(false);
 
-        if (setupModelRef.current) {
-          if (mainWebviewRef.current && mainWindowRef.current) await mainWebviewRef.current.reparent(mainWindowRef.current)
-        }
+      if (setupModelRef.current) {
+        if (mainWebviewRef.current && mainWindowRef.current) await mainWebviewRef.current.reparent(mainWindowRef.current)
+      }
 
-        const data = event.detail as any
-        if (data.target == label) {
-          setUrl({ url: data.url })
+      const data = event.detail as any
+      if (data.target == label) {
+        setUrl({ url: data.url })
 
-          const currentPending = pendingNav.current
-          pendingNav.current = null
+        const currentPending = pendingNav.current
+        pendingNav.current = null
 
-          setNavState((prev) => {
-            let newIndex = prev.currentIndex
-            let newHistory = [...prev.history]
+        setNavState((prev) => {
+          let newIndex = prev.currentIndex
+          let newHistory = [...prev.history]
 
-            const normalizedIncoming = cleanUrl(data.url)
+          const normalizedIncoming = cleanUrl(data.url)
 
-            if (currentPending === 'back') {
-              newIndex = Math.max(0, prev.currentIndex - 1)
-            } else if (currentPending === 'forward') {
-              newIndex = Math.min(prev.history.length - 1, prev.currentIndex + 1)
-            } else {
-              if (data.url && data.url !== "about:blank") {
-                const currentUrl = (prev.currentIndex >= 0 && prev.currentIndex < prev.history.length)
-                  ? prev.history[prev.currentIndex]
-                  : "";
-                if (cleanUrl(currentUrl) !== normalizedIncoming) {
-                  // Fresh navigation — always truncate forward stack
-                  newHistory = prev.history.slice(0, prev.currentIndex + 1)
-                  newHistory.push(data.url)
-                  newIndex = newHistory.length - 1
-                }
+          if (currentPending === 'back') {
+            newIndex = Math.max(0, prev.currentIndex - 1)
+          } else if (currentPending === 'forward') {
+            newIndex = Math.min(prev.history.length - 1, prev.currentIndex + 1)
+          } else {
+            if (data.url && data.url !== "about:blank") {
+              const currentUrl = (prev.currentIndex >= 0 && prev.currentIndex < prev.history.length)
+                ? prev.history[prev.currentIndex]
+                : "";
+              if (cleanUrl(currentUrl) !== normalizedIncoming) {
+                // Fresh navigation — always truncate forward stack
+                newHistory = prev.history.slice(0, prev.currentIndex + 1)
+                newHistory.push(data.url)
+                newIndex = newHistory.length - 1
               }
             }
+          }
 
+          // Ensure newIndex is within valid bounds for newHistory
+          if (newHistory.length === 0) {
+            newIndex = -1
+          } else {
+            newIndex = Math.max(0, Math.min(newHistory.length - 1, newIndex))
+          }
 
-
-            // Ensure newIndex is within valid bounds for newHistory
-            if (newHistory.length === 0) {
-              newIndex = -1
-            } else {
-              newIndex = Math.max(0, Math.min(newHistory.length - 1, newIndex))
-            }
-
-            return { history: newHistory, currentIndex: newIndex }
-          })
-        }
-      })
+          return { history: newHistory, currentIndex: newIndex }
+        })
+      }
     }
 
-    const rafRef = useRef<number | null>(null)
     const Sync = async () => {
       if (rafRef.current != null) return
       rafRef.current = requestAnimationFrame(() => {
