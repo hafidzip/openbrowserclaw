@@ -1128,12 +1128,12 @@ export default function Sidebar({
                       icon: "Compass",
                       title: null,
                       appname: "main-app",
-                      data: { url: repository || 'https://github.com/openchad/openchad' }
+                      data: { url: repository || 'https://github.com/hafidzip/openbrowserclaw' }
                     }
                   }
                 });
               } else {
-                window.open(repository || 'https://github.com/openchad/openchad', '_blank')
+                window.open(repository || 'https://github.com/hafidzip/openbrowserclaw', '_blank')
               }
             }
           }
