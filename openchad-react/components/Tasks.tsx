@@ -1089,7 +1089,6 @@ export default function Tasks({
                 sql: `SELECT id, metadata FROM tasks ${searchClause} ORDER BY rowid DESC LIMIT ${limit} OFFSET ${offset}`,
                 params: q ? [`%${q}%`, `%${q}%`] : []
             });
-            console.warn(res);
             const rows: any[] = res?.data ?? (Array.isArray(res) ? res : []);
             if (!Array.isArray(rows)) return;
             hasMoreRef.current = rows.length === limit;
