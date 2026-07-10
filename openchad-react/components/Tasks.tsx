@@ -1001,7 +1001,6 @@ export default function Tasks({
     openInTab?: boolean;
 }) {
     const { SetActive } = useSnapshot(TabInfo);
-    const [, setChatId] = useGlobal<string | null>('chatId', { initialValue: null })
     const { pyInvoke } = usePython();
     const { agents, isLoading } = useAvailableAgents()
 
@@ -1191,11 +1190,10 @@ export default function Tasks({
             pageRef.current = 0;
             hasMoreRef.current = true;
             loadTabs(0, true);
-            setChatId(null)
         } catch (e) {
             console.error(e);
         }
-    }, [selectedIds, workspace, pyInvoke, loadTabs, setChatId]);
+    }, [selectedIds, workspace, pyInvoke, loadTabs]);
     //  Open selected / open single 
     const openTab = (id: string) => {
         const tab = tabsRef.current.find((t: any) => t.id === id);
@@ -1216,8 +1214,6 @@ export default function Tasks({
                     }
                 });
                 SetActive(id);
-            } else {
-                setChatId(tab.id)
             }
         }
     };
