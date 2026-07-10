@@ -352,12 +352,10 @@ export default function Container({ Apps }: { Apps: Project }) {
 
   usePythonEvent('eval', async (data) => {
     if (data.label !== 'main') {
-      await AsyncLock.run(async () => {
-        await invoke('eval_in_webview', {
-          label: data.label,
-          script: data.script,
-        });
-      })
+      await invoke('eval_in_webview', {
+        label: data.label,
+        script: data.script,
+      });
     }
   });
 

@@ -30,15 +30,16 @@ export async function createWebview(
 ): Promise<Webview | undefined> {
     const url = options.url ?? 'about:blank';
 
-    // Hold the lock only for the synchronous IPC call that creates the OS webview.
-    // Everything after (reparent, sleep, URL navigation, page-load wait) is lock-free
-    // so it cannot block other tabs' reparent or size-sync operations.
-    let w = await (async () => {
-        await AsyncLock.acquire();
-        try {
-            let existing = await Webview.getByLabel(label);
-            if (existing) return existing;
-
+    // Hold the lock for webview creation AND the reparenting process of shared webviews (empty/main).
+    // This prevents concurrent reparenting operations on the same shared webview instance.
+    let w: Webview | undefined;
+    let isCreatedNew = false;
+    await AsyncLock.acquire();
+    try {
+        let existing = await Webview.getByLabel(label);
+        if (existing) {
+            w = existing;
+        } else {
             console.warn("Creating webview :", label, "with options :", options)
             const createdLabel = await invoke<string>('create_webview', {
                 args: {
@@ -53,20 +54,11 @@ export async function createWebview(
                     userAgent: options.userAgent,
                 },
             });
-            return await Webview.getByLabel(createdLabel);
-        } catch (e) {
-            console.error(e);
-            return undefined;
-        } finally {
-            AsyncLock.release();
+            w = (await Webview.getByLabel(createdLabel)) ?? undefined;
+            isCreatedNew = true;
         }
-    })();
 
-    // From here on: lock-free. Reparents, sleeps, URL nav, and event subscriptions
-    // do not need to be serialised against other tabs.
-    if (w) {
-        try {
-            const webview = w;
+        if (w && isCreatedNew) {
             await empty.reparent(mainWindow)
             console.warn("reparent: empty");
             await sleep(50)
@@ -76,7 +68,19 @@ export async function createWebview(
                 setGlobal(`loading-${label}`, false)
                 await sleep(50);
                 await main.reparent(mainWindow)
-            } else {
+            }
+        }
+    } catch (e) {
+        console.error(e);
+    } finally {
+        AsyncLock.release();
+    }
+
+    // Lock-free phase: navigate, listen to page loaded, setup general event listeners
+    if (w) {
+        try {
+            const webview = w;
+            if (isCreatedNew && url !== "about:blank") {
                 await new Promise(resolve => setTimeout(resolve, 250));
                 setGlobal(`loading-${label}`, false)
                 await invoke("eval_in_webview", {
@@ -84,7 +88,11 @@ export async function createWebview(
                     script: `window.location.replace("${url}")`
                 })
                 await sleep(50);
-                await main.reparent(mainWindow)
+                // Serialized main reparent for navigation case:
+                // We lock here again just to reparent main safely.
+                await AsyncLock.run(async () => {
+                    await main.reparent(mainWindow)
+                });
                 await new Promise<void>((resolve) => {
                     let unlisten: (() => void) | undefined;
                     let resolved = false;
