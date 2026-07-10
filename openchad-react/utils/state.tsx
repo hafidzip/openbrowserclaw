@@ -728,6 +728,7 @@ export const deleteActiveTabWithGroupSelection = async (): Promise<string | null
 export const deleteTabWithGroupSelection = async (uuid: string): Promise<string | null> => {
     await AsyncLock.acquire();
     const tabToDelete = TabState[uuid];
+    
     if (!tabToDelete) {
         AsyncLock.release();
         return null

@@ -786,7 +786,6 @@ export default function Container({ Apps }: { Apps: Project }) {
 
     const checkFullscreen = async () => {
       if (fixing) return; // ignore events we caused ourselves
-      await AsyncLock.acquire();
 
       try {
         const [full, maximized] = await Promise.all([
@@ -820,7 +819,6 @@ export default function Container({ Apps }: { Apps: Project }) {
         console.error(e);
       }
 
-      AsyncLock.release();
     };
 
     window.addEventListener('resize', checkFullscreen);
@@ -908,7 +906,6 @@ export default function Container({ Apps }: { Apps: Project }) {
           if (activeRef.current) {
             const db = workspace;
             const initTb = generateIdFromString(activeRef.current + "/" + "message_state");
-            await AsyncLock.acquire();
             const res = await pyInvoke("sqlite", {
               db: db,
               table: initTb,
@@ -939,7 +936,6 @@ export default function Container({ Apps }: { Apps: Project }) {
                 await pyInvoke("v1/chat/stop", { id: activeId });
               }
             }
-            AsyncLock.release();
             await deleteTabWithGroupSelection(activeRef.current);
           }
         })()
@@ -1066,7 +1062,6 @@ export default function Container({ Apps }: { Apps: Project }) {
     }
 
     const updateCdpPorts = async () => {
-      await AsyncLock.acquire();
       try {
         allRef.current = await getAllWebviews();
         const cdp_ports = await invoke('get_cdp_ports');
@@ -1078,8 +1073,6 @@ export default function Container({ Apps }: { Apps: Project }) {
         }
       } catch (e) {
         console.error(e)
-      } finally {
-        AsyncLock.release();
       }
     }
 

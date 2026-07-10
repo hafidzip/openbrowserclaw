@@ -1,7 +1,7 @@
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import clsx from 'clsx';
 import { ArrowLeft, ArrowLeftRight, ArrowRight, Columns, Columns2, Columns3, Columns3Cog, Grid2X2, LayoutPanelTop, Link2, Minus, PanelBottom, PanelsLeftBottom, PanelsRightBottom, RotateCw, Rows2, SlidersHorizontal, Square, X } from 'lucide-react';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useSnapshot } from 'valtio';
 import { addTab, BrowserHandlers, BrowserNavState, TabInfo } from './utils/state';
 import { uuidv4 } from './utils';
@@ -18,16 +18,17 @@ export function BrowserBar({ appId }: { appId: string }) {
   const navSnap = useSnapshot(BrowserNavState);
   const nav = navSnap[appId] ?? { canGoBack: false, canGoForward: false, layout: "single" };
   const { canGoBack, canGoForward, layout } = nav;
-  const [url, setUrl] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [url, setUrl] = useGlobal<Record<string, string>>("browser-url", {initialValue: {}});
+  const [loading, setLoading] = useGlobal<Record<string, boolean>>("browser-loading", {initialValue: {}});
+
 
   usePythonEvent('webview_navigation', async (payload) => {
-    if (payload.url) setUrl(payload.url);
-    setLoading(true);
+    if (payload.url) setUrl(prev => ({ ...prev, [payload.label]: payload.url }));
+    setLoading(prev => ({ ...prev, [payload.label]: true }));
   });
 
   usePythonEvent('webview_page_loaded', async (payload) => {
-    setLoading(false);
+    setLoading(prev => ({ ...prev, [payload.label]: false }));
   });
 
   return (
@@ -60,7 +61,7 @@ export function BrowserBar({ appId }: { appId: string }) {
         >
           <ArrowRight className="w-4 h-4" />
         </div>
-        {loading ? <div className='flex items-center justify-center rounded-lg w-7 h-7 hover:bg-white/10 dark:hover:bg-white/5 transition-colors cursor-pointer text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'>
+        {loading[`webview-${appId}`] ? <div className='flex items-center justify-center rounded-lg w-7 h-7 hover:bg-white/10 dark:hover:bg-white/5 transition-colors cursor-pointer text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'>
           <Spinner className='w-3.5 h-3.5'/>
         </div> : <div onClick={() => { BrowserHandlers[appId]?.refresh?.(); }} className="flex items-center justify-center rounded-lg w-7 h-7 hover:bg-white/10 dark:hover:bg-white/5 transition-colors cursor-pointer text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200">
           <RotateCw className={clsx("w-3.5 h-3.5")} />
@@ -69,7 +70,7 @@ export function BrowserBar({ appId }: { appId: string }) {
 
       {/* Pill-shaped Address Bar (Middle) */}
       <div className="flex-1 px-4 pointer-events-none">
-        {/^https?:\/\//.test(url) && <div
+        {/^https?:\/\//.test(url[`webview-${appId}`]||"") && <div
           style={{
             top: '2px'
           }}
@@ -82,7 +83,7 @@ export function BrowserBar({ appId }: { appId: string }) {
               'text-center text-accent/50 hover:text-accent bg-[hsl(var(--bg))] hover:bg-card cursor-pointer w-100 text-xs rounded-lg  px-2 py-1 truncate pointer-events-auto',
             )}
           >
-            {url}
+            {url[`webview-${appId}`]||""}
           </div>
         </div>}
       </div>

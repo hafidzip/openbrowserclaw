@@ -103,18 +103,7 @@ function _getOrCreateLock(): AsyncMutex {
     return (globalThis as any).__AsyncLock__;
 }
 
-function _getOrCreateWebCreationLock(): AsyncMutex {
-    if (import.meta.hot) {
-        const prev = (import.meta.hot.data as any)?.webCreationLock;
-        if (prev instanceof AsyncMutex) return prev;
-    }
-    if (!(globalThis as any).__WebCreationLock__) {
-        (globalThis as any).__WebCreationLock__ = new AsyncMutex();
-    }
-    return (globalThis as any).__WebCreationLock__;
-}
 const AsyncLock = _getOrCreateLock();
-const WebCreationLock = _getOrCreateWebCreationLock()
 
 function useAvailableModels() {
     const { pyInvoke } = usePython()
@@ -257,7 +246,6 @@ export {
     useAvailableModels,
     useAvailableAgents,
     AsyncLock,
-    WebCreationLock,
     proxy,
     ref,
     useSnapshot,

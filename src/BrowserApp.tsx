@@ -1,11 +1,11 @@
 import { Search, Globe } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { AsyncLock, WebCreationLock, useGlobal, usePythonEvent, useSnapshot, type AppInfo } from "openchad-react"
+import { AsyncLock, useGlobal, usePythonEvent, useSnapshot, type AppInfo } from "openchad-react"
 import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi'
 import clsx from 'clsx'
 import { deleteActiveTabWithGroupSelection, MenuBar, BrowserHandlers, BrowserNavState, TabState } from 'openchad-react/utils/state';
 
-import { createWebview, sleep } from 'openchad-react/utils';
+import { createWebview } from 'openchad-react/utils';
 import { useDatabaseImpl } from 'openchad-react/components/useDatabase';
 import type { ControllableBrowser } from 'openchad-react/components/ControllableBrowsers';
 import { Spinner } from 'openchad-react/ui'
@@ -86,6 +86,8 @@ export function CommandPalette({
   const handleSearchOrNavigate = (val: string) => {
     onNavigate(val);
   };
+
+
 
   return (
     <div
@@ -441,7 +443,6 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
       (async () => {
         await AsyncLock.run(async () => {
           const existing = await getByLabel(label)
-          await sleep(50)
           if (mainWindowRef.current) {
             if (existing && !setupModel && initializedRef.current && mainWindowRef.current && initializedBrowsersRef.current?.has(appId)) {
               await existing.reparent(mainWindowRef.current)
@@ -487,13 +488,23 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
 
   const [, setIsCreateTask] = useGlobal('overlay-create-task', { initialValue: true });
 
+  const lastNudgeRef = useRef<number>(0)
+
+  const nudgeFocus = () => {
+    const now = Date.now()
+    if (now - lastNudgeRef.current < 250) return
+    lastNudgeRef.current = now
+    setFocus(true)
+    setRefresh(prev => (prev + 1) % 2)
+  }
 
   useEffect(() => {
     console.warn('[loading]: ', loading);
   }, [loading]);
 
+  const lastRectRef = useRef<{ x: number; y: number; width: number; height: number } | null>(null)
+
   const syncSize = async () => {
-    await sleep(50);
     if (!initializedBrowsersRef.current?.has(appId)) return;
     const container = containerRef.current
     if (!allRef.current) return;
@@ -504,10 +515,22 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
 
     try {
       if (rect.width < 10 && rect.height < 10) return;
+
+      const w = Math.round(rect.width)
+      const h = Math.round(rect.height)
+      const x = Math.round(rect.x)
+      const y = Math.round(rect.y)
+
+      const last = lastRectRef.current
+      if (last && last.x === x && last.y === y && last.width === w && last.height === h) {
+        return // unchanged — skip the IPC round-trip
+      }
+
       await Promise.all([
         wvw.setPosition(new LogicalPosition(rect.x, rect.y)),
-        wvw.setSize(new LogicalSize(Math.round(rect.width), Math.round(rect.height))),
+        wvw.setSize(new LogicalSize(w, h)),
       ])
+      lastRectRef.current = { x, y, width: w, height: h }
     } catch (e) {
       console.error("[Webview] Failed to sync size:", e)
     }
@@ -532,9 +555,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
     if (!ready || !containerRef.current) return
 
     (async () => {
-      await AsyncLock.acquire();
       const existing = await getByLabel(label)
-      AsyncLock.release();
 
       let main = mainWebviewRef.current ? mainWebviewRef.current : getCurrentWebview();
       let mainWindow = mainWindowRef.current ? mainWindowRef.current : getCurrentWindow();
@@ -712,9 +733,12 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
       })
     }
 
+    const rafRef = useRef<number | null>(null)
     const Sync = async () => {
-      await AsyncLock.run(async () => {
-        await syncSize();
+      if (rafRef.current != null) return
+      rafRef.current = requestAnimationFrame(() => {
+        rafRef.current = null
+        void AsyncLock.run(async () => { await syncSize() })
       })
     }
 
@@ -735,7 +759,6 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
     const onRefreshOrder = async () => {
       if (activeTabIdRef.current === tabId && initializedRef.current) {
         const webview = await Webview.getByLabel(label);
-        await sleep(50)
         if (webview && mainWindowRef.current) {
           await webview.reparent(mainWindowRef.current)
         }
@@ -837,10 +860,8 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
             MenuBar.appId = appId
             MenuBar.tabId = tabId
           } else {
-            setFocus(true)
-            setRefresh(prev => (prev + 1) % 2)
+            nudgeFocus()
           }
-
         }}
         onPointerDown={() => {
           if (loading) return;
@@ -848,17 +869,13 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
             MenuBar.appId = appId
             MenuBar.tabId = tabId
           } else {
-            setFocus(true)
-            setRefresh(prev => (prev + 1) % 2)
+            nudgeFocus()
           }
-
         }}
         onMouseMove={() => {
           if (loading) return;
           if (MenuBar.appId !== appId && tabLayout !== "single") return;
-          setFocus(true)
-          setRefresh(prev => (prev + 1) % 2)
-
+          nudgeFocus()
         }}
         className={clsx(
           "flex-1 w-full relative z-0 bg-transparent browser-tab",
