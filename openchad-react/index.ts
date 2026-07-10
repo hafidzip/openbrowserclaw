@@ -9,7 +9,6 @@ import useElementSize from "./components/hooks/useElementSize";
 import { useGlobal as useGlobalImpl, setGlobal } from "./components/useGlobal";
 import type { MessageState } from "./components/default-page";
 import { OpenChadIcon } from "./components/open-chad-icon";
-import ContainerOverlayApp from "./ContainerOverlayApp";
 import { proxy, ref, useSnapshot } from "valtio";
 import { MenuBar, Theme, Workspace } from "./utils/state";
 import { useEffect, useState, useCallback, useRef } from "react";
@@ -263,7 +262,6 @@ export {
     ref,
     useSnapshot,
     useMenuBar,
-    ContainerOverlayApp,
     Container,
     Dropdown,
     type DropdownMenuItemProps,
