@@ -546,9 +546,7 @@ class ModelManager:
                             for k, v in config["models"][mid].items():
                                 if k not in model_data:
                                     model_data[k] = v
-                        else:
-                            # Default to auto_load if new
-                            model_data["auto_load"] = True
+                                    
                         # Clean up serialization specific fields not needed in config.json
                         model_data.pop("loaded_at", None)
                         model_data.pop("last_used", None)
