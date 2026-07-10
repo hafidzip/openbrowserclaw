@@ -20,7 +20,8 @@ const ignoredDirs = [
     'ModelProvider',
     'Workspaces',
     'build',
-    'frontend'
+    'frontend',
+    "Extensions"
 ].map(dir => path.resolve(__dirname, dir).replace(/\\/g, '/'))
 
 export default defineConfig(({ mode }) => ({
@@ -84,7 +85,7 @@ export default defineConfig(({ mode }) => ({
                 target: 'http://127.0.0.1:2048',
                 changeOrigin: true,
             },
-        },
+        }
     },
     build: {
         outDir: 'frontend',
@@ -92,6 +93,7 @@ export default defineConfig(({ mode }) => ({
         rollupOptions: {
             input: {
                 main: path.resolve(__dirname, 'index.html'),
+                overlay: path.resolve(__dirname, 'overlay.html'),
             },
             // We don't want to bundle these in the main app chunks IF we are loading them from CDN
             // However, the main app also uses them.
