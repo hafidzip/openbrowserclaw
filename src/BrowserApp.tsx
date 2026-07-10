@@ -1,6 +1,6 @@
 import { Search, Globe } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { AsyncLock, WebCreationLock, useGlobal, useSnapshot, type AppInfo } from "openchad-react"
+import { AsyncLock, WebCreationLock, useGlobal, usePythonEvent, useSnapshot, type AppInfo } from "openchad-react"
 import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi'
 import clsx from 'clsx'
 import { deleteActiveTabWithGroupSelection, MenuBar, BrowserHandlers, BrowserNavState, TabState } from 'openchad-react/utils/state';
@@ -343,19 +343,10 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
       back: handleBack,
       forward: handleForward,
       refresh: handleRefresh,
-      addressBarClick: () => {
-        setShowPalette((prev) => {
-          if (!prev) {
-            setLastUrl(url.url)
-            setFocus(false)
-            setRefresh(prev => (prev + 1) % 2)
-          } else {
-            setLastUrl(url.url)
-            setFocus(true)
-            setRefresh(prev => (prev + 1) % 2)
-          }
-          return !prev;
-        });
+      addressBarClick: async () => {
+        setLastUrl(url.url)
+        setShowPalette(true);
+        if (mainWebviewRef.current && mainWindowRef.current) await mainWebviewRef.current.reparent(mainWindowRef.current)
       },
     };
     return () => { delete BrowserHandlers[appId]; };
@@ -430,13 +421,20 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
           if (mainWindowRef.current) {
             await emptyRef.current.reparent(mainWindowRef.current)
             if (mainWebviewRef.current) await mainWebviewRef.current.reparent(mainWindowRef.current)
+            if (!label.startsWith('webview-agent')) {
+              const existing = await getByLabel(label)
+              if (existing) {
+                await existing.hide()
+              }
+            }
           }
         }
       })()
     }
   }, [isTabActive])
-
-
+  const [setupModel, setSetupModel] = useGlobal('setupModel', { initialValue: false });
+  const setupModelRef = useRef(setupModel)
+  setupModelRef.current = setupModel
   useEffect(() => {
     if (activeTabIdRef.current == tabId) {
       setIsTabActive(true);
@@ -445,11 +443,14 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
           const existing = await getByLabel(label)
           await sleep(50)
           if (mainWindowRef.current) {
-            if (existing && initializedRef.current && mainWindowRef.current && initializedBrowsersRef.current?.has(appId)) {
+            if (existing && !setupModel && initializedRef.current && mainWindowRef.current && initializedBrowsersRef.current?.has(appId)) {
               await existing.reparent(mainWindowRef.current)
             }
             if (mainWebviewRef.current) await mainWebviewRef.current.reparent(mainWindowRef.current)
             setFocus(false);
+            if (!label.startsWith('webview-agent')) {
+              await existing?.show()
+            }
           }
         })
       })()
@@ -462,7 +463,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
 
   useEffect(() => {
     const now = Date.now();
-    if (now - lastReparentTimeRef.current < 100) return;
+    if (now - lastReparentTimeRef.current < 250) return;
     lastReparentTimeRef.current = now;
 
     (async () => {
@@ -472,10 +473,8 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
         if (focus) {
           const existing = await getByLabel(label);
           await mainWebviewRef.current.reparent(mainWindowRef.current);
-          await sleep(50)
-          if (existing && initializedRef.current && initializedBrowsersRef.current?.has(appId)) {
+          if (existing && !setupModel && initializedRef.current && initializedBrowsersRef.current?.has(appId)) {
             console.warn("reparent: ", label);
-            await sleep(50)
             await existing.reparent(mainWindowRef.current);
           }
         } else {
@@ -662,6 +661,11 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
     const onLocationChange = async (event: any) => {
       await AsyncLock.run(async () => {
         setLoading(false);
+
+        if (setupModelRef.current) {
+          if (mainWebviewRef.current && mainWindowRef.current) await mainWebviewRef.current.reparent(mainWindowRef.current)
+        }
+
         const data = event.detail as any
         if (data.target == label) {
           setUrl({ url: data.url })
@@ -692,6 +696,8 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
                 }
               }
             }
+
+
 
             // Ensure newIndex is within valid bounds for newHistory
             if (newHistory.length === 0) {

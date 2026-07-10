@@ -55,12 +55,13 @@ export async function createWebview(
                 console.warn("reparent: empty");
                 await sleep(50)
                 window.dispatchEvent(new CustomEvent('refresh-webview-order'))
-                await sleep(50);
-                await main.reparent(mainWindow)
+
 
 
                 if (url === "about:blank") {
                     setGlobal(`loading-${label}`, false)
+                    await sleep(50);
+                    await main.reparent(mainWindow)
                 } else {
                     await new Promise(resolve => setTimeout(resolve, 250));
                     setGlobal(`loading-${label}`, false)
@@ -68,6 +69,8 @@ export async function createWebview(
                         label,
                         script: `window.location.replace("${url}")`
                     })
+                    await sleep(50);
+                    await main.reparent(mainWindow)
                     await new Promise<void>((resolve) => {
                         let unlisten: (() => void) | undefined;
                         let resolved = false;

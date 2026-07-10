@@ -125,7 +125,6 @@ import { getAllWebviews, getCurrentWebview, Webview } from '@tauri-apps/api/webv
 import type { ControllableBrowser } from './components/ControllableBrowsers'
 import { isRegistered, register, unregister } from '@tauri-apps/plugin-global-shortcut'
 import { getCurrentWebviewWindow, WebviewWindow } from '@tauri-apps/api/webviewWindow'
-import Chat from './components/chat'
 import Composer, { type ScheduleInterval } from './components/composer'
 import { toast } from 'sonner'
 import { createWebview, sleep } from './utils'
@@ -517,7 +516,7 @@ export default function Container({ Apps }: { Apps: Project }) {
   const snaptabsRef = useRef(snaptabs)
   snaptabsRef.current = snaptabs
   const [tabs, setTabs] = useState<Record<string, React.ReactNode>>({});
-  const { children, layout, active, SetActive } = useSnapshot(TabInfo);
+  const { children, layout, active, SetActive,  } = useSnapshot(TabInfo);
   const activeRef = useRef(active)
   activeRef.current = active
   const actives = (() => {
@@ -1724,7 +1723,10 @@ export default function Container({ Apps }: { Apps: Project }) {
       </div>
       {setupModel && <>
         <div className='fixed w-[100vw] h-[100vh] left-0 top-0 z-50 bg-black/50 flex items-center justify-center'>
-          <div className='w-[520px] bg-card border border-[hsl(var(--chat-border))] rounded-lg shadow-2xl flex flex-col overflow-hidden'>
+        <div onClick={async()=>{
+          if(mainWebviewRef.current && mainWindowRef.current) await mainWebviewRef.current.reparent(mainWindowRef.current)
+        }} className='w-full h-full absolute bg-transparent left-0 top-0'/>
+          <div className='w-[520px] bg-card border border-[hsl(var(--chat-border))] relative rounded-lg shadow-2xl flex flex-col overflow-hidden'>
             {/* Header */}
             <div className='px-6 pt-6 pb-4 border-b border-[hsl(var(--chat-border))]'>
               <h1 className='text-lg font-semibold font-funnel tracking-tight'>Setup Model</h1>

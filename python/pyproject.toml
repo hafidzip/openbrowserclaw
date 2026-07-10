@@ -9,9 +9,8 @@ dependencies = [
     "openchadpy",
     "litellm>=1.88.0",
     "huggingface_hub",
-    "llama-cpp-python>=0.3.30",
     "playwright>=1.49.0",
-    "greetingtool>=0.1.1",
+    "llama-cpp-python>=0.3.33",
 ]
 
 [tool.uv.sources]

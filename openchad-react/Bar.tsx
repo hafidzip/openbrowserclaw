@@ -8,15 +8,27 @@ import { uuidv4 } from './utils';
 import { useDatabaseImpl } from './components/useDatabase';
 import { useGlobal } from './components/useGlobal';
 import { invoke } from '@tauri-apps/api/core';
+import { usePythonEvent } from './components/usePython';
+import { Spinner } from './ui';
 
 const isTauriEnv = typeof window !== "undefined" && !!(window as any).__TAURI__;
 
 
 export function BrowserBar({ appId }: { appId: string }) {
-  const [url] = useDatabaseImpl(`${appId}-url`, { initialValue: { url: "about:blank" } });
   const navSnap = useSnapshot(BrowserNavState);
   const nav = navSnap[appId] ?? { canGoBack: false, canGoForward: false, layout: "single" };
   const { canGoBack, canGoForward, layout } = nav;
+  const [url, setUrl] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  usePythonEvent('webview_navigation', async (payload) => {
+    if (payload.url) setUrl(payload.url);
+    setLoading(true);
+  });
+
+  usePythonEvent('webview_page_loaded', async (payload) => {
+    setLoading(false);
+  });
 
   return (
     <>
@@ -48,14 +60,16 @@ export function BrowserBar({ appId }: { appId: string }) {
         >
           <ArrowRight className="w-4 h-4" />
         </div>
-        <div onClick={() => { BrowserHandlers[appId]?.refresh?.(); }} className="flex items-center justify-center rounded-lg w-7 h-7 hover:bg-white/10 dark:hover:bg-white/5 transition-colors cursor-pointer text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200">
-          <RotateCw className="w-3.5 h-3.5" />
-        </div>
+        {loading ? <div className='flex items-center justify-center rounded-lg w-7 h-7 hover:bg-white/10 dark:hover:bg-white/5 transition-colors cursor-pointer text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'>
+          <Spinner className='w-3.5 h-3.5'/>
+        </div> : <div onClick={() => { BrowserHandlers[appId]?.refresh?.(); }} className="flex items-center justify-center rounded-lg w-7 h-7 hover:bg-white/10 dark:hover:bg-white/5 transition-colors cursor-pointer text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200">
+          <RotateCw className={clsx("w-3.5 h-3.5")} />
+        </div>}
       </div>
 
       {/* Pill-shaped Address Bar (Middle) */}
       <div className="flex-1 px-4 pointer-events-none">
-        {/^https?:\/\//.test(url.url) && <div
+        {/^https?:\/\//.test(url) && <div
           style={{
             top: '2px'
           }}
@@ -68,7 +82,7 @@ export function BrowserBar({ appId }: { appId: string }) {
               'text-center text-accent/50 hover:text-accent bg-[hsl(var(--bg))] hover:bg-card cursor-pointer w-100 text-xs rounded-lg  px-2 py-1 truncate pointer-events-auto',
             )}
           >
-            {url.url}
+            {url}
           </div>
         </div>}
       </div>
