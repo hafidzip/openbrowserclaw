@@ -1082,12 +1082,12 @@ export default function Tasks({
             const limit = 50;
             const offset = pageNum * limit;
             const q = queryRef.current;
-            const searchClause = q ? "WHERE metadata LIKE ?" : "";
+            const searchClause = q ? "WHERE id LIKE ? OR metadata LIKE ?" : "";
             const res = await pyInvoke("sqlite", {
                 db,
                 command: "query",
                 sql: `SELECT id, metadata FROM tasks ${searchClause} ORDER BY rowid DESC LIMIT ${limit} OFFSET ${offset}`,
-                params: q ? [`%${q}%`] : []
+                params: q ? [`%${q}%`, `%${q}%`] : []
             });
             console.warn(res);
             const rows: any[] = res?.data ?? (Array.isArray(res) ? res : []);
