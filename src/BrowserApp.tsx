@@ -420,7 +420,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
         if (existing) {
           if (!isTabActive) {
             await existing.hide()
-          }else{
+          } else {
             await existing.show()
           };
         }
@@ -428,14 +428,17 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
     }
     )()
   }, [isTabActive])
-  const [setupModel, setSetupModel] = useGlobal('setupModel', { initialValue: false });
+  const [setupModel] = useGlobal('setupModel', { initialValue: false });
   const setupModelRef = useRef(setupModel)
   setupModelRef.current = setupModel
+  const [isTransitioning, setIsTransitioning] = useState(false);
   useEffect(() => {
     if (activeTabIdRef.current == tabId) {
       setIsTabActive(true);
-      setTimeout(() => {
+      setIsTransitioning(true)
+      setTimeout(async () => {
         nudgeFocus();
+        setIsTransitioning(false)
       }, 50);
     } else {
       nudgeFocus(false);
@@ -451,14 +454,13 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
     lastReparentTimeRef.current = now;
 
     (async () => {
-      if (activeTabIdRef.current !== tabId && MenuBar.appId !== appId && initializedBrowsersRef.current?.has(appId)) return;
+      if (activeTabIdRef.current !== tabId) return;
       await AsyncLock.run(async () => {
         if (!mainWindowRef.current || !mainWebviewRef.current) return;
         if (focus) {
           const existing = await getByLabel(label);
           await mainWebviewRef.current.reparent(mainWindowRef.current);
-          if (existing && !setupModel && initializedRef.current && initializedBrowsersRef.current?.has(appId)) {
-            console.warn("reparent: ", label);
+          if (existing && !setupModel) {
             await existing.reparent(mainWindowRef.current);
           }
         } else {
@@ -738,14 +740,14 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
       setIsCreateTask(true);
     }
 
-    const onRefreshOrder = async () => {
-      if (activeTabIdRef.current === tabId && initializedRef.current) {
-        const webview = await Webview.getByLabel(label);
-        if (webview && mainWindowRef.current) {
-          await webview.reparent(mainWindowRef.current)
-        }
-      }
-    }
+    // const onRefreshOrder = async () => {
+    //   if (activeTabIdRef.current === tabId && initializedRef.current) {
+    //     const webview = await Webview.getByLabel(label);
+    //     if (webview && mainWindowRef.current) {
+    //       await webview.reparent(mainWindowRef.current)
+    //     }
+    //   }
+    // }
 
 
 
@@ -753,7 +755,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
 
     const observer = new ResizeObserver(Sync)
     observer.observe(containerRef.current)
-    window.addEventListener('refresh-webview-order', onRefreshOrder)
+    // window.addEventListener('refresh-webview-order', onRefreshOrder)
     window.addEventListener('update_location', onLocationChange)
     window.addEventListener('update_location_title_icon', onUpdateTitle)
     window.addEventListener('delete_tab', onTabDelete)
@@ -770,7 +772,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
 
     return () => {
       observer.disconnect()
-      window.removeEventListener('refresh-webview-order', onRefreshOrder)
+      // window.removeEventListener('refresh-webview-order', onRefreshOrder)
       window.removeEventListener('update_location', onLocationChange)
       window.removeEventListener('update_location_title_icon', onUpdateTitle)
       window.removeEventListener('delete_tab', onTabDelete)
@@ -796,7 +798,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
       }}
       className={clsx(
         "flex flex-col w-full h-full relative overflow-hidden",
-        !initialized && "bg-card"
+        (!initialized || isTransitioning) && "bg-card"
       )}>
 
       {/*

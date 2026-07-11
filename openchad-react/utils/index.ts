@@ -48,11 +48,11 @@ export async function createWebview(
                     userAgent: options.userAgent,
                 },
             });
+            window.dispatchEvent(new CustomEvent('update_cdp_ports'))
             w = await Webview.getByLabel(createdLabel);
 
             if (w) {
                 const webview = w;
-                window.dispatchEvent(new CustomEvent('refresh-webview-order'))
                 if (url === "about:blank") {
                     setGlobal(`loading-${label}`, false)
                     await sleep(50);
@@ -127,7 +127,7 @@ export async function createWebview(
             }
         }
 
-        window.dispatchEvent(new CustomEvent('update_cdp_ports'))
+        
         if (!w) throw new Error(`Webview "${label}" not found after creation`);
         return w;
     } catch (e) {
