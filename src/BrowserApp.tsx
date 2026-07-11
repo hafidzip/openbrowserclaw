@@ -317,7 +317,6 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
 
   const handleHome = () => handleNavigate("https://google.com")
 
-  const [mounted, setMount] = useState(false)
 
   const layoutRef = useRef(tabLayout)
   layoutRef.current = tabLayout
@@ -406,10 +405,6 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
     }
   }, [activeTabId, activeAppId])
 
-  useEffect(() => {
-    if (!mounted) setMount(activeTabId == tabId)
-  }, [activeTabId])
-
 
   const [isTabActive, setIsTabActive] = useState(false)
 
@@ -431,14 +426,11 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   const [setupModel] = useGlobal('setupModel', { initialValue: false });
   const setupModelRef = useRef(setupModel)
   setupModelRef.current = setupModel
-  const [isTransitioning, setIsTransitioning] = useState(false);
   useEffect(() => {
     if (activeTabIdRef.current == tabId) {
       setIsTabActive(true);
-      setIsTransitioning(true)
       setTimeout(async () => {
         nudgeFocus();
-        setIsTransitioning(false)
       }, 50);
     } else {
       nudgeFocus(false);
@@ -460,7 +452,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
         if (focus) {
           const existing = await getByLabel(label);
           await mainWebviewRef.current.reparent(mainWindowRef.current);
-          if (existing && !setupModel) {
+          if (existing && !setupModel && url.url !== "") {
             await existing.reparent(mainWindowRef.current);
           }
         } else {
@@ -549,6 +541,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
       if (existing || label.startsWith('webview-agent')) {
         initializedBrowsersRef.current?.add(appId);
         setFocus(false)
+        setLoading(false);
         setRefresh(prev => (prev + 1) % 2)
       } else {
         console.log('init webview')
@@ -587,7 +580,6 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
             label,
             mainWindow,
             main,
-            empty,
             {
               url: (urlRef.current && /^https?:\/\//.test(urlRef.current) && tabLayoutRef.current == "single") ? urlRef.current : 'about:blank',
               width: Math.round(rect.width),
@@ -596,11 +588,17 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
               y: Math.round(rect.y)
             })
           if (w) {
-            initializedBrowsersRef.current?.add(appId);
             if (tabLayoutRef.current !== "single") {
               setUrl({ url: "" });
               setShowPalette(true)
               setInitialized(false);
+              setTimeout(() => {
+                setLoading(false);
+                initializedBrowsersRef.current?.add(appId);
+              }, 1000)
+            } else {
+              initializedBrowsersRef.current?.add(appId);
+              setLoading(false);
             }
           }
         }
@@ -798,7 +796,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
       }}
       className={clsx(
         "flex flex-col w-full h-full relative overflow-hidden",
-        (!initialized || isTransitioning) && "bg-card"
+        (!initialized) && "bg-card"
       )}>
 
       {/*
@@ -875,7 +873,7 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
           </div>
         )}
       </div>
-      {(showPalette) && (
+      {(showPalette) && !loading && (
         <CommandPalette
           appId={appId}
           pyInvoke={pyInvoke}

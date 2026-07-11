@@ -201,6 +201,19 @@ export default function Container({ Apps }: { Apps: Project }) {
   // Using a ref (not state) so updates don't trigger re-renders.
   const initializedBrowsersRef = useRef<Set<string>>(new Set())
 
+  const [, setUrl] = useGlobal<Record<string, string>>("browser-url", { initialValue: {} });
+  const [, setLoading] = useGlobal<Record<string, boolean>>("browser-loading", { initialValue: {} });
+
+
+  usePythonEvent('webview_navigation', async (payload) => {
+    if (payload.url) setUrl(prev => ({ ...prev, [payload.label]: payload.url }));
+    setLoading(prev => ({ ...prev, [payload.label]: true }));
+  });
+
+  usePythonEvent('webview_page_loaded', async (payload) => {
+    setLoading(prev => ({ ...prev, [payload.label]: false }));
+  });
+
   useEffect(() => {
     (async () => {
       const r = await pyInvoke('check_backend')
@@ -278,7 +291,6 @@ export default function Container({ Apps }: { Apps: Project }) {
             label,
             mainWindowRef.current,
             mainWebviewRef.current,
-            emptyRef.current,
             {
               url: (browser.url && /^https?:\/\//.test(browser.url)) ? browser.url : 'about:blank',
               width: size?.width,
@@ -290,10 +302,7 @@ export default function Container({ Apps }: { Apps: Project }) {
       }
 
       if (!intializeBrowser) {
-        await emptyRef.current?.reparent(mainWindowRef.current!)
-        await sleep(50)
         await mainWebviewRef.current?.reparent(mainWindowRef.current!)
-        window.dispatchEvent(new CustomEvent('refresh-webview-order'))
         setInitializeBrowser(true);
       }
     })();
@@ -1455,6 +1464,8 @@ export default function Container({ Apps }: { Apps: Project }) {
         )}>
           {/* <VerticalTab menus={menus} /> */}
           <Sidebar
+            mainWebviewRef={mainWebviewRef}
+            mainWindowRef={mainWindowRef}
             projectName={Apps.projectName}
             ProjectIcon={Apps.projectIcon}
             workspace={workspace}

@@ -26,7 +26,6 @@ export async function createWebview(
     label: string,
     mainWindow: TauriWindow,
     main: Webview,
-    empty: Webview,
     options: CreateWebviewOptions = {}
 ): Promise<Webview | undefined> {
     await AsyncLock.acquire();
@@ -54,12 +53,10 @@ export async function createWebview(
             if (w) {
                 const webview = w;
                 if (url === "about:blank") {
-                    setGlobal(`loading-${label}`, false)
                     await sleep(50);
                     await main.reparent(mainWindow)
                 } else {
                     await sleep(250);
-                    setGlobal(`loading-${label}`, false)
                     await invoke("eval_in_webview", {
                         label,
                         script: `window.location.replace("${url}")`

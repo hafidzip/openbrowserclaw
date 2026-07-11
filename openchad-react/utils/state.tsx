@@ -47,15 +47,15 @@ export interface Model {
 export const MenuBar = proxy<{ tabId: string, appId: string }>({ tabId: "", appId: "" })
 
 /** Per-appId nav state so BrowserBar can read canGoBack/canGoForward reactively */
-export const BrowserNavState = proxy<Record<string, { canGoBack: boolean; canGoForward: boolean; layout:string }>>({})
+export const BrowserNavState = proxy<Record<string, { canGoBack: boolean; canGoForward: boolean; layout: string }>>({})
 
 /** Per-appId handler registry — plain object so refs don't get proxied */
 export const BrowserHandlers: Record<string, {
-  navigate?: (url: string) => void;
-  back?: () => void;
-  forward?: () => void;
-  refresh?: () => void;
-  addressBarClick?: () => void;
+    navigate?: (url: string) => void;
+    back?: () => void;
+    forward?: () => void;
+    refresh?: () => void;
+    addressBarClick?: () => void;
 }> = {}
 
 export const Workspace = proxy({
@@ -728,12 +728,12 @@ export const deleteActiveTabWithGroupSelection = async (): Promise<string | null
 export const deleteTabWithGroupSelection = async (uuid: string): Promise<string | null> => {
     await AsyncLock.acquire();
     const tabToDelete = TabState[uuid];
-    
+
     if (!tabToDelete) {
         AsyncLock.release();
         return null
     }
-    
+
     const group = tabToDelete.group;
     const groupTabs = Object.keys(getTabsByGroup(group));
     const indexInGroup = groupTabs.indexOf(uuid);
@@ -743,19 +743,12 @@ export const deleteTabWithGroupSelection = async (uuid: string): Promise<string 
     const empty = all.find((wv) => wv.label === `webview-empty`)
     const main = all.find((wv) => wv.label === `main`)
     const win = await getCurrentWindow()
-    await Promise.all(Object.keys(tabToDelete.childrenProps).map(async (t: string) => {
+    const keys = Object.keys(tabToDelete.childrenProps)
+    await Promise.all(keys.map(async (t: string) => {
         const w = all.find((wv) => wv.label === `webview-${t}`)
-
         if (w) {
             if (!t.startsWith('agent')) {
                 await w.close()
-            } else {
-                await invoke('set_webview_muted', { label: `webview-${t}`, muted: true })
-                await empty?.reparent(win)
-                await sleep(50)
-                await main?.reparent(win)
-                await sleep(50)
-                window.dispatchEvent(new CustomEvent('refresh-webview-order'))
             }
         }
     }))

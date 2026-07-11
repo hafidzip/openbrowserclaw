@@ -45,8 +45,8 @@ import Agents from "./Agents"
 import ControllableBrowsers from "./ControllableBrowsers"
 import Tools from "./Tools"
 import { AsyncLock, generateIdFromString, uuidv4 } from "./../index"
-import { getCurrentWebview } from "@tauri-apps/api/webview"
-import { getCurrentWindow } from "@tauri-apps/api/window"
+import { getCurrentWebview, Webview } from "@tauri-apps/api/webview"
+import { getCurrentWindow, Window as TauriWindow } from "@tauri-apps/api/window"
 import { Spinner } from "./ui"
 
 // Sortable Tab Item Component
@@ -449,6 +449,8 @@ function SearchDialogBody({ workspace, isOpen, setOpen }: { workspace: string | 
 }
 
 export default function Sidebar({
+  mainWebviewRef,
+  mainWindowRef,
   projectName,
   ProjectIcon,
   workspace,
@@ -458,6 +460,8 @@ export default function Sidebar({
   repository,
   isPlayingRegistry
 }: {
+  mainWebviewRef: React.RefObject<Webview | null>;
+  mainWindowRef: React.RefObject<TauriWindow | null>;
   projectName: string;
   ProjectIcon: React.ComponentType;
   workspace: string | null,
@@ -757,8 +761,9 @@ export default function Sidebar({
       setHoveredTabId(null);
     }, 300);
   };
-  const handleTabContextMenu = (id: string, e: React.MouseEvent<HTMLDivElement>) => {
+  const handleTabContextMenu = async (id: string, e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault();
+    
     if (editingTitleTabId) return;
     if (hideTimeoutRef.current) {
       clearTimeout(hideTimeoutRef.current);
@@ -774,6 +779,8 @@ export default function Sidebar({
       const tabRect = e.currentTarget.getBoundingClientRect();
       setPopupTop(tabRect.top - sidebarRect.top);
     }
+
+    if (mainWebviewRef.current && mainWindowRef.current) await mainWebviewRef.current.reparent(mainWindowRef.current)
     setShowPopup(true);
   };
 
@@ -953,7 +960,12 @@ export default function Sidebar({
       <div className={clsx("overflow-hidden w-full flex items-center transition-colors rounded-lg"
         , isCollapsedSidebar ? "py-1" : "py-2 bg-[hsl(var(--hover))]/40 hover:bg-[hsl(var(--hover))] border-[1px] border-accent/10 dark:border-accent/5"
       )}>
-        <Dropdown onOpenChange={setSettingsDropdown}
+        <Dropdown onOpenChange={async (o) => {
+          if (o) {
+            if (mainWebviewRef.current && mainWindowRef.current) await mainWebviewRef.current.reparent(mainWindowRef.current)
+          }
+          setSettingsDropdown(o)
+        }}
           content={[
             // {
             //   content: <div> Switch Workspace </div>,
@@ -1143,14 +1155,10 @@ export default function Sidebar({
           <GitBranch className="p-[1px] cursor-pointer relative" />
         </div>
       </div>
-      <AnimatePresence>
+
         {showPopup && hoveredTabId && Object.keys(allTabs).includes(hoveredTabId) && (
-          <motion.div
+          <div
             key={hoveredTabId}
-            initial={{ opacity: 0, x: -10, scale: 0.95 }}
-            animate={{ opacity: 1, x: 0, scale: 1 }}
-            exit={{ opacity: 0, x: -10, scale: 0.95 }}
-            transition={{ duration: 0.2 }}
             style={{ zIndex: 50, top: popupTop }}
             className={clsx("absolute pl-4", layout === "rightToLeft" ? "right-full" : "left-full")}
             onMouseEnter={() => {
@@ -1279,9 +1287,8 @@ export default function Sidebar({
                 </div>
               </div>
             </div>
-          </motion.div>
+          </div>
         )}
-      </AnimatePresence>
       <DialogUI open={showSettingsDialog} onOpenChange={setShowSettingsDialog}>
         <DialogContent className="max-w-4xl h-[80vh] flex flex-col border-accent/20 bg-card">
           <DialogHeader>

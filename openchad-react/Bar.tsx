@@ -21,16 +21,6 @@ export function BrowserBar({ appId }: { appId: string }) {
   const [url, setUrl] = useGlobal<Record<string, string>>("browser-url", {initialValue: {}});
   const [loading, setLoading] = useGlobal<Record<string, boolean>>("browser-loading", {initialValue: {}});
 
-
-  usePythonEvent('webview_navigation', async (payload) => {
-    if (payload.url) setUrl(prev => ({ ...prev, [payload.label]: payload.url }));
-    setLoading(prev => ({ ...prev, [payload.label]: true }));
-  });
-
-  usePythonEvent('webview_page_loaded', async (payload) => {
-    setLoading(prev => ({ ...prev, [payload.label]: false }));
-  });
-
   return (
     <>
       {/* Navigation Controls (Left) */}
