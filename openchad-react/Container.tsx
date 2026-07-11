@@ -302,7 +302,11 @@ export default function Container({ Apps }: { Apps: Project }) {
       }
 
       if (!intializeBrowser) {
+        await sleep(50)
+        await emptyRef.current?.reparent(mainWindowRef.current!)
+        await sleep(50)
         await mainWebviewRef.current?.reparent(mainWindowRef.current!)
+        window.dispatchEvent(new CustomEvent('refresh-webview-order'))
         setInitializeBrowser(true);
       }
     })();
