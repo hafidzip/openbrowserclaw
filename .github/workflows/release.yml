@@ -27,6 +27,11 @@ jobs:
           - os: ubuntu-24.04
             arch: x64
             uv_zip: uv-x86_64-unknown-linux-musl.tar.gz
+            appimage_arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+            uv_zip: uv-aarch64-unknown-linux-musl.tar.gz
+            appimage_arch: aarch64
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -46,7 +51,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Install Linux system build dependencies
-        if: matrix.os == 'ubuntu-24.04'
+        if: matrix.os == 'ubuntu-24.04' || matrix.os == 'ubuntu-24.04-arm'
         run: |
           sudo apt-get update -y
           sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libfuse2t64 file
@@ -104,10 +109,10 @@ jobs:
           chmod +x python/uv
 
       - name: Download standalone uv binary into ./python/ (Linux)
-        if: matrix.os == 'ubuntu-24.04'
+        if: matrix.os == 'ubuntu-24.04' || matrix.os == 'ubuntu-24.04-arm'
         run: |
           mkdir -p python
-          curl -LsSf https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-musl.tar.gz \
+          curl -LsSf "https://github.com/astral-sh/uv/releases/latest/download/${{ matrix.uv_zip }}" \
             | tar -xz --strip-components=1 -C python
           chmod +x python/uv
 
@@ -184,13 +189,13 @@ jobs:
       # Linux — AppImage + ZIP
       # ─────────────────────────────────────────────────────────────────────────
       - name: Build AppImage (Linux)
-        if: matrix.os == 'ubuntu-24.04'
+        if: matrix.os == 'ubuntu-24.04' || matrix.os == 'ubuntu-24.04-arm'
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          # Download appimagetool
+          # Download appimagetool (native binary matching the runner's architecture)
           curl -L -o appimagetool \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${{ matrix.appimage_arch }}.AppImage
           chmod +x appimagetool
 
           # Build AppDir — copy Release/ contents into it
@@ -210,10 +215,10 @@ jobs:
           fi
 
           # Package into AppImage
-          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool AppDir "OpenBrowser-${TAG}-linux-${{ matrix.arch }}.AppImage"
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=${{ matrix.appimage_arch }} ./appimagetool AppDir "OpenBrowser-${TAG}-linux-${{ matrix.arch }}.AppImage"
 
       - name: Zip Release contents (Linux)
-        if: matrix.os == 'ubuntu-24.04'
+        if: matrix.os == 'ubuntu-24.04' || matrix.os == 'ubuntu-24.04-arm'
         env:
           TAG: ${{ github.ref_name }}
         run: |
@@ -237,7 +242,7 @@ jobs:
           if-no-files-found: ignore
 
   # ───────────────────────────────────────────────────────────────────────────
-  # Create GitHub Release and attach all 8 artifacts
+  # Create GitHub Release and attach all 10 artifacts
   # ───────────────────────────────────────────────────────────────────────────
   release:
     name: Publish GitHub Release
