@@ -414,22 +414,19 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   const [isTabActive, setIsTabActive] = useState(false)
 
   useEffect(() => {
-    if (!isTabActive) {
-      (async () => {
-        if (emptyRef.current) {
-          if (mainWindowRef.current) {
-            await emptyRef.current.reparent(mainWindowRef.current)
-            if (mainWebviewRef.current) await mainWebviewRef.current.reparent(mainWindowRef.current)
-            if (!label.startsWith('webview-agent')) {
-              const existing = await getByLabel(label)
-              if (existing) {
-                await existing.hide()
-              }
-            }
-          }
+    (async () => {
+      const existing = await getByLabel(label)
+      if (!label.startsWith('webview-agent')) {
+        if (existing) {
+          if (!isTabActive) {
+            await existing.hide()
+          }else{
+            await existing.show()
+          };
         }
-      })()
+      }
     }
+    )()
   }, [isTabActive])
   const [setupModel, setSetupModel] = useGlobal('setupModel', { initialValue: false });
   const setupModelRef = useRef(setupModel)
@@ -437,22 +434,11 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   useEffect(() => {
     if (activeTabIdRef.current == tabId) {
       setIsTabActive(true);
-      (async () => {
-        await AsyncLock.run(async () => {
-          const existing = await getByLabel(label)
-          if (mainWindowRef.current) {
-            if (existing && !setupModel && initializedRef.current && mainWindowRef.current && initializedBrowsersRef.current?.has(appId)) {
-              await existing.reparent(mainWindowRef.current)
-            }
-            if (mainWebviewRef.current) await mainWebviewRef.current.reparent(mainWindowRef.current)
-            setFocus(false);
-            if (!label.startsWith('webview-agent')) {
-              await existing?.show()
-            }
-          }
-        })
-      })()
+      setTimeout(() => {
+        nudgeFocus();
+      }, 50);
     } else {
+      nudgeFocus(false);
       setIsTabActive(false)
     }
   }, [activeTabId]);
@@ -490,11 +476,11 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   // RAF gate for Sync: lives at component level so it persists across effect re-runs
   const rafRef = useRef<number | null>(null)
 
-  const nudgeFocus = () => {
+  const nudgeFocus = (f: boolean = true) => {
     const now = Date.now()
     if (now - lastNudgeRef.current < 250) return
     lastNudgeRef.current = now
-    setFocus(true)
+    setFocus(f)
     setRefresh(prev => (prev + 1) % 2)
   }
 
@@ -595,21 +581,29 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
           }
           MenuBar.appId = appId
           MenuBar.tabId = tabId
-          await createWebview(
+          const w = await createWebview(
             label,
             mainWindow,
             main,
             empty,
             {
-              url: (urlRef.current && /^https?:\/\//.test(urlRef.current)) ? urlRef.current : 'about:blank',
+              url: (urlRef.current && /^https?:\/\//.test(urlRef.current) && tabLayoutRef.current == "single") ? urlRef.current : 'about:blank',
               width: Math.round(rect.width),
               height: Math.round(rect.height),
               x: Math.round(rect.x),
               y: Math.round(rect.y)
             })
+          if (w) {
+            initializedBrowsersRef.current?.add(appId);
+            if (tabLayoutRef.current !== "single") {
+              setUrl({ url: "" });
+              setShowPalette(true)
+              setInitialized(false);
+            }
+          }
         }
         await initWebview()
-        initializedBrowsersRef.current?.add(appId);
+
       }
     })()
 

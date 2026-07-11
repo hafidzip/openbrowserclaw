@@ -103,7 +103,19 @@ function _getOrCreateLock(): AsyncMutex {
     return (globalThis as any).__AsyncLock__;
 }
 
+function _getOrCreatePageLoadedLock(): AsyncMutex {
+    if (import.meta.hot) {
+        const prev = (import.meta.hot.data as any)?.pageLoadedLock;
+        if (prev instanceof AsyncMutex) return prev;
+    }
+    if (!(globalThis as any).__PageLoadedLock__) {
+        (globalThis as any).__PageLoadedLock__ = new AsyncMutex();
+    }
+    return (globalThis as any).__PageLoadedLock__;
+}
+
 const AsyncLock = _getOrCreateLock();
+const PageLoadedLock = _getOrCreatePageLoadedLock();
 
 function useAvailableModels() {
     const { pyInvoke } = usePython()
@@ -246,6 +258,7 @@ export {
     useAvailableModels,
     useAvailableAgents,
     AsyncLock,
+    PageLoadedLock,
     proxy,
     ref,
     useSnapshot,
