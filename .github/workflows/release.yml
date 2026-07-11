@@ -1,0 +1,268 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }} - ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            arch: x64
+            uv_zip: uv-x86_64-pc-windows-msvc.zip
+          - os: windows-11-arm
+            arch: arm64
+            uv_zip: uv-aarch64-pc-windows-msvc.zip
+          - os: macos-latest
+            arch: arm64
+            uv_zip: uv-aarch64-apple-darwin.tar.gz
+          - os: ubuntu-24.04
+            arch: x64
+            uv_zip: uv-x86_64-unknown-linux-musl.tar.gz
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup uv (build tooling)
+        uses: astral-sh/setup-uv@v8.3.0
+
+      - name: Setup Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Linux system build dependencies
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libfuse2t64 file
+
+      - name: Build openchad-webview wheel
+        run: uv build --wheel ./openchad-webview
+
+      - name: Update openchad-webview wheel path in openchadpy/pyproject.toml
+        shell: python
+        run: |
+          import glob, re
+          wheels = glob.glob("openchad-webview/dist/*.whl")
+          if not wheels:
+              raise FileNotFoundError("No compiled wheel found in openchad-webview/dist/")
+          wheel_path = wheels[0].replace('\\', '/')
+          
+          # Path relative to openchadpy/
+          rel_wheel_path = "../" + wheel_path
+          print(f"Dynamically referencing compiled wheel: {rel_wheel_path}")
+          
+          pyproject = "openchadpy/pyproject.toml"
+          with open(pyproject, "r", encoding="utf-8") as f:
+              content = f.read()
+              
+          pattern = r"openchad-webview\s*=\s*\{\s*path\s*=\s*'[^\']+'\s*\}"
+          replacement = f"openchad-webview = {{ path = '{rel_wheel_path}' }}"
+          new_content, count = re.subn(pattern, replacement, content)
+          
+          if count == 0:
+              raise ValueError("Could not find openchad-webview source definition in openchadpy/pyproject.toml")
+              
+          with open(pyproject, "w", encoding="utf-8") as f:
+              f.write(new_content)
+          print("Successfully updated pyproject.toml!")
+
+      # launcher.py hardcodes: uv_path = base_path / "python" / "uv[.exe]"
+      # so we must ship a standalone uv binary inside ./python/
+      - name: Download standalone uv binary into ./python/ (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path python | Out-Null
+          $zipName = "${{ matrix.uv_zip }}"
+          Invoke-WebRequest "https://github.com/astral-sh/uv/releases/latest/download/$zipName" -OutFile uv-win.zip
+          Expand-Archive uv-win.zip -DestinationPath uv-win-tmp -Force
+          Get-ChildItem -Path uv-win-tmp -Filter uv.exe -Recurse | Copy-Item -Destination python\uv.exe
+          Remove-Item uv-win.zip, uv-win-tmp -Recurse -Force
+
+      - name: Download standalone uv binary into ./python/ (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          mkdir -p python
+          curl -LsSf https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-apple-darwin.tar.gz \
+            | tar -xz --strip-components=1 -C python
+          chmod +x python/uv
+
+      - name: Download standalone uv binary into ./python/ (Linux)
+        if: matrix.os == 'ubuntu-24.04'
+        run: |
+          mkdir -p python
+          curl -LsSf https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-musl.tar.gz \
+            | tar -xz --strip-components=1 -C python
+          chmod +x python/uv
+
+      - name: Sync Python environment
+        run: uv sync --directory ./python
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Windows — NSIS installer + ZIP
+      # ─────────────────────────────────────────────────────────────────────────
+      - name: Install NSIS (Windows)
+        if: startsWith(matrix.os, 'windows')
+        run: choco install nsis -y
+
+      # NSIS has no native ARM64 codegen — the setup.exe will be an x86 stub
+      # running under Windows 11's built-in x86 emulation, unpacking native
+      # aarch64 payload from Release/. This is normal and expected.
+      - name: Build NSIS installer (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = $env:TAG -replace '^v', ''
+          makensis /DAPP_VERSION=$version /DAPP_ARCH=${{ matrix.arch }} scripts/installer.nsi
+
+      - name: Zip Release contents (Windows)
+        if: startsWith(matrix.os, 'windows')
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Zip the *contents* of Release/, not the folder itself
+          Compress-Archive -Path "Release\*" -DestinationPath "OpenBrowser-$env:TAG-windows-${{ matrix.arch }}.zip"
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # macOS — DMG + ZIP
+      # ─────────────────────────────────────────────────────────────────────────
+      - name: Install create-dmg (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install create-dmg
+
+      - name: Build DMG (macOS)
+        if: matrix.os == 'macos-latest'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # This is a portable folder app (not a .app bundle), so we wrap
+          # Release/ into an OpenBrowser folder for a clean DMG layout.
+          # No --app-drop-link since there is no .app to drag to Applications.
+          mkdir dmg-source
+          cp -r Release dmg-source/OpenBrowser
+          create-dmg \
+            --volname "OpenBrowser" \
+            --window-size 600 400 \
+            --icon-size 100 \
+            "OpenBrowser-${TAG}-macos-${{ matrix.arch }}.dmg" \
+            dmg-source/
+
+      - name: Zip Release contents (macOS)
+        if: matrix.os == 'macos-latest'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Zip the *contents* of Release/, not the folder itself
+          cd Release && zip -r "../OpenBrowser-${TAG}-macos-${{ matrix.arch }}.zip" . && cd ..
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Linux — AppImage + ZIP
+      # ─────────────────────────────────────────────────────────────────────────
+      - name: Build AppImage (Linux)
+        if: matrix.os == 'ubuntu-24.04'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Download appimagetool
+          curl -L -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+
+          # Build AppDir — copy Release/ contents into it
+          mkdir -p AppDir
+          cp -r Release/. AppDir/
+
+          # Add required AppImage metadata files
+          cp scripts/AppRun AppDir/AppRun
+          chmod +x AppDir/AppRun
+          cp scripts/openbrowser.desktop AppDir/openbrowser.desktop
+
+          # Copy icon (AppImage requires one at root level matching the desktop entry Icon=openbrowser)
+          if [ -f icons/icon.png ]; then
+            cp icons/icon.png AppDir/openbrowser.png
+          elif [ -f icon.ico ]; then
+            cp icon.ico AppDir/.DirIcon
+          fi
+
+          # Package into AppImage
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool AppDir "OpenBrowser-${TAG}-linux-${{ matrix.arch }}.AppImage"
+
+      - name: Zip Release contents (Linux)
+        if: matrix.os == 'ubuntu-24.04'
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          # Zip the *contents* of Release/, not the folder itself
+          cd Release && zip -r "../OpenBrowser-${TAG}-linux-${{ matrix.arch }}.zip" . && cd ..
+
+      # ─────────────────────────────────────────────────────────────────────────
+      # Upload all built artifacts
+      # ─────────────────────────────────────────────────────────────────────────
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: installers-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            OpenBrowser-*-windows-*-setup.exe
+            OpenBrowser-*-windows-*.zip
+            OpenBrowser-*-macos-*.dmg
+            OpenBrowser-*-macos-*.zip
+            OpenBrowser-*-linux-*.AppImage
+            OpenBrowser-*-linux-*.zip
+          if-no-files-found: ignore
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Create GitHub Release and attach all 8 artifacts
+  # ───────────────────────────────────────────────────────────────────────────
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist/
+          merge-multiple: true
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+          files: |
+            dist/OpenBrowser-*-windows-*-setup.exe
+            dist/OpenBrowser-*-windows-*.zip
+            dist/OpenBrowser-*-macos-*.dmg
+            dist/OpenBrowser-*-macos-*.zip
+            dist/OpenBrowser-*-linux-*.AppImage
+            dist/OpenBrowser-*-linux-*.zip

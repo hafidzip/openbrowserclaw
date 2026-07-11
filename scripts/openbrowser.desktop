@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=OpenBrowser
+Exec=OpenBrowser
+Icon=openbrowser
+Type=Application
+Categories=Utility;Network;
+Comment=OpenBrowser — AI-powered browser assistant

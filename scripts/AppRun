@@ -1,0 +1,9 @@
+#!/bin/bash
+# AppRun — AppImage entry point for OpenBrowser
+# This script is placed at AppDir/AppRun and executed when the AppImage runs.
+
+# Resolve the directory this AppRun script lives in (= the AppImage root at runtime)
+HERE="$(dirname "$(readlink -f "${0}")")"
+
+# Launch the OpenBrowser binary bundled inside the AppImage
+exec "${HERE}/OpenBrowser" "$@"
