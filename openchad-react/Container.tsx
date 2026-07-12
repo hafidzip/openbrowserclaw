@@ -1116,7 +1116,6 @@ export default function Container({ Apps }: { Apps: Project }) {
       try {
         allRef.current = await getAllWebviews();
         const cdp_ports = await invoke('get_cdp_ports');
-        console.warn("cdp_ports", cdp_ports);
         if (pyInvokeRef.current) {
           await pyInvokeRef.current("update_cdp_ports", {
             cdp_ports
