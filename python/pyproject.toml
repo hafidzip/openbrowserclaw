@@ -9,8 +9,9 @@ dependencies = [
     "openchadpy",
     "litellm>=1.88.0",
     "huggingface_hub",
-    "playwright>=1.49.0",
     "llama-cpp-python>=0.3.33",
+    "browsertool>=0.1.1",
+    "controlbrowsertool>=0.1.1",
 ]
 
 [tool.uv.sources]
