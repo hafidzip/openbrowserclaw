@@ -52,7 +52,6 @@ class ToolManager:
         self.tools_directory = Path(tools_directory).resolve()
         # Flat registry: tool_instance.name → ToolBase
         self.loaded_tools: Dict[str, ToolBase] = {}
-        self._metadata: Dict[str, ToolMetadata] = {}
         self._tool_modules: Dict[str, Any] = {}   # module_name → module
         # Maps tool_instance.name → module_name (for cleanup)
         self._tool_module_name: Dict[str, str] = {}
@@ -89,29 +88,6 @@ class ToolManager:
 
 
     # Internal helpers
-    def _load_metadata_from_manifest(
-        self, manifest_path: Path, fallback_name: str
-    ) -> ToolMetadata:
-        """Read manifest.json without loading the tool class."""
-        try:
-            with open(manifest_path, "r") as f:
-                data = json.load(f)
-            return ToolMetadata(
-                name=data.get("name", fallback_name),
-                version=data.get("version", "1.0.0"),
-                description=data.get("description", ""),
-                author=data.get("author", ""),
-                requirements=data.get("requirements", []),
-            )
-        except Exception as e:
-            logger.warning(f"Failed to read manifest at {manifest_path}: {e}")
-            return ToolMetadata(
-                name=fallback_name,
-                version="1.0.0",
-                description=f"Tool: {fallback_name}",
-                author="",
-            )
-
     def _sanitize_name(self, name: str) -> str:
         """Sanitize a directory name to be a valid Python identifier segment."""
         if not re.match(r"^[a-zA-Z][a-zA-Z0-9_]*$", name):
@@ -218,7 +194,6 @@ class ToolManager:
         for pkg_name in deps:
             # First try using importlib.metadata to locate the package files
             main_py = None
-            manifest_path = None
             try:
                 pkg_files = importlib.metadata.files(pkg_name)
                 if pkg_files:
@@ -226,8 +201,7 @@ class ToolManager:
                         f_path = Path(f)
                         if f_path.name == "main.py":
                             main_py = Path(f.locate())
-                        elif f_path.name == "manifest.json":
-                            manifest_path = Path(f.locate())
+                            break
             except importlib.metadata.PackageNotFoundError:
                 pass
 
@@ -242,9 +216,6 @@ class ToolManager:
                         candidate_main = pkg_dir / "main.py"
                         if candidate_main.exists():
                             main_py = candidate_main
-                            candidate_manifest = pkg_dir / "manifest.json"
-                            if candidate_manifest.exists():
-                                manifest_path = candidate_manifest
                             break
 
             if main_py and main_py.exists():
@@ -253,11 +224,6 @@ class ToolManager:
                     if self._is_valid_tool_class(content):
                         storage_key = f"venv_{pkg_name}"
                         items.append((storage_key, main_py))
-                        
-                        if manifest_path and manifest_path.exists():
-                            self._metadata[storage_key] = self._load_metadata_from_manifest(
-                                manifest_path, pkg_name
-                            )
                         logger.debug(f"Discovered venv tool: {storage_key}")
                 except Exception as e:
                     logger.warning(f"Error checking potential tool in {main_py}: {e}")
@@ -288,11 +254,6 @@ class ToolManager:
                 plugin_name = self._sanitize_name(plugin_dir.name)
                 storage_key = f"{publisher_name}_{plugin_name}"
                 items.append((storage_key, main_py))
-                manifest_path = plugin_dir / "manifest.json"
-                if manifest_path.exists():
-                    self._metadata[storage_key] = self._load_metadata_from_manifest(
-                        manifest_path, plugin_name
-                    )
                 logger.debug(f"Discovered: {storage_key}")
         return items
 

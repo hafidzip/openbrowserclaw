@@ -134,8 +134,8 @@ class PluginWatcher:
 
         try:
             path = Path(file_path).resolve()
-            # Check if this is a main.py, manifest.json, settings.toml, or fields.ts in a plugin directory
-            if path.name not in ["main.py", "manifest.json", "settings.toml", "fields.ts"]:
+            # Check if this is a main.py, settings.toml, or fields.ts in a plugin directory
+            if path.name not in ["main.py", "settings.toml", "fields.ts"]:
                 # Check if it's any Python file in a plugin directory
                 if path.suffix != ".py":
                     return None
