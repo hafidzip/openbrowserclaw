@@ -6,7 +6,7 @@ import { Table, TableBody, TableCell, TableRow } from "./ui/table";
 import { formatTaskTime, LucideIcons, addTab, TabInfo, deleteTabWithGroupSelection } from "../utils/state";
 import clsx from "clsx";
 import { useGlobal } from "./useGlobal";
-import { AsyncLock, useSnapshot, uuidv4 } from "../index";
+import { AsyncLock, usePython, useSnapshot, uuidv4 } from "../index";
 import { Button } from "./ui";
 import { useDatabaseImpl } from "./useDatabase";
 import { getAllWebviews } from "@tauri-apps/api/webview";
@@ -106,6 +106,7 @@ export default function ControllableBrowsers({
     setOpen: (open: boolean) => void;
     query: string;
 }) {
+    const { pyInvoke } = usePython();
     const [tabs, setTabs] = useDatabaseImpl<Record<string, ControllableBrowser>>('ControllableBrowser', { initialValue: {} });
     const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
     const [isAdding, setIsAdding] = useState(false);
@@ -159,8 +160,10 @@ export default function ControllableBrowsers({
                 const all = await getAllWebviews();
                 const w = all.find((wv) => wv.label === `webview-${label}`);
                 if (w) {
-                    await w.clearAllBrowsingData()
                     await w.close();
+                    setTimeout(async () => {
+                        await pyInvoke("delete_browser_data", { label })
+                    }, 2000)
                 }
             });
             (async () => { await deleteTabWithGroupSelection(label); })();
