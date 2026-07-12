@@ -162,8 +162,8 @@ export default function ControllableBrowsers({
                 if (w) {
                     await w.close();
                     setTimeout(async () => {
-                        await pyInvoke("delete_browser_data", { label })
-                    }, 2000)
+                        await pyInvoke("delete_browser_data", { label: `webview-${label}` })
+                    }, 5000)
                 }
             });
             (async () => { await deleteTabWithGroupSelection(label); })();
