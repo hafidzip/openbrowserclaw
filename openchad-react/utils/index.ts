@@ -51,10 +51,10 @@ export async function createWebview(
                     storageName: options.storageName,
                 },
             });
-            window.dispatchEvent(new CustomEvent('update_cdp_ports'))
             w = await Webview.getByLabel(createdLabel);
-
+            
             if (w) {
+                window.dispatchEvent(new CustomEvent('update_cdp_ports'))
                 const webview = w;
                 if (url === "about:blank") {
                     if (typeof main !== 'string') {
