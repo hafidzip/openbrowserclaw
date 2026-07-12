@@ -101,7 +101,7 @@ const composerVariants: Variants = {
 };
 import { AsyncLock, generateIdFromString, type IAgent, useMenuBar } from './index'
 import { BrowserBar } from './Bar'
-import { cursorPosition, getCurrentWindow, PhysicalPosition, PhysicalSize, Window as TauriWindow } from '@tauri-apps/api/window'
+import { currentMonitor, cursorPosition, getCurrentWindow, PhysicalPosition, PhysicalSize, Window as TauriWindow } from '@tauri-apps/api/window'
 import Bar from './Bar'
 import { getAllWebviews, getCurrentWebview, Webview } from '@tauri-apps/api/webview'
 import type { ControllableBrowser } from './components/ControllableBrowsers'
@@ -475,8 +475,40 @@ export default function Container({ Apps }: { Apps: Project }) {
     }
     setSetupModel(false);
   }
+  
+  const backgroundWindowRef = useRef<TauriWindow | null>(null);
+
   useEffect(() => {
-    (async () => await checkModel())()
+    (async () => {
+      await checkModel()
+      try {
+        const monitor = await currentMonitor();
+        if (!backgroundWindowRef.current && monitor) {
+          backgroundWindowRef.current = new TauriWindow(
+            "background",
+            {
+              parent: await getCurrentWindow(),
+              width: monitor.size.width,
+              height: monitor.size.height,
+              x: monitor.position.x,
+              y: monitor.position.y,
+              decorations: false,
+              shadow: false,
+              resizable: false,
+              maximized: true,
+              transparent: true,
+              skipTaskbar: true,
+              contentProtected: true,
+            }
+          )
+          await sleep(250);
+          await backgroundWindowRef.current.setIgnoreCursorEvents(true);
+        }
+      } catch (err) {
+        console.error("Error:", err);
+      }
+    }
+    )()
     hideSplashScreen();
   },
     [])
@@ -841,6 +873,27 @@ export default function Container({ Apps }: { Apps: Project }) {
       window.removeEventListener('fullscreen_changed', checkFullscreen);
     };
   }, []);
+
+  usePythonEvent('create_browser', async (data) => {
+    await AsyncLock.run(async () => {
+      const monitor = await currentMonitor();
+      if (data.label && data.url && data.storage && monitor && mainWindowRef.current) {
+        await createWebview(
+          data.label,
+          mainWindowRef.current,
+          "background",
+          {
+            url: data.url,
+            width: monitor.size.width,
+            height: monitor.size.height,
+            x: -monitor.size.width,
+            y: -monitor.size.height,
+            transparent: true,
+            storageName: data.storage
+          });
+      }
+    })
+  });
 
   useEffect(() => {
     setMounted(true);

@@ -27,16 +27,18 @@ import {
   AlertTriangle,
   AlertCircle,
   Code2,
-  Pencil,
-  SlidersHorizontal
+  Pencil
 } from 'lucide-react'
 import { ref, useFolder, useTheme, type AppInfo, Dropdown, useAvailableModels, uuidv4, usePythonEvent, useGlobal } from 'openchad-react'
 import clsx from 'clsx'
 import type { Model } from './utils'
-import { MenuBar } from './utils/state'
 import { open } from '@tauri-apps/plugin-dialog';
 import { invoke } from '@tauri-apps/api/core'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
+import { MenuBar } from './utils/state'
+
+
+
 
 //  Types 
 
@@ -52,7 +54,6 @@ export interface AgentNode {
   warnings?: string[]
   errors?: string[]
   skillPath?: string | null
-  additionalArgs?: Record<string, string | boolean | number>
 }
 
 
@@ -760,226 +761,6 @@ const CollapsibleTextItem = React.memo(function CollapsibleTextItem({
   )
 })
 
-interface AdditionalArgsEditorProps {
-  additionalArgs?: Record<string, string | boolean | number>
-  onChange: (args: Record<string, string | boolean | number>) => void
-  themeStyles: any
-}
-
-const AdditionalArgsEditor = ({ additionalArgs = {}, onChange, themeStyles }: AdditionalArgsEditorProps) => {
-  const [localKeys, setLocalKeys] = useState<Record<string, string>>({})
-
-  const keys = Object.keys(additionalArgs)
-
-  const handleUpdateKey = (oldKey: string, newKey: string) => {
-    const trimmedNewKey = newKey.trim()
-    if (!trimmedNewKey || trimmedNewKey === oldKey) {
-      setLocalKeys(prev => {
-        const next = { ...prev }
-        delete next[oldKey]
-        return next
-      })
-      return
-    }
-
-    if (additionalArgs.hasOwnProperty(trimmedNewKey)) {
-      alert(`Key "${trimmedNewKey}" already exists.`)
-      setLocalKeys(prev => {
-        const next = { ...prev }
-        delete next[oldKey]
-        return next
-      })
-      return
-    }
-
-    const updated = { ...additionalArgs }
-    const value = updated[oldKey]
-    delete updated[oldKey]
-    updated[trimmedNewKey] = value
-    onChange(updated)
-
-    setLocalKeys(prev => {
-      const next = { ...prev }
-      delete next[oldKey]
-      return next
-    })
-  }
-
-  const handleUpdateValue = (key: string, value: string | boolean | number) => {
-    const updated = { ...additionalArgs, [key]: value }
-    onChange(updated)
-  }
-
-  const handleUpdateType = (key: string, type: 'string' | 'number' | 'boolean') => {
-    const currentValue = additionalArgs[key]
-    let newValue: string | boolean | number = ''
-    if (type === 'boolean') {
-      newValue = currentValue === 'true' || currentValue === true ? true : false
-    } else if (type === 'number') {
-      const parsed = Number(currentValue)
-      newValue = isNaN(parsed) ? 0 : parsed
-    } else {
-      newValue = String(currentValue)
-    }
-    handleUpdateValue(key, newValue)
-  }
-
-  const handleDelete = (key: string) => {
-    const updated = { ...additionalArgs }
-    delete updated[key]
-    onChange(updated)
-  }
-
-  const handleAdd = () => {
-    let idx = 1
-    while (additionalArgs.hasOwnProperty(`arg${idx}`)) {
-      idx++
-    }
-    const newKey = `arg${idx}`
-    const updated = { ...additionalArgs, [newKey]: '' }
-    onChange(updated)
-  }
-
-  return (
-    <div className="flex flex-col gap-2 p-2.5 rounded-lg border mt-1" style={{ borderColor: themeStyles.border, background: 'rgba(255,255,255,0.02)' }}>
-      <div className="flex items-center justify-between">
-        <span className="text-[10px] font-mono font-bold uppercase tracking-wider flex items-center gap-1" style={{ color: themeStyles.accent }}>
-          <SlidersHorizontal size={12} />
-          Additional Arguments
-        </span>
-        <button
-          type="button"
-          onClick={handleAdd}
-          className="px-1.5 py-0.5 rounded text-[10px] font-semibold hover:opacity-90 flex items-center gap-0.5 transition-opacity"
-          style={{
-            background: themeStyles.accent,
-            color: themeStyles.accentFg,
-          }}
-        >
-          <Plus size={10} />
-          Add
-        </button>
-      </div>
-
-      <div className="flex flex-col gap-2 mt-1.5">
-        {keys.map((key) => {
-          const value = additionalArgs[key]
-          const type = typeof value === 'boolean' ? 'boolean' : typeof value === 'number' ? 'number' : 'string'
-          const displayKey = localKeys.hasOwnProperty(key) ? localKeys[key] : key
-
-          return (
-            <div key={key} className="flex items-center gap-1.5">
-              <input
-                type="text"
-                value={displayKey}
-                onChange={(e) => {
-                  const val = e.target.value
-                  setLocalKeys(prev => ({ ...prev, [key]: val }))
-                }}
-                onBlur={() => handleUpdateKey(key, displayKey)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    handleUpdateKey(key, displayKey)
-                    e.currentTarget.blur()
-                  }
-                  if (e.key === 'Escape') {
-                    setLocalKeys(prev => {
-                      const next = { ...prev }
-                      delete next[key]
-                      return next
-                    })
-                    e.currentTarget.blur()
-                  }
-                }}
-                placeholder="Key"
-                className="w-1/3 p-1 text-[11px] rounded border outline-none min-w-0 font-mono"
-                style={{
-                  background: themeStyles.muted,
-                  borderColor: themeStyles.border,
-                  color: themeStyles.accent
-                }}
-              />
-
-              <select
-                value={type}
-                onChange={(e) => handleUpdateType(key, e.target.value as any)}
-                className="p-1 text-[11px] rounded border outline-none cursor-pointer"
-                style={{
-                  background: themeStyles.muted,
-                  borderColor: themeStyles.border,
-                  color: themeStyles.accent
-                }}
-              >
-                <option value="string">str</option>
-                <option value="number">num</option>
-                <option value="boolean">bool</option>
-              </select>
-
-              <div className="flex-1 min-w-0 flex items-center">
-                {type === 'boolean' ? (
-                  <div className="flex items-center gap-1.5 ml-1">
-                    <button
-                      type="button"
-                      onClick={() => handleUpdateValue(key, !value)}
-                      className="relative w-8 h-4.5 rounded-full flex-shrink-0 transition-colors duration-200 focus:outline-none"
-                      style={{
-                        background: value ? '#34d399' : themeStyles.muted,
-                        border: `1px solid ${value ? '#34d399' : themeStyles.border}`,
-                      }}
-                    >
-                      <span
-                        className="absolute top-[0.5px] w-3.5 h-3.5 rounded-full shadow transition-all duration-200"
-                        style={{
-                          background: value ? '#fff' : themeStyles.mutedFg,
-                          left: value ? '14px' : '1px',
-                        }}
-                      />
-                    </button>
-                    <span className="text-[10px]" style={{ color: value ? '#34d399' : themeStyles.mutedFg }}>
-                      {value ? 'true' : 'false'}
-                    </span>
-                  </div>
-                ) : (
-                  <input
-                    type={type === 'number' ? 'number' : 'text'}
-                    value={value as string | number}
-                    onChange={(e) => {
-                      const val = type === 'number'
-                        ? (e.target.value === '' ? '' : Number(e.target.value))
-                        : e.target.value
-                      handleUpdateValue(key, val)
-                    }}
-                    placeholder="Value"
-                    className="w-full p-1 text-[11px] rounded border outline-none min-w-0"
-                    style={{
-                      background: themeStyles.muted,
-                      borderColor: themeStyles.border,
-                      color: themeStyles.accent
-                    }}
-                  />
-                )}
-              </div>
-
-              <button
-                type="button"
-                onClick={() => handleDelete(key)}
-                className="text-red-400 hover:text-red-300 font-bold p-1 text-xs hover:scale-110 transition-transform leading-none"
-                title="Delete argument"
-              >
-                &times;
-              </button>
-            </div>
-          )
-        })}
-
-        {keys.length === 0 && (
-          <span className="text-[10px] italic" style={{ color: themeStyles.mutedFg }}>No arguments defined</span>
-        )}
-      </div>
-    </div>
-  )
-}
-
 interface AgentEditorProps {
   selected: string
   agents: Record<string, AgentNode>
@@ -1384,7 +1165,7 @@ const AgentEditor = ({
             {skillPath.split(/[\\/]/).pop()}
           </p>
           <p
-            onClick={(e) => {
+            onClick={(e)=>{
               e.stopPropagation()
               revealItemInDir(skillPath)
             }}
@@ -1483,13 +1264,6 @@ const AgentEditor = ({
         triggerClassName="w-full"
       />
     </div>
-
-    {/* Additional Arguments Key-Value Editor */}
-    <AdditionalArgsEditor
-      additionalArgs={agents[selected].additionalArgs}
-      onChange={(args) => handleUpdateAgentProperty(selected, { additionalArgs: args })}
-      themeStyles={themeStyles}
-    />
 
     {/* Tool settings / fields */}
     {(agents[selected].tools || [])
@@ -1785,14 +1559,17 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
   const [toolFields, setToolFields] = useState<Record<string, any[]>>({})
   const { models: availableModels, isLoading: modelsLoading } = useAvailableModels()
   const { workspace } = useWorkspace()
+  const workspaceRef = useRef(workspace)
+  workspaceRef.current = workspace
+
 
   useEffect(() => {
     const tabUpdate = (event: Event) => {
       const { tabId: targetTabId, title, icon } = (event as CustomEvent).detail;
       (async () => {
-        if (workspace && title && targetTabId && icon && targetTabId === tabId) {
+        if (workspaceRef.current && title && targetTabId && icon && targetTabId === tabId) {
           await pyInvoke('sqlite', {
-            db: workspace ?? "global",
+            db: workspaceRef.current ?? "global",
             command: "execute",
             sql: `INSERT OR REPLACE INTO agents (id, metadata) VALUES (?, ?)`,
             params: [tabId, JSON.stringify({ name: title, icon: icon, timestamp: Date.now() })],
@@ -1862,7 +1639,7 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
 
   useEffect(() => {
     if (activeTabId == tabId) {
-      MenuBar.appId = ''
+      MenuBar.appId = '';
     }
   }, [activeTabId])
 
@@ -1875,58 +1652,28 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
   }, [activeTabId, availableModels, modelsLoading])
 
   const loadAllToolFields = async () => {
-    const fieldsPaths = toolsRef.current.filter(p => p.endsWith('/fields.ts'))
-    const newToolFields: Record<string, any[]> = {}
-
-    await Promise.all(fieldsPaths.map(async (fieldsPath) => {
-      try {
-        const folderParts = fieldsPath.split('/')
-        folderParts.pop()
-        const toolFolder = folderParts.join('/')
-        const dirName = folderParts[folderParts.length - 1]
-
-        let toolName = dirName
-        const manifestPath = `${toolFolder}/manifest.json`
-        const hasManifest = toolsRef.current.includes(manifestPath)
-        if (hasManifest) {
-          const manifestRes = await pyInvoke('file', {
-            command: 'read',
-            filename: manifestPath,
-            base_dir: 'Tools'
-          }) as any
-          if (manifestRes?.data?.content) {
-            const manifest = JSON.parse(manifestRes.data.content)
-            if (manifest.name) {
-              toolName = manifest.name
-            }
-          }
+    try {
+      const extendedRes = await pyInvoke('tools/list_extended') as any
+      const allTools: any[] = extendedRes?.tools ?? []
+      const newToolFields: Record<string, any[]> = {}
+      for (const t of allTools) {
+        if (Array.isArray(t.fields) && t.fields.length > 0) {
+          newToolFields[t.name] = t.fields
         }
-
-        const fieldsRes = await pyInvoke('file', {
-          command: 'read',
-          filename: fieldsPath,
-          base_dir: 'Tools'
-        }) as any
-
-        if (fieldsRes?.data?.content) {
-          const content = fieldsRes.data.content
-          const parsed = parseFields(content)
-          if (parsed && parsed.length > 0) {
-            newToolFields[toolName] = parsed
-          }
-        }
-      } catch (e) {
-        console.error('Failed to load fields for', fieldsPath, e)
       }
-    }))
-
-    setToolFields(newToolFields)
+      setToolFields(newToolFields)
+    } catch (e) {
+      console.error('Failed to load tool fields:', e)
+    }
   }
 
+
+
   useEffect(() => {
-    if (!tools || tools.length === 0) return
+    if (!availableTools || availableTools.length === 0) return
     loadAllToolFields()
-  }, [tools, pyInvoke])
+  }, [availableTools, pyInvoke])
+
 
   const fetchTools = async () => {
     try {
@@ -2017,13 +1764,6 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
 
   const [canvasDimensions, setCanvasDimensions] = useState({ width: 800, height: 600 })
 
-
-  // dialog state
-  const [isCreateTask] = useGlobal('overlay-create-task', { initialValue: false });
-  const [showCredentialsDialog] = useGlobal('showCredentialsDialog', { initialValue: false });
-  const [showLocalModelDialog] = useGlobal('showLocalModelDialog', { initialValue: false });
-  const [showCustomEndpointDialog] = useGlobal('showCustomEndpointDialog', { initialValue: false });
-  const [showCodeDialog] = useGlobal('showCodeDialog', { initialValue: false });
 
 
   //  Layout computation (Reingold-Tilford) 
@@ -2453,8 +2193,6 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
   }, [])
 
   const handleUndo = useCallback(() => {
-    if (isCreateTask || showCredentialsDialog || showLocalModelDialog || showCustomEndpointDialog || showCodeDialog) return;
-    
     const h = historyRef.current
     if (historyDebounceRef.current) {
       clearTimeout(historyDebounceRef.current)
@@ -2474,8 +2212,6 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
   }, [findChangedAgentId])
 
   const handleRedo = useCallback(() => {
-    if (isCreateTask || showCredentialsDialog || showLocalModelDialog || showCustomEndpointDialog || showCodeDialog) return;
-    
     const h = historyRef.current
     if (h.index >= h.stack.length - 1) return
     const prevSnapshot = h.stack[h.index]
@@ -2496,12 +2232,8 @@ export function AgentNodeEditor({ pyInvoke, useActiveTabId, useTabDatabase, useW
     const onKeyDown = (e: KeyboardEvent) => {
       const ctrl = e.ctrlKey || e.metaKey
       if (!ctrl) return
-      const activeElement = document.activeElement;
-      const isInputFocused =
-        activeElement instanceof HTMLInputElement ||
-        activeElement instanceof HTMLTextAreaElement ||
-        (activeElement instanceof HTMLElement && activeElement.isContentEditable);
-      if (isInputFocused) return
+      const tag = (e.target as HTMLElement).tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return
       if (e.key === 'z' && !e.shiftKey) {
         e.preventDefault()
         handleUndo()

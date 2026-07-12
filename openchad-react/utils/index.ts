@@ -16,6 +16,8 @@ export interface CreateWebviewOptions {
     height?: number;
     incognito?: boolean;
     userAgent?: string;
+    transparent?: boolean; 
+    storageName?: string;
 }
 
 /**
@@ -25,7 +27,7 @@ export interface CreateWebviewOptions {
 export async function createWebview(
     label: string,
     mainWindow: TauriWindow,
-    main: Webview,
+    main: Webview | string,
     options: CreateWebviewOptions = {}
 ): Promise<Webview | undefined> {
     await AsyncLock.acquire();
@@ -36,7 +38,7 @@ export async function createWebview(
             console.warn("Creating webview :", label, "with options :", options)
             const createdLabel = await invoke<string>('create_webview', {
                 args: {
-                    parentLabel: main.label,
+                    parentLabel: typeof main === 'string' ? main : main.label,
                     label,
                     url: "about:blank",
                     x: options.x ?? 0,
@@ -45,6 +47,8 @@ export async function createWebview(
                     height: options.height ?? 100,
                     incognito: options.incognito,
                     userAgent: options.userAgent,
+                    transparent: options.transparent,
+                    storageName: options.storageName,
                 },
             });
             window.dispatchEvent(new CustomEvent('update_cdp_ports'))
@@ -53,16 +57,21 @@ export async function createWebview(
             if (w) {
                 const webview = w;
                 if (url === "about:blank") {
-                    await sleep(50);
-                    await main.reparent(mainWindow)
+                    if (typeof main !== 'string') {
+                        await sleep(50);
+                        await main.reparent(mainWindow)
+                    }
                 } else {
                     await sleep(250);
                     await invoke("eval_in_webview", {
                         label,
                         script: `window.location.replace("${url}")`
                     })
-                    await sleep(50);
-                    await main.reparent(mainWindow)
+
+                    if (typeof main !== 'string') {
+                        await main.reparent(mainWindow)
+                        await sleep(50);
+                    }
                     await new Promise<void>((resolve) => {
                         let unlisten: (() => void) | undefined;
                         let resolved = false;
@@ -124,7 +133,7 @@ export async function createWebview(
             }
         }
 
-        
+
         if (!w) throw new Error(`Webview "${label}" not found after creation`);
         return w;
     } catch (e) {
