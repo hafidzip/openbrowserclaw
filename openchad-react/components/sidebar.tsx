@@ -948,14 +948,7 @@ export default function Sidebar({
       )}>
         <motion.button
           onClick={async () => {
-            console.warn(await pyInvoke("test", {
-              profile: "webview-agent 1321312321",
-              url: "https://www.youtube.com",
-              code: `print("Starting manual test...")
-title = await page.title()
-print("Page Title is: " + title)`
-            }));
-            // addTab()
+            addTab()
           }}
           className={clsx(
             "w-full h-[36px] flex items-center gap-3 rounded-lg  text-sm hover:bg-[hsl(var(--hover))] transition-colors",

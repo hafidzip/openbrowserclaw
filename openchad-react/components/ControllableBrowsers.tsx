@@ -50,7 +50,7 @@ const TabRow = memo(({ tab, isSelected, onToggle, onOpen, onDelete }: {
 
     const handleCopy = useCallback((e: React.MouseEvent) => {
         e.stopPropagation(); // Prevents triggering any row-level clicks
-        navigator.clipboard.writeText(tab.uuid);
+        navigator.clipboard.writeText(`webview-${tab.uuid}`);
         setCopied(true);
         setTimeout(() => setCopied(false), 750);
     }, [tab.uuid]);
@@ -65,7 +65,6 @@ const TabRow = memo(({ tab, isSelected, onToggle, onOpen, onDelete }: {
             </TableCell>
             <TableCell className="max-w-[50px]" onClick={handleOpen} >
                 <div className="flex items-center gap-2">
-                    <span className="truncate text-xs text-gray-500">{truncate(tab.uuid) || "-1"}</span>
                     <div onClick={handleCopy}>
                         {copied ? (
                             <Check className="w-3.5 h-3.5 text-green-500 shrink-0" />
