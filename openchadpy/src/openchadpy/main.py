@@ -1107,40 +1107,6 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
                     return {'result': 'ignored_platform'}
                 try:
                     if sys.platform == 'win32':
-                        async def _delete_path_bg(path: str) -> None:
-                            # PowerShell script: Strips Read-Only bits and forces recursive removal
-                            ps_delete_cmd = f"""
-                            if (Test-Path -LiteralPath '{path}') {{
-                                Get-ChildItem -LiteralPath '{path}' -Recurse -Force -ErrorAction SilentlyContinue | 
-                                    ForEach-Object {{ $_.Attributes = $_.Attributes -band -bnot [System.IO.FileAttributes]::ReadOnly }}
-                                Remove-Item -LiteralPath '{path}' -Recurse -Force -ErrorAction Stop
-                            }}
-                            """
-                            
-                            for attempt in range(60):  # up to ~5 min
-                                try:
-                                    # Attempt forced deletion via PowerShell
-                                    proc = await asyncio.create_subprocess_exec(
-                                        "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_delete_cmd,
-                                        stdout=asyncio.subprocess.PIPE,
-                                        stderr=asyncio.subprocess.PIPE
-                                    )
-                                    _, stderr = await proc.communicate()
-
-                                    # Verify path is actually gone
-                                    if proc.returncode == 0 and not os.path.exists(path):
-                                        logger.info(f"Deleted Windows browser data via PowerShell: {path}")
-                                        return
-                                    
-                                    err_msg = stderr.decode('utf-8', errors='ignore').strip()
-                                    logger.warning(f"Browser data locked, retry {attempt + 1}/60 in 5s. Reason: {err_msg or 'Path still exists'}")
-                                    
-                                except Exception as exc:
-                                    logger.warning(f"PowerShell execution error on retry {attempt + 1}: {exc}")
-                                
-                                await asyncio.sleep(5)
-                                
-                            logger.error(f"Gave up deleting browser data (still locked): {path}")
                         local_app_data = os.getenv('LOCALAPPDATA')
                         if local_app_data:
                             identifier = get_tauri_identifier()
@@ -1151,7 +1117,8 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
                             ]
                             for path in paths:
                                 if os.path.exists(path):
-                                    asyncio.create_task(_delete_path_bg(path))                            
+                                    shutil.rmtree(path)
+                                    logger.info(f"Deleted Windows browser data: {path}")                         
                     elif sys.platform == 'darwin':
                         import struct, uuid
                         def get_mac_store_uuid(lbl: str) -> str:
@@ -2130,40 +2097,6 @@ async def handle_ws_command(conn_id: str, data: dict, send_func: Callable[[dict]
                     return {'result': 'ignored_platform'}
                 try:
                     if sys.platform == 'win32':
-                        async def _delete_path_bg(path: str) -> None:
-                            # PowerShell script: Strips Read-Only bits and forces recursive removal
-                            ps_delete_cmd = f"""
-                            if (Test-Path -LiteralPath '{path}') {{
-                                Get-ChildItem -LiteralPath '{path}' -Recurse -Force -ErrorAction SilentlyContinue | 
-                                    ForEach-Object {{ $_.Attributes = $_.Attributes -band -bnot [System.IO.FileAttributes]::ReadOnly }}
-                                Remove-Item -LiteralPath '{path}' -Recurse -Force -ErrorAction Stop
-                            }}
-                            """
-                            
-                            for attempt in range(60):  # up to ~5 min
-                                try:
-                                    # Attempt forced deletion via PowerShell
-                                    proc = await asyncio.create_subprocess_exec(
-                                        "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_delete_cmd,
-                                        stdout=asyncio.subprocess.PIPE,
-                                        stderr=asyncio.subprocess.PIPE
-                                    )
-                                    _, stderr = await proc.communicate()
-
-                                    # Verify path is actually gone
-                                    if proc.returncode == 0 and not os.path.exists(path):
-                                        logger.info(f"Deleted Windows browser data via PowerShell: {path}")
-                                        return
-                                    
-                                    err_msg = stderr.decode('utf-8', errors='ignore').strip()
-                                    logger.warning(f"Browser data locked, retry {attempt + 1}/60 in 5s. Reason: {err_msg or 'Path still exists'}")
-                                    
-                                except Exception as exc:
-                                    logger.warning(f"PowerShell execution error on retry {attempt + 1}: {exc}")
-                                
-                                await asyncio.sleep(5)
-                                
-                            logger.error(f"Gave up deleting browser data (still locked): {path}")
                         local_app_data = os.getenv('LOCALAPPDATA')
                         if local_app_data:
                             identifier = get_tauri_identifier()
@@ -2174,7 +2107,8 @@ async def handle_ws_command(conn_id: str, data: dict, send_func: Callable[[dict]
                             ]
                             for path in paths:
                                 if os.path.exists(path):
-                                    asyncio.create_task(_delete_path_bg(path))                            
+                                    shutil.rmtree(path)
+                                    logger.info(f"Deleted Windows browser data: {path}")                          
                     elif sys.platform == 'darwin':
                         import struct, uuid
                         def get_mac_store_uuid(lbl: str) -> str:
