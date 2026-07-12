@@ -1133,21 +1133,6 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
                                         return
                                     
                                     err_msg = stderr.decode('utf-8', errors='ignore').strip()
-                                    
-                                    # ESCALATION: If still locked after 3 attempts (~15s), terminate lingering WebView2 processes
-                                    if attempt >= 2:
-                                        logger.info(f"Attempting to release file locks by stopping background WebView2 processes...")
-                                        # Kills only headless/background msedgewebview2 processes (no main window)
-                                        ps_kill_cmd = (
-                                            "Get-Process -Name msedgewebview2 -ErrorAction SilentlyContinue | "
-                                            "Where-Object { $_.MainWindowTitle -eq '' } | "
-                                            "Stop-Process -Force -ErrorAction SilentlyContinue"
-                                        )
-                                        kill_proc = await asyncio.create_subprocess_exec(
-                                            "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_kill_cmd
-                                        )
-                                        await kill_proc.wait()
-
                                     logger.warning(f"Browser data locked, retry {attempt + 1}/60 in 5s. Reason: {err_msg or 'Path still exists'}")
                                     
                                 except Exception as exc:
@@ -2171,21 +2156,6 @@ async def handle_ws_command(conn_id: str, data: dict, send_func: Callable[[dict]
                                         return
                                     
                                     err_msg = stderr.decode('utf-8', errors='ignore').strip()
-                                    
-                                    # ESCALATION: If still locked after 3 attempts (~15s), terminate lingering WebView2 processes
-                                    if attempt >= 2:
-                                        logger.info(f"Attempting to release file locks by stopping background WebView2 processes...")
-                                        # Kills only headless/background msedgewebview2 processes (no main window)
-                                        ps_kill_cmd = (
-                                            "Get-Process -Name msedgewebview2 -ErrorAction SilentlyContinue | "
-                                            "Where-Object { $_.MainWindowTitle -eq '' } | "
-                                            "Stop-Process -Force -ErrorAction SilentlyContinue"
-                                        )
-                                        kill_proc = await asyncio.create_subprocess_exec(
-                                            "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_kill_cmd
-                                        )
-                                        await kill_proc.wait()
-
                                     logger.warning(f"Browser data locked, retry {attempt + 1}/60 in 5s. Reason: {err_msg or 'Path still exists'}")
                                     
                                 except Exception as exc:
