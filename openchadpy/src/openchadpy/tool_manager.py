@@ -192,18 +192,32 @@ class ToolManager:
             return items
 
         for pkg_name in deps:
-            # First try using importlib.metadata to locate the package files
-            main_py = None
+            # First try using importlib.util.find_spec to locate the package (supports editable installs)
             try:
-                pkg_files = importlib.metadata.files(pkg_name)
-                if pkg_files:
-                    for f in pkg_files:
-                        f_path = Path(f)
-                        if f_path.name == "main.py":
-                            main_py = Path(f.locate())
-                            break
-            except importlib.metadata.PackageNotFoundError:
-                pass
+                spec = importlib.util.find_spec(pkg_name)
+                if spec and spec.origin:
+                    origin_path = Path(spec.origin)
+                    if origin_path.name == "__init__.py":
+                        candidate = origin_path.parent / "main.py"
+                        if candidate.exists():
+                            main_py = candidate
+                    elif origin_path.name == "main.py":
+                        main_py = origin_path
+            except Exception as e:
+                logger.debug(f"Failed to find_spec for {pkg_name}: {e}")
+
+            # Fallback to importlib.metadata to locate the package files
+            if not main_py:
+                try:
+                    pkg_files = importlib.metadata.files(pkg_name)
+                    if pkg_files:
+                        for f in pkg_files:
+                            f_path = Path(f)
+                            if f_path.name == "main.py":
+                                main_py = Path(f.locate())
+                                break
+                except importlib.metadata.PackageNotFoundError:
+                    pass
 
             # Fallback to direct directory scan in site-packages
             if not main_py:
@@ -288,17 +302,34 @@ class ToolManager:
             pkg_name = storage_key[5:]
             tool_path = None
             
+            # First try using importlib.util.find_spec to locate the package (supports editable installs)
             try:
-                pkg_files = importlib.metadata.files(pkg_name)
-                if pkg_files:
-                    for f in pkg_files:
-                        f_path = Path(f)
-                        if f_path.name == "main.py":
-                            tool_path = Path(f.locate())
-                            break
-            except importlib.metadata.PackageNotFoundError:
-                pass
+                spec = importlib.util.find_spec(pkg_name)
+                if spec and spec.origin:
+                    origin_path = Path(spec.origin)
+                    if origin_path.name == "__init__.py":
+                        candidate = origin_path.parent / "main.py"
+                        if candidate.exists():
+                            tool_path = candidate
+                    elif origin_path.name == "main.py":
+                        tool_path = origin_path
+            except Exception as e:
+                logger.debug(f"Failed to find_spec for {pkg_name}: {e}")
+
+            # Fallback to importlib.metadata to locate the package files
+            if not tool_path:
+                try:
+                    pkg_files = importlib.metadata.files(pkg_name)
+                    if pkg_files:
+                        for f in pkg_files:
+                            f_path = Path(f)
+                            if f_path.name == "main.py":
+                                tool_path = Path(f.locate())
+                                break
+                except importlib.metadata.PackageNotFoundError:
+                    pass
                 
+            # Fallback to direct directory scan in site-packages
             if not tool_path:
                 for sp_dir in self._get_site_packages_dirs():
                     candidate = sp_dir / pkg_name / "main.py"
@@ -307,7 +338,7 @@ class ToolManager:
                         break
             
             if not tool_path:
-                logger.error(f"Venv tool package '{pkg_name}' main.py not found in site-packages")
+                logger.error(f"Venv tool package '{pkg_name}' main.py not found")
                 return False
                 
             module_name = f"tool_{storage_key}"

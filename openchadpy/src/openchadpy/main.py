@@ -559,7 +559,7 @@ async def handle_tool_uninstall(pkg_name: Optional[str], tool_name: Optional[str
     proj_dir = os.environ.get("OPENCHAD_UV_PROJECT_DIR", _PROJECT_ROOT)
     try:
         proc = await _asyncio.create_subprocess_exec(
-            "uv", "remove", pkg_name,
+            uv_path, "remove", pkg_name,
             cwd=proj_dir,
             stdout=_subprocess.PIPE,
             stderr=_subprocess.PIPE,
@@ -581,7 +581,7 @@ async def handle_tool_install(pkg_name: Optional[str]) -> Dict[str, Any]:
     # Step 1: uv add
     try:
         proc = await _asyncio.create_subprocess_exec(
-            "uv", "add", pkg_name,
+            uv_path, "add", pkg_name,
             cwd=proj_dir,
             stdout=_subprocess.PIPE,
             stderr=_subprocess.PIPE,
@@ -592,17 +592,27 @@ async def handle_tool_install(pkg_name: Optional[str]) -> Dict[str, Any]:
     except Exception as exc:
         return {"success": False, "error": str(exc)}
     # Step 2: discover and load to verify it is a valid tool
+    import importlib
     import importlib.metadata as _meta
+    try:
+        importlib.invalidate_caches()
+        _meta.MetadataPathFinder.invalidate_caches()  # type: ignore[attr-defined]
+    except Exception:
+        pass
     try:
         _meta.packages_distributions.cache_clear()  # type: ignore[attr-defined]
     except Exception:
         pass
+    logger.info(f"[tool_install] uv add succeeded for '{pkg_name}', discovering tools...")
     discovered = await _asyncio.to_thread(tool_manager._discover_venv_items)
+    logger.info(f"[tool_install] discovered keys: {[k for k, _ in discovered]}")
     norm = pkg_name.replace("-", "_").lower()
     new_keys = [k for k, _ in discovered if norm in k.lower()]
+    logger.info(f"[tool_install] matched keys for '{pkg_name}': {new_keys}")
     loaded_names = []
     for key in new_keys:
         ok = await tool_manager.load_tool(key)
+        logger.info(f"[tool_install] load_tool('{key}') -> {ok}")
         if ok:
             mod_suffix = key.replace("-", "_")
             loaded_names.extend([
@@ -611,9 +621,10 @@ async def handle_tool_install(pkg_name: Optional[str]) -> Dict[str, Any]:
             ])
     if not loaded_names:
         # Not a tool – remove the package to keep environment clean
+        logger.warning(f"[tool_install] no valid Tool class found in '{pkg_name}', rolling back...")
         try:
             rm_proc = await _asyncio.create_subprocess_exec(
-                "uv", "remove", pkg_name,
+                uv_path, "remove", pkg_name,
                 cwd=proj_dir,
                 stdout=_subprocess.PIPE,
                 stderr=_subprocess.PIPE,
@@ -626,7 +637,9 @@ async def handle_tool_install(pkg_name: Optional[str]) -> Dict[str, Any]:
     await event_emitter.emit("tools_reloaded", {})
     extended = tool_manager.list_tools_extended()
     new_tools = [t for t in extended if t["name"] in loaded_names]
+    logger.info(f"[tool_install] successfully loaded tools: {loaded_names}")
     return {"success": True, "pkg_name": pkg_name, "tools": new_tools}
+
 
 # =+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+==+=+=
 # Stream Control Registry
