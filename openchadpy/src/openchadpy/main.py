@@ -1,3 +1,7 @@
+import os
+import shutil
+import sys
+
 from openchadpy.context import additional_args_ctx, parse_additional_args
 from openchadpy.context import fields_ctx
 from openchadpy.context import pipeline_ctx
@@ -8,8 +12,6 @@ from openchadpy.context import agent_ctx
 from aiortc import rtcrtptransceiver
 from mcp.types import JSONRPCMessage
 from openchadpy.tool_base import ToolBase
-import os, shutil
-import sys
 
 from mcp.server.fastmcp import FastMCP
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
@@ -1052,6 +1054,36 @@ async def handle_pytauri_chat(msg_id: str, body: Dict[str, Any]):
             unregister_stream(msg_id)
             _unregister_cancel_event(msg_id)
 
+def get_tauri_identifier() -> str:
+    import re
+    default_id = "com.clawtaskbar.app"
+    tauri_toml_path = os.path.join(_PROJECT_ROOT, "Tauri.toml")
+    if os.path.exists(tauri_toml_path):
+        try:
+            with open(tauri_toml_path, "r", encoding="utf-8") as f:
+                content = f.read()
+                match = re.search(r'identifier\s*=\s*["\']([^"\']+)["\']', content)
+                if match:
+                    return match.group(1)
+        except Exception as e:
+            logger.error(f"Error reading Tauri.toml: {e}")
+    return default_id
+
+def get_tauri_product_name() -> str:
+    import re
+    default_name = "ClawTaskbar"
+    tauri_toml_path = os.path.join(_PROJECT_ROOT, "Tauri.toml")
+    if os.path.exists(tauri_toml_path):
+        try:
+            with open(tauri_toml_path, "r", encoding="utf-8") as f:
+                content = f.read()
+                match = re.search(r'productName\s*=\s*["\']([^"\']+)["\']', content)
+                if match:
+                    return match.group(1)
+        except Exception as e:
+            logger.error(f"Error reading productName from Tauri.toml: {e}")
+    return default_name
+
 @commands.command()
 async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[str, Any]:
     # Register the AppHandle once so event_emitter knows it's running inside Tauri.
@@ -1067,6 +1099,68 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
                 if name:
                     await event_emitter.emit(name, payload)
                 return {'result': 'ok'}
+            case 'delete_browser_data':
+                label = request.get("label")
+                if not label:
+                    return {'error': 'label is required'}
+                import sys
+                if sys.platform not in ('win32', 'darwin'):
+                    return {'result': 'ignored_platform'}
+                try:
+                    dir_label = label if label.startswith("webview-agent-") else "shared"
+                    if sys.platform == 'win32':
+                        import os, shutil
+                        local_app_data = os.getenv('LOCALAPPDATA')
+                        if local_app_data:
+                            identifier = get_tauri_identifier()
+                            product_name = get_tauri_product_name()
+                            paths = [
+                                os.path.join(local_app_data, identifier, "browser-data", dir_label),
+                                os.path.join(local_app_data, product_name, "browser-data", dir_label)
+                            ]
+                            for path in paths:
+                                if os.path.exists(path):
+                                    shutil.rmtree(path)
+                                    logger.info(f"Deleted Windows browser data: {path}")
+                    elif sys.platform == 'darwin':
+                        import os, shutil, struct, uuid
+                        def get_mac_store_uuid(lbl: str) -> str:
+                            FNV_PRIME = 0x00000100000001B3
+                            SEED_A = 0xcbf29ce484222325
+                            SEED_B = 0x14650fb0739d0383
+                            a = SEED_A
+                            b = SEED_B
+                            MASK = 0xFFFFFFFFFFFFFFFF
+                            for byte in lbl.encode('utf-8'):
+                                a ^= byte
+                                a = (a * FNV_PRIME) & MASK
+                                b ^= (byte + 0x5A) & 0xFF
+                                b = (b * FNV_PRIME) & MASK
+                            a_bytes = struct.pack('<Q', a)
+                            b_bytes = struct.pack('<Q', b)
+                            id_bytes = a_bytes + b_bytes
+                            return str(uuid.UUID(bytes=id_bytes))
+                        
+                        uuid_str = get_mac_store_uuid(dir_label)
+                        home = os.path.expanduser("~")
+                        identifier = get_tauri_identifier()
+                        product_name = get_tauri_product_name()
+                        
+                        dirs_to_check = []
+                        for base_dir in ["WebKit", "Application Support"]:
+                            for app_id in [identifier, product_name]:
+                                for u in [uuid_str.upper(), uuid_str.lower()]:
+                                    dirs_to_check.append(os.path.join(home, "Library", base_dir, app_id, "WebsiteData", u))
+                                    dirs_to_check.append(os.path.join(home, "Library", base_dir, app_id, u))
+                                    
+                        for path in dirs_to_check:
+                            if os.path.exists(path):
+                                shutil.rmtree(path)
+                                logger.info(f"Deleted macOS browser data: {path}")
+                    return {'result': 'ok'}
+                except Exception as e:
+                    logger.error(f"Error in delete_browser_data: {e}", exc_info=True)
+                    return {'error': str(e)}
             case 'get_agent_tree':
                 agent_id = request.get("agentId", None)
                 workspace = request.get("workspace", "global")
@@ -1076,7 +1170,7 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
                 try:                    
                     return { 'is_installing': is_installing, 'is_installed': is_installed('llama_cpp') 
                     and 
-                    (is_installed('mlx-lm') if sys.platform == "darwin" else True) 
+                    (is_installed('mlx-lm') if sys.platform == "darwin" else True) #pyrefly: ignore
                     and
                     (is_installed('mlx-vlm') if sys.platform == "darwin" else True) }
                 except Exception as e:  
@@ -1086,7 +1180,7 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
                     packages = []
                     if not is_installed('llama_cpp'):
                         packages.append('llama-cpp-python')
-                    if not is_installed('mlx-lm') and sys.platform == "darwin":
+                    if not is_installed('mlx-lm') and sys.platform == "darwin":  #pyrefly: ignore
                         packages.append('mlx-lm')
                     if not is_installed('mlx-vlm') and sys.platform == "darwin":
                         packages.append('mlx-vlm')
@@ -1317,7 +1411,7 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
             case "settings/unsubscribe":
                 return await unsubscribe_settings(TAURI_CONN_ID)
             case "os":
-                return {'os': sys.platform}
+                return {'os': sys.platform} #pyrefly: ignore
             case "mcp_tool":
                 return {"tools": mcp_manager.get_openai_schemas()}
             case "mcp_tool/reload":
@@ -1998,6 +2092,66 @@ async def handle_ws_command(conn_id: str, data: dict, send_func: Callable[[dict]
                 if name:                   
                     await event_emitter.emit(name, payload)
                 return {'result': 'ok'}
+            case 'delete_browser_data':
+                label = body.get("label")
+                if not label:
+                    return {'error': 'label is required'}
+                if sys.platform not in ('win32', 'darwin'):
+                    return {'result': 'ignored_platform'}
+                try:
+                    dir_label = label if label.startswith("webview-agent-") else "shared"
+                    if sys.platform == 'win32':
+                        local_app_data = os.getenv('LOCALAPPDATA')
+                        if local_app_data:
+                            identifier = get_tauri_identifier()
+                            product_name = get_tauri_product_name()
+                            paths = [
+                                os.path.join(local_app_data, identifier, "browser-data", dir_label),
+                                os.path.join(local_app_data, product_name, "browser-data", dir_label)
+                            ]
+                            for path in paths:
+                                if os.path.exists(path):
+                                    shutil.rmtree(path)
+                                    logger.info(f"Deleted Windows browser data: {path}")
+                    elif sys.platform == 'darwin':
+                        import struct, uuid
+                        def get_mac_store_uuid(lbl: str) -> str:
+                            FNV_PRIME = 0x00000100000001B3
+                            SEED_A = 0xcbf29ce484222325
+                            SEED_B = 0x14650fb0739d0383
+                            a = SEED_A
+                            b = SEED_B
+                            MASK = 0xFFFFFFFFFFFFFFFF
+                            for byte in lbl.encode('utf-8'):
+                                a ^= byte
+                                a = (a * FNV_PRIME) & MASK
+                                b ^= (byte + 0x5A) & 0xFF
+                                b = (b * FNV_PRIME) & MASK
+                            a_bytes = struct.pack('<Q', a)
+                            b_bytes = struct.pack('<Q', b)
+                            id_bytes = a_bytes + b_bytes
+                            return str(uuid.UUID(bytes=id_bytes))
+
+                        uuid_str = get_mac_store_uuid(dir_label)
+                        home = os.path.expanduser("~")
+                        identifier = get_tauri_identifier()
+                        product_name = get_tauri_product_name()
+
+                        dirs_to_check = []
+                        for base_dir in ["WebKit", "Application Support"]:
+                            for app_id in [identifier, product_name]:
+                                for u in [uuid_str.upper(), uuid_str.lower()]:
+                                    dirs_to_check.append(os.path.join(home, "Library", base_dir, app_id, "WebsiteData", u))
+                                    dirs_to_check.append(os.path.join(home, "Library", base_dir, app_id, u))
+
+                        for path in dirs_to_check:
+                            if os.path.exists(path):
+                                shutil.rmtree(path)
+                                logger.info(f"Deleted macOS browser data: {path}")
+                    return {'result': 'ok'}
+                except Exception as e:
+                    logger.error(f"Error in delete_browser_data: {e}", exc_info=True)
+                    return {'error': str(e)}
             case 'get_agent_tree':
                 agent_id = body.get("agentId", None)
                 workspace = body.get("workspace", "global")
