@@ -279,6 +279,7 @@ export default function Container({ Apps }: { Apps: Project }) {
       }
       const size = await mainWebviewRef.current?.size();
       const position = await mainWebviewRef.current?.position();
+      const monitor = await currentMonitor();
 
       for (const [uuid, browser] of newEntries) {
         const label = `webview-${uuid}`;
@@ -293,10 +294,10 @@ export default function Container({ Apps }: { Apps: Project }) {
             mainWebviewRef.current,
             {
               url: (browser.url && /^https?:\/\//.test(browser.url)) ? browser.url : 'about:blank',
-              width: size?.width,
-              height: size?.height,
-              x: position?.x,
-              y: position?.y,
+              width: monitor?.size.width || size?.width,
+              height: monitor?.size.height || size?.height,
+              x: monitor ? -monitor.size.width : position?.x,
+              y: monitor ? -monitor.size.height : position?.y,
             });
         }
       }
@@ -475,38 +476,10 @@ export default function Container({ Apps }: { Apps: Project }) {
     }
     setSetupModel(false);
   }
-  
-  const backgroundWindowRef = useRef<TauriWindow | null>(null);
 
   useEffect(() => {
     (async () => {
       await checkModel()
-      try {
-        const monitor = await currentMonitor();
-        if (!backgroundWindowRef.current && monitor) {
-          backgroundWindowRef.current = new TauriWindow(
-            "background",
-            {
-              parent: await getCurrentWindow(),
-              width: monitor.size.width,
-              height: monitor.size.height,
-              x: monitor.position.x,
-              y: monitor.position.y,
-              decorations: false,
-              shadow: false,
-              resizable: false,
-              maximized: true,
-              transparent: true,
-              skipTaskbar: true,
-              contentProtected: true,
-            }
-          )
-          await sleep(250);
-          await backgroundWindowRef.current.setIgnoreCursorEvents(true);
-        }
-      } catch (err) {
-        console.error("Error:", err);
-      }
     }
     )()
     hideSplashScreen();
@@ -875,25 +848,39 @@ export default function Container({ Apps }: { Apps: Project }) {
   }, []);
 
   usePythonEvent('create_browser', async (data) => {
-    await AsyncLock.run(async () => {
+    // await AsyncLock.run(async () => {
       const monitor = await currentMonitor();
-      if (data.label && data.url && data.storage && monitor && mainWindowRef.current) {
-        await createWebview(
-          data.label,
-          mainWindowRef.current,
-          "background",
-          {
-            url: data.url,
-            width: monitor.size.width,
-            height: monitor.size.height,
-            x: -monitor.size.width,
-            y: -monitor.size.height,
-            transparent: true,
-            storageName: data.storage
-          });
+      if (data.label && data.url && data.storage && monitor && mainWindowRef.current && mainWebviewRef.current) {
+        try {
+          await createWebview(
+            data.label,
+            mainWindowRef.current,
+            mainWebviewRef.current,
+            {
+              url: data.url,
+              width: monitor.size.width,
+              height: monitor.size.height,
+              x: -monitor.size.width,
+              y: -monitor.size.height,
+              transparent: true,
+              storageName: data.storage,
+            });
+        } catch (e) {
+          console.error(e)
+        }
       }
-    })
+    // })
   });
+
+  usePythonEvent('delete_browser', async (data) => {
+    if (data.label) {
+      const webview = await Webview.getByLabel(data.label)
+      if (webview) {
+        console.warn("Browser deleted", webview);
+        await webview.close()
+      }
+    }
+  })
 
   useEffect(() => {
     setMounted(true);

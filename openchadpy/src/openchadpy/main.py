@@ -1099,6 +1099,25 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
                 if name:
                     await event_emitter.emit(name, payload)
                 return {'result': 'ok'}
+            case 'test':
+                code = request.get("code", "")
+                profile = request.get("profile", "john")
+                url = request.get("url", "https://example.com")
+                token = fields_ctx.set({
+                    "Browser Profile": profile,
+                    "URL": url
+                })
+                try:
+                    result = await tool_manager.execute_tool(
+                        "browser",
+                        caller="direct",
+                        code=code
+                    )
+                    return {"result": result}
+                except Exception as e:
+                    return {"error": str(e)}
+                finally:
+                    fields_ctx.reset(token)
             case 'delete_browser_data':
                 dir_label = request.get("label")
                 if not dir_label:

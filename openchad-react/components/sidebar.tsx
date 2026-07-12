@@ -763,7 +763,7 @@ export default function Sidebar({
   };
   const handleTabContextMenu = async (id: string, e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault();
-    
+
     if (editingTitleTabId) return;
     if (hideTimeoutRef.current) {
       clearTimeout(hideTimeoutRef.current);
@@ -947,7 +947,16 @@ export default function Sidebar({
         Object.keys(tabs).length > 0 ? "-translate-y-2" : "-translate-y-3"
       )}>
         <motion.button
-          onClick={() => addTab()}
+          onClick={async () => {
+            console.warn(await pyInvoke("test", {
+              profile: "webview-agent 1321312321",
+              url: "https://www.youtube.com",
+              code: `print("Starting manual test...")
+title = await page.title()
+print("Page Title is: " + title)`
+            }));
+            // addTab()
+          }}
           className={clsx(
             "w-full h-[36px] flex items-center gap-3 rounded-lg  text-sm hover:bg-[hsl(var(--hover))] transition-colors",
           )}>
@@ -1156,139 +1165,139 @@ export default function Sidebar({
         </div>
       </div>
 
-        {showPopup && hoveredTabId && Object.keys(allTabs).includes(hoveredTabId) && (
-          <div
-            key={hoveredTabId}
-            style={{ zIndex: 50, top: popupTop }}
-            className={clsx("absolute pl-4", layout === "rightToLeft" ? "right-full" : "left-full")}
-            onMouseEnter={() => {
-              if (hideTimeoutRef.current) {
-                clearTimeout(hideTimeoutRef.current);
-                hideTimeoutRef.current = null;
-              }
-            }}
-            onMouseLeave={handleTabMouseLeave}
-          >
-            <div className="w-fit min-w-64 max-w-72 p-2 rounded-xl border bg-card text-card-foreground shadow-lg bg-opacity-95 ">
-              <div className="flex gap-2 items-center">
-                {<Fragment key="icon-section">
-                  {
-                    allTabs[hoveredTabId].iconOverride ? <Fragment key="icon-override">
-                      <div
-                        onClick={() => {
-                          TabState[hoveredTabId].iconOverride = null;
-                          window.dispatchEvent(new CustomEvent("tab-update", {
-                            detail: {
-                              tabId: hoveredTabId,
-                              title: TabState[hoveredTabId].title,
-                              icon: 'default',
-                            }
-                          }))
-                        }}
-                        className={clsx(
-                          "p-2 relative rounded-lg overflow-hidden cursor-pointer transition-colors border-r border-r-[hsl(var(--chat-border))] hover:bg-[hsl(var(--hover))]",
-                        )}>
-                        <div className="absolute flex items-center justify-center top-0 right-0 w-full h-full bg-[hsl(var(--hover))] opacity-0 hover:opacity-100">
-                          <X className="h-4 w-4" />
-                        </div>
-                        <TabIcon iconVal={allTabs[hoveredTabId].iconOverride || "Compass"} />
-                      </div>
-                    </Fragment> :
-                      <IconPopover onSelect={(icon) => {
-                        TabState[hoveredTabId].iconOverride = icon;
+      {showPopup && hoveredTabId && Object.keys(allTabs).includes(hoveredTabId) && (
+        <div
+          key={hoveredTabId}
+          style={{ zIndex: 50, top: popupTop }}
+          className={clsx("absolute pl-4", layout === "rightToLeft" ? "right-full" : "left-full")}
+          onMouseEnter={() => {
+            if (hideTimeoutRef.current) {
+              clearTimeout(hideTimeoutRef.current);
+              hideTimeoutRef.current = null;
+            }
+          }}
+          onMouseLeave={handleTabMouseLeave}
+        >
+          <div className="w-fit min-w-64 max-w-72 p-2 rounded-xl border bg-card text-card-foreground shadow-lg bg-opacity-95 ">
+            <div className="flex gap-2 items-center">
+              {<Fragment key="icon-section">
+                {
+                  allTabs[hoveredTabId].iconOverride ? <Fragment key="icon-override">
+                    <div
+                      onClick={() => {
+                        TabState[hoveredTabId].iconOverride = null;
                         window.dispatchEvent(new CustomEvent("tab-update", {
                           detail: {
                             tabId: hoveredTabId,
                             title: TabState[hoveredTabId].title,
-                            icon
+                            icon: 'default',
                           }
                         }))
-                        setShowPopup(false);
-                        setHoveredTabId(null);
-                      }}>
-                        <div className={clsx(
-                          "p-2 rounded-lg cursor-pointer transition-colors border-r border-r-[hsl(var(--chat-border))] hover:bg-[hsl(var(--hover))]",
-                        )}>
-                          <TabIcon iconVal={allTabs[hoveredTabId].iconOverride || "Compass"} />
-                        </div>
-                      </IconPopover>
-                  }
-                </Fragment>}
-                <Fragment key="title">
-                  {editingTitleTabId === hoveredTabId ? (
-                    <input
-                      type="text"
-                      value={tempTitle}
-                      onChange={(e) => setTempTitle(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          const tab = TabState[hoveredTabId];
-                          if (tab) {
-                            TabState[hoveredTabId].title = tempTitle;
-                            window.dispatchEvent(new CustomEvent("tab-update", {
-                              detail: {
-                                tabId: hoveredTabId,
-                                title: tempTitle,
-                                icon: TabState[hoveredTabId].iconOverride
-                              }
-                            }))
-                          }
-                          setEditingTitleTabId(null);
-                        } else if (e.key === "Escape") {
-                          setEditingTitleTabId(null);
+                      }}
+                      className={clsx(
+                        "p-2 relative rounded-lg overflow-hidden cursor-pointer transition-colors border-r border-r-[hsl(var(--chat-border))] hover:bg-[hsl(var(--hover))]",
+                      )}>
+                      <div className="absolute flex items-center justify-center top-0 right-0 w-full h-full bg-[hsl(var(--hover))] opacity-0 hover:opacity-100">
+                        <X className="h-4 w-4" />
+                      </div>
+                      <TabIcon iconVal={allTabs[hoveredTabId].iconOverride || "Compass"} />
+                    </div>
+                  </Fragment> :
+                    <IconPopover onSelect={(icon) => {
+                      TabState[hoveredTabId].iconOverride = icon;
+                      window.dispatchEvent(new CustomEvent("tab-update", {
+                        detail: {
+                          tabId: hoveredTabId,
+                          title: TabState[hoveredTabId].title,
+                          icon
                         }
-                      }}
-                      onBlur={() => {
-                        const tab = TabState[hoveredTabId];
-                        if (tab && tab.hasChildren) {
-                          const firstChildKey = Object.keys(tab.childrenProps)[0];
-                          if (firstChildKey && tab.childrenProps[firstChildKey]) {
-                            tab.childrenProps[firstChildKey].title = tempTitle;
-                          }
-                        }
-                        setEditingTitleTabId(null);
-                      }}
-                      className="bg-transparent border-b border-primary text-foreground focus:outline-none font-semibold text-xs w-full flex-1 min-w-0"
-                      autoFocus
-                    />
-                  ) : (
-                    <span
-                      className="cursor-pointer hover:underline text-xs flex-1 min-w-0 truncate"
-                      onClick={() => {
-                        setEditingTitleTabId(hoveredTabId);
-                        setTempTitle(allTabs[hoveredTabId].title || "");
-                      }}
-                    >
-                      {allTabs[hoveredTabId].title || "Untitled"}
-                    </span>
-                  )}
-                </Fragment>
-                {/* Pin/Unpin Toggle Button */}
-                <div
-                  key="pin-toggle"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (hoveredTabId) {
-                      const currentGroup = allTabs[hoveredTabId]?.group;
-                      const newGroup = currentGroup === "pinned" ? null : "pinned";
-                      setTabGroup(hoveredTabId, newGroup);
+                      }))
                       setShowPopup(false);
                       setHoveredTabId(null);
-                    }
-                  }}
-                  className={clsx(
-                    "cursor-pointer ml-auto p-1 rounded-md transition-colors",
-                    allTabs[hoveredTabId]?.group === "pinned"
-                      ? "bg-primary text-primary-foreground"
-                      : "bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground"
-                  )}
-                >
-                  <Pin className="h-4 w-4" />
-                </div>
+                    }}>
+                      <div className={clsx(
+                        "p-2 rounded-lg cursor-pointer transition-colors border-r border-r-[hsl(var(--chat-border))] hover:bg-[hsl(var(--hover))]",
+                      )}>
+                        <TabIcon iconVal={allTabs[hoveredTabId].iconOverride || "Compass"} />
+                      </div>
+                    </IconPopover>
+                }
+              </Fragment>}
+              <Fragment key="title">
+                {editingTitleTabId === hoveredTabId ? (
+                  <input
+                    type="text"
+                    value={tempTitle}
+                    onChange={(e) => setTempTitle(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        const tab = TabState[hoveredTabId];
+                        if (tab) {
+                          TabState[hoveredTabId].title = tempTitle;
+                          window.dispatchEvent(new CustomEvent("tab-update", {
+                            detail: {
+                              tabId: hoveredTabId,
+                              title: tempTitle,
+                              icon: TabState[hoveredTabId].iconOverride
+                            }
+                          }))
+                        }
+                        setEditingTitleTabId(null);
+                      } else if (e.key === "Escape") {
+                        setEditingTitleTabId(null);
+                      }
+                    }}
+                    onBlur={() => {
+                      const tab = TabState[hoveredTabId];
+                      if (tab && tab.hasChildren) {
+                        const firstChildKey = Object.keys(tab.childrenProps)[0];
+                        if (firstChildKey && tab.childrenProps[firstChildKey]) {
+                          tab.childrenProps[firstChildKey].title = tempTitle;
+                        }
+                      }
+                      setEditingTitleTabId(null);
+                    }}
+                    className="bg-transparent border-b border-primary text-foreground focus:outline-none font-semibold text-xs w-full flex-1 min-w-0"
+                    autoFocus
+                  />
+                ) : (
+                  <span
+                    className="cursor-pointer hover:underline text-xs flex-1 min-w-0 truncate"
+                    onClick={() => {
+                      setEditingTitleTabId(hoveredTabId);
+                      setTempTitle(allTabs[hoveredTabId].title || "");
+                    }}
+                  >
+                    {allTabs[hoveredTabId].title || "Untitled"}
+                  </span>
+                )}
+              </Fragment>
+              {/* Pin/Unpin Toggle Button */}
+              <div
+                key="pin-toggle"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (hoveredTabId) {
+                    const currentGroup = allTabs[hoveredTabId]?.group;
+                    const newGroup = currentGroup === "pinned" ? null : "pinned";
+                    setTabGroup(hoveredTabId, newGroup);
+                    setShowPopup(false);
+                    setHoveredTabId(null);
+                  }
+                }}
+                className={clsx(
+                  "cursor-pointer ml-auto p-1 rounded-md transition-colors",
+                  allTabs[hoveredTabId]?.group === "pinned"
+                    ? "bg-primary text-primary-foreground"
+                    : "bg-primary/10 text-primary hover:bg-primary hover:text-primary-foreground"
+                )}
+              >
+                <Pin className="h-4 w-4" />
               </div>
             </div>
           </div>
-        )}
+        </div>
+      )}
       <DialogUI open={showSettingsDialog} onOpenChange={setShowSettingsDialog}>
         <DialogContent className="max-w-4xl h-[80vh] flex flex-col border-accent/20 bg-card">
           <DialogHeader>
