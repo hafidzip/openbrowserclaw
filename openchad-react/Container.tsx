@@ -454,6 +454,7 @@ export default function Container({ Apps }: { Apps: Project }) {
       console.warn("Theme :", savedTheme);
     })();
   }, [snaptheme, intializeTheme]);
+  
   const checkModel = async () => {
     const res: any = await pyInvoke<{ data?: Record<string, unknown> }>('file', {
       command: "read",
@@ -477,9 +478,14 @@ export default function Container({ Apps }: { Apps: Project }) {
     setSetupModel(false);
   }
 
+  const startTask = async () => {
+    await pyInvoke<{ data?: Record<string, unknown> }>('start');
+  }
+
   useEffect(() => {
     (async () => {
       await checkModel()
+      await startTask()
     }
     )()
     hideSplashScreen();
@@ -849,26 +855,26 @@ export default function Container({ Apps }: { Apps: Project }) {
 
   usePythonEvent('create_browser', async (data) => {
     // await AsyncLock.run(async () => {
-      const monitor = await currentMonitor();
-      if (data.label && data.url && data.storage && monitor && mainWindowRef.current && mainWebviewRef.current) {
-        try {
-          await createWebview(
-            data.label,
-            mainWindowRef.current,
-            mainWebviewRef.current,
-            {
-              url: data.url,
-              width: monitor.size.width,
-              height: monitor.size.height,
-              x: -monitor.size.width,
-              y: -monitor.size.height,
-              transparent: true,
-              storageName: data.storage,
-            });
-        } catch (e) {
-          console.error(e)
-        }
+    const monitor = await currentMonitor();
+    if (data.label && data.url && data.storage && monitor && mainWindowRef.current && mainWebviewRef.current) {
+      try {
+        await createWebview(
+          data.label,
+          mainWindowRef.current,
+          mainWebviewRef.current,
+          {
+            url: data.url,
+            width: monitor.size.width,
+            height: monitor.size.height,
+            x: -monitor.size.width,
+            y: -monitor.size.height,
+            transparent: true,
+            storageName: data.storage,
+          });
+      } catch (e) {
+        console.error(e)
       }
+    }
     // })
   });
 

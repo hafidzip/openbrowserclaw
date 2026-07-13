@@ -378,11 +378,6 @@ async def _background_startup():
         )
         tool_manager.export_all_tools(mcp_instance)
         
-        # Phase 5: Task Watcher
-        startup_tracker.update_status("Initializing task watcher...", progress=95.0)
-        from .task_watcher import start_task_watcher
-        global _task_watcher_task
-        _task_watcher_task = asyncio.create_task(start_task_watcher(_PROJECT_ROOT, settings_manager))
 
         startup_tracker.update_status("Server Ready", is_ready=True)
         logger.info("Background startup complete")
@@ -1106,6 +1101,11 @@ async def pytauri_command(body: Dict[str, Any], app_handle: AppHandle) -> Dict[s
     global is_installing
     try:
         match command:
+            case "start":
+                from .task_watcher import start_task_watcher
+                global _task_watcher_task
+                _task_watcher_task = asyncio.create_task(start_task_watcher(_PROJECT_ROOT, settings_manager))
+                return {"result":"ok"}
             case 'emit':
                 name = request.get("name")
                 payload = request.get("payload")
