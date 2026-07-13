@@ -36,3 +36,4 @@ Tools/
 settings.db
 settings.db-shm
 settings.db-wal
+scripts/release_tools.py
