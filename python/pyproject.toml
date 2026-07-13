@@ -12,6 +12,7 @@ dependencies = [
     "llama-cpp-python>=0.3.33",
     "controlbrowsertool>=0.1.1",
     "browsertool>=0.1.2",
+    "pygit2>=1.19.3",
 ]
 
 [tool.uv.sources]

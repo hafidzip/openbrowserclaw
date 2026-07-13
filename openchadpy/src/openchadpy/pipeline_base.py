@@ -610,8 +610,8 @@ class PipelineBase:
                         ") -> Dict[str, Any]:\n"
                         '    """\n'
                         "    Sends `query` to the language model, optionally supplying callable tools from\n"
-                        "    `tool_registry`, and returns a dict containing the model's response text and\n"
-                        "    any tool-use results.\n"
+                        "    `tool_registry`, and returns a dict containing the model's\n"
+                        "    tool-use results.\n"
                         '    """\n'
                         "    ...\n"
                         "\n"
