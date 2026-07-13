@@ -10,8 +10,8 @@ dependencies = [
     "litellm>=1.88.0",
     "huggingface_hub",
     "llama-cpp-python>=0.3.33",
-    "browsertool>=0.1.1",
     "controlbrowsertool>=0.1.1",
+    "browsertool>=0.1.2",
 ]
 
 [tool.uv.sources]

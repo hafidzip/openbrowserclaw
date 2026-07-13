@@ -4,7 +4,8 @@ Code Sandbox - Execute LLM-generated Python code with tool access.
 No security restrictions - full Python access.
 Tools are exposed as async functions the code can call.
 """
-
+import httpx
+import subprocess
 from ast import Set
 from typing import Union
 from ast import Tuple
@@ -414,6 +415,8 @@ class CodeSandbox:
         # Build globals with tools
         exec_globals = {
             "__builtins__": __builtins__,
+            "httpx": httpx,
+            "subprocess": subprocess,
             "asyncio": asyncio,
             "json": json,
             "re": re,

@@ -33,6 +33,7 @@ dependencies = [
   "nvidia-ml-py>=12.0.0",
   "pyrsmi>=1.1.0",
   "aiortc>=1.14.0",
+  "types-requests>=2.33.0.20260712",
 ]
 [tool.uv.sources]
 openchad-webview = { path = '../openchad-webview/dist/openchad_webview-0.8.0-cp313-cp313-win_amd64.whl' }
