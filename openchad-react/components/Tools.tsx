@@ -386,7 +386,7 @@ export default function Tools({ isOpen }: { isOpen: boolean }) {
             <label className="text-xs text-muted-foreground font-medium">Package name</label>
             <input
               type="text"
-              placeholder="PyPi Tool's Package Name (e.g. greetingtool)"
+              placeholder="PyPi Tool's Package Name (e.g. browsertool)"
               value={installPkg}
               onChange={(e) => { setInstallPkg(e.target.value); setInstallError(null); }}
               onKeyDown={handleInstallKeyDown}
