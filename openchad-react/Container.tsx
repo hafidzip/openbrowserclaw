@@ -454,7 +454,7 @@ export default function Container({ Apps }: { Apps: Project }) {
       console.warn("Theme :", savedTheme);
     })();
   }, [snaptheme, intializeTheme]);
-  
+
   const checkModel = async () => {
     const res: any = await pyInvoke<{ data?: Record<string, unknown> }>('file', {
       command: "read",
@@ -486,6 +486,14 @@ export default function Container({ Apps }: { Apps: Project }) {
     (async () => {
       await checkModel()
       await startTask()
+      if (!(await isRegistered("CmdOrCtrl+Shift+I"))) {
+        await register([
+          "CmdOrCtrl+Shift+I",
+          "CmdOrCtrl+Alt+Shift+I"
+        ], async () => {
+          
+        })
+      }
     }
     )()
     hideSplashScreen();
@@ -890,7 +898,6 @@ export default function Container({ Apps }: { Apps: Project }) {
 
   useEffect(() => {
     setMounted(true);
-
     const handleGlobalClick = async (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       const chip = target.closest('[data-img="true"]');
@@ -1066,12 +1073,12 @@ export default function Container({ Apps }: { Apps: Project }) {
       KeyState.clearKeys();
     }
     const blockContextMenu = (e: MouseEvent) => {
-      // const target = e.target as HTMLElement;
-      // const isEditable =
-      //   target instanceof HTMLInputElement ||
-      //   target instanceof HTMLTextAreaElement ||
-      //   !!target.closest('[contenteditable]');   // catches nested contenteditable too
-      // if (!isEditable) e.preventDefault();
+      const target = e.target as HTMLElement;
+      const isEditable =
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        !!target.closest('[contenteditable]');   // catches nested contenteditable too
+      if (!isEditable) e.preventDefault();
     };
 
     const onCodeUpdate = (e: Event) => {

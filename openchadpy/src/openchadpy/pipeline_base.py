@@ -434,8 +434,6 @@ class PipelineBase:
                     _main_py_block = (
                         "# ./main.py\n\n"
                         "```python\n"
-                        "import sys\n"
-                        "import importlib.util\n"
                         "from collections import deque\n"
                         "from dataclasses import dataclass, field\n"
                         "from typing import Any, Awaitable, Callable, Dict, List, Optional\n"
@@ -529,6 +527,8 @@ class PipelineBase:
                         "The following are already available at call time:\n"
                         "\n"
                         "```python\n"
+                        "import subprocess\n"
+                        "import httpx\n"                        
                         "import json\n"
                         "import asyncio\n"
                         "import re\n"
