@@ -1499,7 +1499,6 @@ class Chat(PipelineBase):
                 "    ...\n"
                 "\n"
                 + (
-                    "# IMPORTANT !!!, read tree CAREFULLY before populating "
                     "`next_branches`\n" if allow_multiple and self.attempt > 0
                     else "`next_tasks` and `next_branch`\n" if (self.attempt == 0 or children)
                     else ""

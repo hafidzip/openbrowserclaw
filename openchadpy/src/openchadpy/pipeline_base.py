@@ -571,7 +571,6 @@ class PipelineBase:
                         "\n"
                         +
                         (
-                            "# IMPORTANT !!!, read tree CAREFULLY before populating " 
                             "`next_branches`\n" if allow_multiple else "`next_tasks` and `next_branch`\n"
                             if children else 
                             ''
