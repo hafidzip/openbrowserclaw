@@ -491,7 +491,7 @@ export default function Container({ Apps }: { Apps: Project }) {
           "CmdOrCtrl+Shift+I",
           "CmdOrCtrl+Alt+Shift+I"
         ], async () => {
-          
+
         })
       }
     }
@@ -879,6 +879,7 @@ export default function Container({ Apps }: { Apps: Project }) {
             transparent: true,
             storageName: data.storage,
           });
+        await invoke('set_webview_muted', { label: data.label, muted: true })
       } catch (e) {
         console.error(e)
       }
