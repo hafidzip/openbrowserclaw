@@ -302,17 +302,112 @@ class CodeSandbox:
         tool_manager = self.tool_manager
         
         async def tool_func(**kwargs):
+            from dataclasses import is_dataclass, asdict
+            def _convert_dataclasses(val: Any) -> Any:
+                if is_dataclass(val) and not isinstance(val, type):
+                    return asdict(val)
+                elif isinstance(val, list):
+                    return [_convert_dataclasses(item) for item in val]
+                elif isinstance(val, dict):
+                    return {k: _convert_dataclasses(v) for k, v in val.items()}
+                return val
+            
+            converted_kwargs = {k: _convert_dataclasses(v) for k, v in kwargs.items()}
             return await tool_manager.execute_tool(
                 tool_name, 
                 caller="code_execution", 
                 workspace=workspace, 
                 tab_id=tab_id, 
-                **kwargs
+                **converted_kwargs
             )
         
         tool_func.__name__ = tool_name
         tool_func.__doc__ = f"Call the {tool_name} tool"
         return tool_func
+
+    def _predefine_dataclasses(self, exec_globals: Dict[str, Any]):
+        """Compile and define all parameter dataclasses from tool schemas in exec_globals."""
+        schemas = []
+        if self.tool_manager:
+            try:
+                schemas.extend(self.tool_manager.get_openai_schemas())
+            except Exception as e:
+                logger.warning(f"[code_sandbox] Failed to get local schemas: {e}")
+            try:
+                mcp = self.tool_manager.managers.get("mcp_manager")
+                if mcp:
+                    schemas.extend(mcp.get_openai_schemas())
+            except Exception as e:
+                logger.warning(f"[code_sandbox] Failed to get MCP schemas: {e}")
+
+        _JSON_TYPE_MAP = {"string": "str", "integer": "int", "number": "float", "boolean": "bool"}
+        class_defs = []
+        defined_classes = set()
+
+        def _to_class_name(snake: str) -> str:
+            return "".join(w.capitalize() for w in snake.replace("-", "_").split("_"))
+
+        def _resolve_type(prop_name: str, prop_schema: dict) -> str:
+            json_type = prop_schema.get("type", "")
+            if json_type == "object":
+                cls_name = _to_class_name(prop_name)
+                if cls_name not in defined_classes:
+                    defined_classes.add(cls_name)
+                    class_defs.append(_build_dataclass(cls_name, prop_schema))
+                return cls_name
+            if json_type == "array":
+                items = prop_schema.get("items", {})
+                if items.get("type") == "object":
+                    singular = prop_name[:-1] if prop_name.endswith("s") else prop_name + "Item"
+                    cls_name = _to_class_name(singular)
+                    if cls_name not in defined_classes:
+                        defined_classes.add(cls_name)
+                        class_defs.append(_build_dataclass(cls_name, items))
+                    return f"List[{cls_name}]"
+                elem = _JSON_TYPE_MAP.get(items.get("type", ""), "Any")
+                return f"List[{elem}]"
+            return _JSON_TYPE_MAP.get(json_type, "Any")
+
+        def _build_dataclass(cls_name: str, obj_schema: dict) -> str:
+            props = obj_schema.get("properties", {})
+            req = set(obj_schema.get("required", []))
+            req_fields = []
+            opt_fields = []
+            for fname, fschema in props.items():
+                if isinstance(fschema, dict):
+                    ftype = _resolve_type(fname, fschema)
+                    if fname in req:
+                        req_fields.append(f"    {fname}: {ftype}")
+                    else:
+                        opt_fields.append(f"    {fname}: Optional[{ftype}] = None")
+            lines = ["@dataclass", f"class {cls_name}:"]
+            lines += req_fields + opt_fields
+            if not req_fields and not opt_fields:
+                lines.append("    pass")
+            return "\n".join(lines)
+
+        for s in schemas:
+            if not isinstance(s, dict):
+                continue
+            func_info = s.get("function", {})
+            params_schema = func_info.get("parameters", {})
+            if params_schema and isinstance(params_schema, dict):
+                top_props = params_schema.get("properties", {})
+                if isinstance(top_props, dict):
+                    for pname, pschema in top_props.items():
+                        if isinstance(pschema, dict):
+                            _resolve_type(pname, pschema)
+
+        if class_defs:
+            from dataclasses import dataclass
+            code_str = "from dataclasses import dataclass, field\n"
+            code_str += "from typing import Any, Dict, List, Optional, Tuple, Union, Set\n\n"
+            code_str += "\n\n".join(class_defs)
+            try:
+                exec(compile(code_str, "<sandbox_dataclasses>", "exec"), exec_globals)
+                logger.info(f"[code_sandbox] Successfully defined parameter dataclasses: {list(defined_classes)}")
+            except Exception as e:
+                logger.error(f"[code_sandbox] Failed to define dataclasses: {e}")
     
     async def execute(self, code: str, task:str, workspace: str = "Private", tab_id: Optional[str] = None, extra_globals: Optional[Dict] = None) -> Dict[str, Any]:
         """
@@ -447,6 +542,8 @@ class CodeSandbox:
                 workspace=workspace, 
                 tab_id=tab_id
             )
+        
+        self._predefine_dataclasses(exec_globals)
         
         # Add extra globals
         if extra_globals:
