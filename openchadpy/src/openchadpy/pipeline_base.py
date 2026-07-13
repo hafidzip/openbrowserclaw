@@ -403,25 +403,92 @@ class PipelineBase:
                         if t.get("function", {}).get("name") in allowed_tools
                     ]
 
-                    tool_defs = []
-                    for t_name in sorted(allowed_tools):
-                        if t_name == "agent_query":
-                            continue
-                        t_desc = "No description available"
-                        for t in all_tools:
-                            if isinstance(t, dict) and t.get("function", {}).get("name") == t_name:
-                                t_desc = t.get("function", {}).get("description") or "No description available"
-                                break
-                        t_desc = t_desc.strip()
-                        tool_def = (
-                            f"async def {t_name}(query: str) -> str:\n"
+                    # ---------------------------------------------------------------------------
+                    # Schema-driven tool stub builder
+                    # Depth-0 properties → function parameters (with Optional wrapping if not required)
+                    # Depth >0 objects   → @dataclass emitted before the function in the code block
+                    # ---------------------------------------------------------------------------
+                    def _build_tool_def(t_name: str, t_desc: str, params_schema: dict) -> "tuple[list[str], str]":
+                        _JSON_TYPE_MAP = {"string": "str", "integer": "int", "number": "float", "boolean": "bool"}
+                        _class_defs: list[str] = []
+
+                        def _to_class_name(snake: str) -> str:
+                            return "".join(w.capitalize() for w in snake.replace("-", "_").split("_"))
+
+                        def _resolve_type(prop_name: str, prop_schema: dict) -> str:
+                            json_type = prop_schema.get("type", "")
+                            if json_type == "object":
+                                cls_name = _to_class_name(prop_name)
+                                _class_defs.append(_build_dataclass(cls_name, prop_schema))
+                                return cls_name
+                            if json_type == "array":
+                                items = prop_schema.get("items", {})
+                                if items.get("type") == "object":
+                                    # Use singular form for the generated class name
+                                    singular = prop_name[:-1] if prop_name.endswith("s") else prop_name + "Item"
+                                    cls_name = _to_class_name(singular)
+                                    _class_defs.append(_build_dataclass(cls_name, items))
+                                    return f"List[{cls_name}]"
+                                elem = _JSON_TYPE_MAP.get(items.get("type", ""), "Any")
+                                return f"List[{elem}]"
+                            return _JSON_TYPE_MAP.get(json_type, "Any")
+
+                        def _build_dataclass(cls_name: str, obj_schema: dict) -> str:
+                            props = obj_schema.get("properties", {})
+                            req = set(obj_schema.get("required", []))
+                            req_fields: list[str] = []
+                            opt_fields: list[str] = []
+                            for fname, fschema in props.items():
+                                ftype = _resolve_type(fname, fschema)
+                                if fname in req:
+                                    req_fields.append(f"    {fname}: {ftype}")
+                                else:
+                                    opt_fields.append(f"    {fname}: Optional[{ftype}] = None")
+                            lines = ["@dataclass", f"class {cls_name}:"]
+                            lines += req_fields + opt_fields
+                            if not req_fields and not opt_fields:
+                                lines.append("    pass")
+                            return "\n".join(lines)
+
+                        top_props = params_schema.get("properties", {})
+                        top_req = set(params_schema.get("required", []))
+                        req_params: list[str] = []
+                        opt_params: list[str] = []
+                        for pname, pschema in top_props.items():
+                            ptype = _resolve_type(pname, pschema)
+                            if pname in top_req:
+                                req_params.append(f"{pname}: {ptype}")
+                            else:
+                                opt_params.append(f"{pname}: Optional[{ptype}] = None")
+
+                        params_str = ", ".join(req_params + opt_params)
+                        func_def = (
+                            f"async def {t_name}({params_str}) -> str:\n"
                             f"    \"\"\"\n"
                             f"    {t_desc}\n"
                             f"    \"\"\"\n"
                             f"    ..."
                         )
-                        tool_defs.append(tool_def)
-                    tools_code = "\n\n".join(tool_defs)
+                        return _class_defs, func_def
+
+                    tool_parts: list[str] = []
+                    for t_name in sorted(allowed_tools):
+                        if t_name == "agent_query":
+                            continue
+                        t_desc = "No description available"
+                        t_params: dict = {}
+                        for t in all_tools:
+                            if isinstance(t, dict) and t.get("function", {}).get("name") == t_name:
+                                func_info = t.get("function", {})
+                                t_desc = func_info.get("description") or "No description available"
+                                t_params = func_info.get("parameters", {})
+                                break
+                        t_desc = t_desc.strip()
+                        cls_defs, func_def = _build_tool_def(t_name, t_desc, t_params)
+                        # Emit dataclass stubs (innermost first) immediately before their function
+                        tool_parts.extend(cls_defs)
+                        tool_parts.append(func_def)
+                    tools_code = "\n\n".join(tool_parts)
                     tools_list_str = ", ".join(f'"{t}"' for t in sorted(agent_node.get("tools", [])))
 
                     _env_header = (
@@ -430,6 +497,7 @@ class PipelineBase:
                         f"- Current Date & Time: `{now_str}`\n"
                         f"- Current Node: `{current_agent_id if self.attempt > 0 else 'root'}`\n"
                         f"- Current Python Version: `{sys.version.split()[0]}`\n"
+                        f"- Current Working Directory: `{os.environ.get("OPENCHAD_PROJECT_DIR", os.path.abspath(__file__))}`\n"
                     )
                     _main_py_block = (
                         "# ./main.py\n\n"
@@ -818,6 +886,7 @@ class PipelineBase:
                         f"\n\n## Environment\n"
                         f"- OS Information: {os_info}\n"
                         f"- Current Date & Time: {now_str}"
+                        f"- Current Working Directory: `{os.environ.get("OPENCHAD_PROJECT_DIR", os.path.abspath(__file__))}`\n"
                         f"\n\n---\n\n"
                         f"# Agents Tree Structure: \n ```text\n{object_to_text_tree(current_agent_id, agent_node)}\n```\n"
                         f"\n\n---\n\n"

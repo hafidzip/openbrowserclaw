@@ -412,6 +412,10 @@ class CodeSandbox:
                 logger.error("Model manager not found")
                 return {}
         
+        def _override_open(**kwargs) -> None:
+            """Override the open function to open the url in the browser."""
+            raise RuntimeError("Please use relevant tools instead of 'open' function")
+            
         # Build globals with tools
         exec_globals = {
             "__builtins__": __builtins__,
@@ -432,7 +436,8 @@ class CodeSandbox:
             "Union": Union,
             "Set": Set,
             "task": task,
-            "initial_task": task
+            "initial_task": task,
+            "open": _override_open
         }
         
         # Add tool functions
