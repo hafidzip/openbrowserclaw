@@ -5,6 +5,8 @@ import re
 import threading
 from pathlib import Path
 
+is_windows = os.name == "nt"
+
 # Optional packages that should only be present if explicitly installed by the user.
 # Tuple: (venv_import_name, pyproject_dep_prefix, platform_check)
 _OPTIONAL_PACKAGES = [
@@ -24,6 +26,7 @@ def _is_installed_in_venv(python_runtime: str, import_name: str) -> bool:
             [python_runtime, "-c", f"import {import_name}"],
             capture_output=True,
             timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW if is_windows else 0,
         )
         return result.returncode == 0
     except Exception:
@@ -80,7 +83,7 @@ def main():
     log_path = Path(base_path) / "openchad.log"
 
     # Determine uv binary based on OS
-    is_windows = os.name == "nt"
+
     uv_binary = "uv.exe" if is_windows else "uv"
     uv_path = os.path.join(base_path, "python", uv_binary)
     python_dir = os.path.join(base_path, "python")

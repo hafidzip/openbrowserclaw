@@ -146,7 +146,8 @@ const DIRS_TO_COPY = [
   "frontend",
   "icons",
   "capabilities",
-  "Extensions"
+  "Extensions", 
+  "SKILLS"
 ];
 
 log("Copying project directories into Release/ …");
