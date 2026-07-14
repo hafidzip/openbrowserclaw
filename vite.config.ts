@@ -26,12 +26,12 @@ const ignoredDirs = [
 
 export default defineConfig(({ mode }) => ({
     plugins: [
-        ...(mode === 'development' ? [splashScreen({
+        splashScreen({
             logoSrc: 'logo.svg',
             splashBg: 'black',
             loaderType: "dots",
             loaderBg: "white"
-        })] : []),
+        }),
         react(),
         tailwindcss(),
         tsconfigPaths(),

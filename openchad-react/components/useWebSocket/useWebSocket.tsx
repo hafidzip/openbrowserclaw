@@ -353,14 +353,19 @@ export class WebSocketManager {
 export const useWebSocketSingleton = <T = any>(url: string = typeof window !== 'undefined' ? `ws${window.location.protocol === 'https:' ? 's' : ''}://${window.location.host}/ws` : "ws://localhost:3000/ws"): UseWebSocketReturn<T> => {
     const [isConnected, setIsConnected] = useState(false);
     const manager = WebSocketManager.getInstance();
+    const isTauri = typeof window !== 'undefined' && !!(window as any).__TAURI__;
     useEffect(() => {
+        if (isTauri) return;
         manager.connect(url);
         return manager.subscribe(setIsConnected);
-    }, [url]);
+    }, [url, isTauri]);
     const send = useCallback(<R = T>(message: Omit<WebSocketMessage, 'id'> & { id?: number | string }, timeout?: number) => {
+        if (isTauri) {
+            return Promise.reject(new Error("WebSocket is not used in Tauri mode"));
+        }
         return manager.send<R>(message, timeout);
-    }, []);
-    return [send, isConnected] as const;
+    }, [isTauri]);
+    return [send, isTauri ? false : isConnected] as const;
 };
 /**
  * React hook for subscribing to WebSocket events.

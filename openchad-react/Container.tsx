@@ -511,8 +511,14 @@ export default function Container({ Apps }: { Apps: Project }) {
     [setupModel, showCredentialsDialog, showCustomEndpointDialog, showLocalModelDialog])
   useEffect(() => {
     (async () => {
-      const res = await fetch("/api/get_plugin_dirs");
-      const data = await res.json();
+      const isTauriEnv = typeof window !== "undefined" && !!(window as any).__TAURI__;
+      let data: any;
+      if (isTauriEnv) {
+        data = await pyInvoke('get_plugin_dirs');
+      } else {
+        const res = await fetch("/api/get_plugin_dirs");
+        data = await res.json();
+      }
       (window as any).BASE_URL = data.BASE_URL;
       (window as any).PROJECT_ROOT = data.PROJECT_ROOT;
       (window as any).PYTHON_ROOT = data.PYTHON_ROOT;
@@ -525,7 +531,7 @@ export default function Container({ Apps }: { Apps: Project }) {
       (window as any).IS_WINDOWS = data.is_windows;
       (window as any).IS_LINUX = data.is_linux;
     })();
-  }, []);
+  }, [pyInvoke]);
   const [isSearchChatOpen, setIsSearchChatOpen] = useState(false);
   const searchRef = useRef<any>(null);
   const snaptabs = useSnapshot(TabState);

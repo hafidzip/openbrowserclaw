@@ -32,7 +32,15 @@ function copyDirSync(src, dest) {
     if (entry.isDirectory()) {
       copyDirSync(srcPath, destPath);
     } else {
-      fs.copyFileSync(srcPath, destPath);
+      try {
+        fs.copyFileSync(srcPath, destPath);
+      } catch (err) {
+        if (err.code === 'EBUSY' || err.code === 'EACCES' || err.code === 'EPERM') {
+          warn(`Skipped copying busy/locked file: ${srcPath} -> ${destPath} (${err.code})`);
+        } else {
+          throw err;
+        }
+      }
     }
   }
 }
