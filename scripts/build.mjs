@@ -122,6 +122,7 @@ const pyinstallerCmd = [
   uvBin,
   ...uvArgs,
   "--onefile",
+  "--noconsole",
   `--name "${name}"`,
   iconFlag,
   `--distpath "${RELEASE_DIR}"`,

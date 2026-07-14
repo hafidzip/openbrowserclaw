@@ -7,6 +7,20 @@ from pathlib import Path
 
 is_windows = os.name == "nt"
 
+class NullWriter:
+    def write(self, text_or_bytes):
+        pass
+    def flush(self):
+        pass
+    @property
+    def buffer(self):
+        return self
+
+if sys.stdout is None:
+    sys.stdout = NullWriter()
+if sys.stderr is None:
+    sys.stderr = NullWriter()
+
 # Optional packages that should only be present if explicitly installed by the user.
 # Tuple: (venv_import_name, pyproject_dep_prefix, platform_check)
 _OPTIONAL_PACKAGES = [
@@ -65,6 +79,7 @@ def remove_uninstalled_from_pyproject(python_runtime: str, python_dir: str) -> N
         with open(pyproject_path, "w", encoding="utf-8") as f:
             f.write(content)
 
+
 def _tee(src, *dests):
     for line in src:
         for d in dests:
@@ -90,8 +105,10 @@ def main():
     # Determine bundled python path
     if is_windows:
         python_runtime = os.path.join(base_path, "python", ".venv", "Scripts", "python.exe")
+        pythonw_runtime = os.path.join(base_path, "python", ".venv", "Scripts", "pythonw.exe")
     else:
         python_runtime = os.path.join(base_path, "python", ".venv", "bin", "python3")
+        pythonw_runtime = python_runtime
     # Verify python runtime exists
     if not os.path.exists(python_runtime):
         print(f"Error: Python runtime not found at {python_runtime}")
@@ -102,8 +119,22 @@ def main():
     env["UV_PYTHON_AUTO_INSTALL"] = "0"
     # Remove optional packages from pyproject.toml if not installed, BEFORE uv sync.
     remove_uninstalled_from_pyproject(python_runtime, python_dir)
-    # Command to run: uv run python/main.py
-    cmd = [uv_path, "run", "python/main.py"]
+
+    # Run uv sync first to ensure dependencies are fully synchronized windowlessly
+    sync_cmd = [uv_path, "sync", "--directory", "python"]
+    try:
+        subprocess.run(
+            sync_cmd,
+            cwd=base_path,
+            env=env,
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW if is_windows else 0,
+        )
+    except Exception as e:
+        print(f"Warning: uv sync failed: {e}", file=sys.stderr)
+
+    # Command to run: pythonw python/main.py (fully windowless on Windows)
+    cmd = [pythonw_runtime, "python/main.py"]
     try:
         with open(log_path, "wb") as log_file:
             process = subprocess.Popen(
