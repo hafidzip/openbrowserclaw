@@ -16,8 +16,10 @@ function ok(msg)   { console.log(`\x1b[32m[build]\x1b[0m ${msg}`); }
 function warn(msg) { console.warn(`\x1b[33m[build]\x1b[0m ${msg}`); }
 function die(msg)  { console.error(`\x1b[31m[build]\x1b[0m ${msg}`); process.exit(1); }
 
-/** Recursively copy src → dest, mirroring the directory tree. */
-function copyDirSync(src, dest) {
+/** Recursively copy src → dest, mirroring the directory tree.
+ *  `skipNames` is an optional set of entry names to skip at any level.
+ */
+function copyDirSync(src, dest, skipNames = new Set()) {
   if (!fs.existsSync(src)) {
     warn(`Source not found, skipping: ${src}`);
     return;
@@ -26,6 +28,10 @@ function copyDirSync(src, dest) {
   fs.mkdirSync(dest, { recursive: true });
 
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    if (skipNames.has(entry.name)) {
+      log(`  skipping ${entry.name} (excluded)`);
+      continue;
+    }
     const srcPath  = path.join(src,  entry.name);
     const destPath = path.join(dest, entry.name);
 
@@ -47,7 +53,7 @@ function copyDirSync(src, dest) {
         warn(`Failed to copy symbolic link: ${srcPath} -> ${destPath} (${err.message})`);
       }
     } else if (entry.isDirectory()) {
-      copyDirSync(srcPath, destPath);
+      copyDirSync(srcPath, destPath, skipNames);
     } else {
       try {
         fs.copyFileSync(srcPath, destPath);
@@ -78,15 +84,41 @@ fs.mkdirSync(RELEASE_DIR, { recursive: true });
 
 // 3. Resolve uv / uvx executable
 /**
- * Resolution:
- *   Uses ONLY the standalone `uv` / `uvx` executable located inside the project/python/ directory.
- *   Tries: uv.exe, uv, uvx.exe, uvx  (Windows-first, then POSIX)
+ * Resolution order:
+ *   1. `uvx` on PATH  (standard install)
+ *   2. `uv`  on PATH  (run as: uv tool run pyinstaller …)
+ *   3. Standalone `uv` / `uvx` inside project/python/
+ *      Tries: uv.exe, uv, uvx.exe, uvx  (Windows-first, then POSIX)
  */
 function resolveUvx() {
+  // Helper: return true if the command is found on PATH
+  function onPath(bin) {
+    try {
+      const flag = process.platform === "win32" ? `where ${bin}` : `which ${bin}`;
+      execSync(flag, { stdio: "pipe" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  // 1. prefer `uvx` directly on PATH
+  if (onPath("uvx")) {
+    log("uv: using system uvx from PATH.");
+    return { bin: "uvx", args: ["pyinstaller"] };
+  }
+
+  // 2. fall back to `uv tool run` on PATH
+  if (onPath("uv")) {
+    log("uv: using system uv (tool run) from PATH.");
+    return { bin: "uv", args: ["tool", "run", "pyinstaller"] };
+  }
+
+  // 3. look for a standalone uv / uvx inside project/python/
   const pythonDir = path.join(PROJECT_ROOT, "python");
   const candidates = process.platform === "win32"
-    ? ["uv.exe", "uv", "uvx.exe", "uvx"]
-    : ["uv", "uvx"];
+    ? ["uvx.exe", "uvx", "uv.exe", "uv"]
+    : ["uvx", "uv"];
 
   for (const candidate of candidates) {
     const full = path.join(pythonDir, candidate);
@@ -100,12 +132,46 @@ function resolveUvx() {
   }
 
   die(
-    `Could not find uv or uvx inside project/python/.\n` +
-    `  • Please place a standalone uv/uvx binary in: ${pythonDir}`
+    "Could not find uv or uvx.\n" +
+    "  • Install uv globally: https://docs.astral.sh/uv/getting-started/installation/\n" +
+    `  • Or place a standalone uv/uvx binary in: ${pythonDir}`
   );
 }
 
 const { bin: uvBin, args: uvArgs } = resolveUvx();
+
+// ── Resolve the plain `uv` binary (for sync / build tasks) ───────────────────
+function resolveUv() {
+  function onPath(bin) {
+    try {
+      execSync(process.platform === "win32" ? `where ${bin}` : `which ${bin}`, { stdio: "pipe" });
+      return true;
+    } catch { return false; }
+  }
+  if (onPath("uv")) return "uv";
+  const pythonDir = path.join(PROJECT_ROOT, "python");
+  for (const c of process.platform === "win32" ? ["uv.exe", "uv"] : ["uv"]) {
+    const full = path.join(pythonDir, c);
+    if (fs.existsSync(full)) return `"${full}"`;
+  }
+  die("Could not find uv binary.");
+}
+
+const uvCmd = resolveUv();
+
+// 3b. Build openchadpy wheel and place it inside python/wheels/ so it ships with the release
+log("Building openchadpy wheel …");
+const openchadpyDir = path.join(PROJECT_ROOT, "openchadpy");
+const wheelsOutDir  = path.join(PROJECT_ROOT, "python", "wheels");
+if (!fs.existsSync(openchadpyDir)) die(`openchadpy directory not found: ${openchadpyDir}`);
+fs.mkdirSync(wheelsOutDir, { recursive: true });
+try {
+  execSync(`${uvCmd} build --wheel --python 3.13 "${openchadpyDir}" --out-dir "${wheelsOutDir}"`, { stdio: "inherit", cwd: PROJECT_ROOT });
+  ok("openchadpy wheel built → python/wheels/");
+} catch (err) {
+  die(`Failed to build openchadpy wheel: ${err.message}`);
+}
+
 
 // 4. Run PyInstaller via uvx
 const launcherPath = path.join(PROJECT_ROOT, "launcher.py");
@@ -154,11 +220,15 @@ const DIRS_TO_COPY = [
 
 log("Copying project directories into Release/ …");
 
+// Directories that are copied verbatim — .venv is always excluded from python/
+const SKIP_FOR_PYTHON = new Set([".venv"]);
+
 for (const dir of DIRS_TO_COPY) {
   const src  = path.join(PROJECT_ROOT, dir);
   const dest = path.join(RELEASE_DIR,  dir);
   log(`  ${dir}  →  Release/${dir}`);
-  copyDirSync(src, dest);
+  const skip = dir === "python" ? SKIP_FOR_PYTHON : new Set();
+  copyDirSync(src, dest, skip);
 }
 
 const tauriToml = path.join(PROJECT_ROOT, "Tauri.toml");
@@ -168,4 +238,25 @@ if (fs.existsSync(tauriToml)) {
 }
 
 ok("All directories copied.");
+
+// ── Patch Release/python/pyproject.toml: swap editable dep → wheel path ──────
+const releasePyproject = path.join(RELEASE_DIR, "python", "pyproject.toml");
+if (fs.existsSync(releasePyproject)) {
+  let toml = fs.readFileSync(releasePyproject, "utf-8");
+
+  // Replace the editable source line with the wheel path
+  toml = toml.replace(
+    /^openchadpy\s*=\s*\{[^}]*editable[^}]*\}/m,
+    `openchadpy = { path = 'wheels' }`
+  );
+
+  // Remove any comment lines that mention the wheel path (cleanup)
+  toml = toml.replace(/^#\s*openchadpy\s*=\s*\{[^}]*wheels[^}]*\}.*$/m, "");
+
+  fs.writeFileSync(releasePyproject, toml, "utf-8");
+  ok("Patched Release/python/pyproject.toml → openchadpy = { path = 'wheels' }");
+} else {
+  warn("Release/python/pyproject.toml not found — skipping patch.");
+}
+
 ok(`Build complete! Output: ${RELEASE_DIR}`);

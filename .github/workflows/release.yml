@@ -130,9 +130,6 @@ jobs:
             | tar -xz --strip-components=1 -C python
           chmod +x python/uv
 
-      - name: Sync Python environment
-        run: uv sync --directory ./python
-
       - name: Install Node dependencies
         run: |
           npm ci

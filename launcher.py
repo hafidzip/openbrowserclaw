@@ -105,34 +105,44 @@ def main():
     uv_binary = "uv.exe" if is_windows else "uv"
     uv_path = os.path.join(base_path, "python", uv_binary)
     python_dir = os.path.join(base_path, "python")
-    # Determine bundled python path
+
+    # Determine bundled python path (inside .venv, created by uv sync on first run)
     if is_windows:
         python_runtime = os.path.join(base_path, "python", ".venv", "Scripts", "python.exe")
     else:
         python_runtime = os.path.join(base_path, "python", ".venv", "bin", "python3")
-    # Verify python runtime exists
-    if not os.path.exists(python_runtime):
-        print(f"Error: Python runtime not found at {python_runtime}")
-        sys.exit(1)
-    # Set environment variables for uv to use bundled python
-    env = os.environ.copy()
-    env["UV_PYTHON"] = python_runtime
-    env["UV_PYTHON_AUTO_INSTALL"] = "0"
+
+    # ── Step 1: uv sync ────────────────────────────────────────────────────────
+    # On first run the .venv does not exist yet — uv sync creates it.
+    # We tell uv which Python version to use (it will download it if needed).
+    sync_env = os.environ.copy()
+    sync_env["UV_PYTHON"] = "3.13"
+    sync_env["UV_PYTHON_AUTO_INSTALL"] = "1"   # allow uv to fetch Python on fresh installs
+
     # Remove optional packages from pyproject.toml if not installed, BEFORE uv sync.
     remove_uninstalled_from_pyproject(python_runtime, python_dir)
 
-    # Run uv sync first to ensure dependencies are fully synchronized windowlessly
     sync_cmd = [uv_path, "sync", "--directory", "python"]
     try:
         subprocess.run(
             sync_cmd,
             cwd=base_path,
-            env=env,
+            env=sync_env,
             capture_output=True,
             creationflags=subprocess.CREATE_NO_WINDOW if is_windows else 0,
         )
     except Exception as e:
         print(f"Warning: uv sync failed: {e}", file=sys.stderr)
+
+    # ── Step 2: verify venv was created ───────────────────────────────────────
+    if not os.path.exists(python_runtime):
+        print(f"Error: Python runtime not found at {python_runtime}")
+        sys.exit(1)
+
+    # ── Step 3: run the app ───────────────────────────────────────────────────
+    env = os.environ.copy()
+    env["UV_PYTHON"] = python_runtime       # pin to the exact venv python
+    env["UV_PYTHON_AUTO_INSTALL"] = "0"     # no further downloads needed
 
     # Command to run: python python/main.py (windowless via CREATE_NO_WINDOW flag)
     cmd = [python_runtime, "python/main.py"]
