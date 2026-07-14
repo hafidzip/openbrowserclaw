@@ -54,6 +54,15 @@ jobs:
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Install OpenSSL (Windows ARM64)
+        if: matrix.os == 'windows-11-arm'
+        shell: pwsh
+        run: |
+          $vcpkgPath = if ($env:VCPKG_INSTALLATION_ROOT) { $env:VCPKG_INSTALLATION_ROOT } else { "C:\vcpkg" }
+          & "$vcpkgPath\vcpkg.exe" install openssl:arm64-windows-static-md
+          "VCPKG_ROOT=$vcpkgPath" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "VCPKGRS_TRIPLET=arm64-windows-static-md" | Out-File -FilePath $env:GITHUB_ENV -Append
+
       - name: Install Linux system build dependencies
         if: matrix.os == 'ubuntu-24.04' || matrix.os == 'ubuntu-24.04-arm'
         run: |
