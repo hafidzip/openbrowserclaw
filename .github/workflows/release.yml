@@ -18,7 +18,6 @@ jobs:
           - os: windows-latest
             arch: x64
             uv_zip: uv-x86_64-pc-windows-msvc.zip
-          -- temporarily disabled while validating windows x64 --
           - os: windows-11-arm
             arch: arm64
             uv_zip: uv-aarch64-pc-windows-msvc.zip
