@@ -112,28 +112,30 @@ def main():
     else:
         python_runtime = os.path.join(base_path, "python", ".venv", "bin", "python3")
 
-    # ── Step 1: uv sync ────────────────────────────────────────────────────────
-    # On first run the .venv does not exist yet — uv sync creates it.
-    # We tell uv which Python version to use (it will download it if needed).
-    sync_env = os.environ.copy()
-    sync_env["UV_PYTHON"] = "3.13"
-    sync_env["UV_PYTHON_AUTO_INSTALL"] = "1"   # allow uv to fetch Python on fresh installs
+    # ── Step 1: uv sync (only if .venv is not found) ───────────────────────────
+    venv_dir = os.path.join(base_path, "python", ".venv")
+    
+    if not os.path.exists(venv_dir):
+        # On first run the .venv does not exist yet — uv sync creates it.
+        # We tell uv which Python version to use (it will download it if needed).
+        sync_env = os.environ.copy()
+        sync_env["UV_PYTHON"] = "3.13"
+        sync_env["UV_PYTHON_AUTO_INSTALL"] = "1"   # allow uv to fetch Python on fresh installs
 
-    # Remove optional packages from pyproject.toml if not installed, BEFORE uv sync.
+
+        sync_cmd = [uv_path, "sync", "--directory", "python"]
+        try:
+            subprocess.run(
+                sync_cmd,
+                cwd=base_path,
+                env=sync_env,
+                capture_output=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if is_windows else 0,
+            )
+        except Exception as e:
+            print(f"Warning: uv sync failed: {e}", file=sys.stderr)
+
     remove_uninstalled_from_pyproject(python_runtime, python_dir)
-
-    sync_cmd = [uv_path, "sync", "--directory", "python"]
-    try:
-        subprocess.run(
-            sync_cmd,
-            cwd=base_path,
-            env=sync_env,
-            capture_output=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if is_windows else 0,
-        )
-    except Exception as e:
-        print(f"Warning: uv sync failed: {e}", file=sys.stderr)
-
     # ── Step 2: verify venv was created ───────────────────────────────────────
     if not os.path.exists(python_runtime):
         print(f"Error: Python runtime not found at {python_runtime}")

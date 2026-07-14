@@ -439,26 +439,44 @@ export default function BrowserApp({ mainWebviewRef, mainWindowRef, allRef, empt
   }, [activeTabId]);
 
   const lastReparentTimeRef = useRef<number>(0);
-
+  const isReparentingRef = useRef(false);
+  
   useEffect(() => {
     const now = Date.now();
     if (now - lastReparentTimeRef.current < 250) return;
-    lastReparentTimeRef.current = now;
+
+    // 1. Guard: If an async reparent is already running, skip this trigger
+    if (isReparentingRef.current) return;
 
     (async () => {
       if (activeTabIdRef.current !== tabId) return;
-      await AsyncLock.run(async () => {
-        if (!mainWindowRef.current || !mainWebviewRef.current) return;
-        if (focus) {
-          const existing = await getByLabel(label);
-          await mainWebviewRef.current.reparent(mainWindowRef.current);
-          if (existing && !setupModel && url.url !== "") {
-            await existing.reparent(mainWindowRef.current);
+
+      // 2. Lock: Acquire lock and set the execution timestamp
+      isReparentingRef.current = true;
+      lastReparentTimeRef.current = now;
+
+      try {
+        await AsyncLock.run(async () => {
+          if (!mainWindowRef.current || !mainWebviewRef.current) return;
+
+          if (focus) {
+            const existing = await getByLabel(label);
+            await mainWebviewRef.current.reparent(mainWindowRef.current);
+
+            if (existing && !setupModel && url.url !== "") {
+              await existing.reparent(mainWindowRef.current);
+            }
+          } else {
+            await mainWebviewRef.current.reparent(mainWindowRef.current);
           }
-        } else {
-          await mainWebviewRef.current.reparent(mainWindowRef.current);
-        }
-      });
+        });
+      } catch (error) {
+        // 3. Catch errors so a failed promise doesn't lock your app forever
+        console.error("Reparenting operation failed:", error);
+      } finally {
+        // 4. Unlock: Always release the lock when done (success or failure)
+        isReparentingRef.current = false;
+      }
     })();
   }, [focus, refresh]);
 
