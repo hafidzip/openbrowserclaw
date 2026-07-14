@@ -97,6 +97,9 @@ def main():
 
     log_path = Path(base_path) / "openchad.log"
 
+    with open(log_path, "ab") as _lf:
+        _lf.write(f"[launcher] starting openchad from {base_path}\n".encode())
+
     # Determine uv binary based on OS
 
     uv_binary = "uv.exe" if is_windows else "uv"
@@ -105,10 +108,8 @@ def main():
     # Determine bundled python path
     if is_windows:
         python_runtime = os.path.join(base_path, "python", ".venv", "Scripts", "python.exe")
-        pythonw_runtime = os.path.join(base_path, "python", ".venv", "Scripts", "pythonw.exe")
     else:
         python_runtime = os.path.join(base_path, "python", ".venv", "bin", "python3")
-        pythonw_runtime = python_runtime
     # Verify python runtime exists
     if not os.path.exists(python_runtime):
         print(f"Error: Python runtime not found at {python_runtime}")
@@ -133,8 +134,8 @@ def main():
     except Exception as e:
         print(f"Warning: uv sync failed: {e}", file=sys.stderr)
 
-    # Command to run: pythonw python/main.py (fully windowless on Windows)
-    cmd = [pythonw_runtime, "python/main.py"]
+    # Command to run: python python/main.py (windowless via CREATE_NO_WINDOW flag)
+    cmd = [python_runtime, "python/main.py"]
     try:
         with open(log_path, "wb") as log_file:
             process = subprocess.Popen(
