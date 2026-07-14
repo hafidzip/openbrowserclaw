@@ -172,6 +172,30 @@ try {
   die(`Failed to build openchadpy wheel: ${err.message}`);
 }
 
+// 3c. Copy openchad-webview wheels from openchad-webview/dist so they ship with the release
+log("Copying openchad-webview wheels …");
+const webviewDistDir = path.join(PROJECT_ROOT, "openchad-webview", "dist");
+if (fs.existsSync(webviewDistDir)) {
+  const files = fs.readdirSync(webviewDistDir);
+  let copied = 0;
+  for (const file of files) {
+    if (file.endsWith(".whl")) {
+      const srcWhl = path.join(webviewDistDir, file);
+      const destWhl = path.join(wheelsOutDir, file);
+      fs.copyFileSync(srcWhl, destWhl);
+      log(`  ${file} → python/wheels/`);
+      copied++;
+    }
+  }
+  if (copied > 0) {
+    ok(`Copied ${copied} openchad-webview wheel(s) to python/wheels/`);
+  } else {
+    warn("No .whl files found in openchad-webview/dist/");
+  }
+} else {
+  warn("openchad-webview/dist directory not found.");
+}
+
 
 // 4. Run PyInstaller via uvx
 const launcherPath = path.join(PROJECT_ROOT, "launcher.py");
@@ -239,22 +263,25 @@ if (fs.existsSync(tauriToml)) {
 
 ok("All directories copied.");
 
-// ── Patch Release/python/pyproject.toml: swap editable dep → wheel path ──────
+// ── Patch Release/python/pyproject.toml: use find-links for the wheel ─────────
+// In dev, pyproject.toml uses [tool.uv.sources] with an editable local path.
+// In Release, we remove that sources block and instead add [tool.uv] find-links
+// so that `uv sync` resolves `openchadpy` from the bundled .whl in wheels/.
 const releasePyproject = path.join(RELEASE_DIR, "python", "pyproject.toml");
 if (fs.existsSync(releasePyproject)) {
   let toml = fs.readFileSync(releasePyproject, "utf-8");
 
-  // Replace the editable source line with the wheel path
-  toml = toml.replace(
-    /^openchadpy\s*=\s*\{[^}]*editable[^}]*\}/m,
-    `openchadpy = { path = 'wheels' }`
-  );
+  // 1. Remove the entire [tool.uv.sources] section (all lines until the next section or EOF)
+  toml = toml.replace(/\[tool\.uv\.sources\][^\[]*/s, "");
 
-  // Remove any comment lines that mention the wheel path (cleanup)
-  toml = toml.replace(/^#\s*openchadpy\s*=\s*\{[^}]*wheels[^}]*\}.*$/m, "");
+  // 2. Remove any leftover [tool.uv] section so we can re-add it cleanly
+  toml = toml.replace(/\[tool\.uv\][^\[]*/s, "");
+
+  // 3. Trim trailing whitespace/newlines then append the find-links config
+  toml = toml.trimEnd() + "\n\n[tool.uv]\nfind-links = [\"wheels\"]\n";
 
   fs.writeFileSync(releasePyproject, toml, "utf-8");
-  ok("Patched Release/python/pyproject.toml → openchadpy = { path = 'wheels' }");
+  ok("Patched Release/python/pyproject.toml → [tool.uv] find-links = [\"wheels\"]");
 } else {
   warn("Release/python/pyproject.toml not found — skipping patch.");
 }
