@@ -288,7 +288,7 @@ port = find_available_port("127.0.0.1", 2048)
 DEV_MODE = os.getenv("DEV_MODE", "false").lower() == "true"
 VITE_PORT = os.getenv("VITE_PORT", "3000")
 APP_NAME = os.getenv("APP_NAME", "openchad")
-base_url = f"http://localhost:{(VITE_PORT if DEV_MODE else str(port))}"
+base_url = f"localhost:{(VITE_PORT if DEV_MODE else str(port))}"
 
 def get_plugin_dirs():
     """Return absolute paths for all plugin and data directories."""
