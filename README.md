@@ -14,28 +14,28 @@ a fully open-source native agent browser.
 [requires-python#link]: https://packaging.python.org/en/latest/specifications/core-metadata/#requires-python
 
 ## Download
-[![Download](https://github.com/hafidzip/clawtaskbar/blob/main/images/download.png?raw=true)](https://github.com/hafidzip/openbrowserclaw/releases/latest)
+[![Download](https://github.com/hafidzip/openbrowserclaw/blob/main/images/download.png?raw=true)](https://github.com/hafidzip/openbrowserclaw/releases/latest)
 ---
 
 ### Native Webview With Multiview Capabillity
-<img src="https://github.com/hafidzip/clawtaskbar/blob/main/images/0.png?raw=true"/>
+<img src="https://github.com/hafidzip/openbrowserclaw/blob/main/images/0.png?raw=true"/>
 
 ### Agent Tree
 With this approach, you can organize a hierarchical structure of agents that have independent skill, model, tools, and other properties, 
 inspired by how RLM works, but in a deterministic way that lets you transform the agent's properties directly to fit your use case.
 it's support both programmatic tool calling and non-programmatic tool calling.
 
-<img src="https://github.com/hafidzip/clawtaskbar/blob/main/images/1.png?raw=true"/>
+<img src="https://github.com/hafidzip/openbrowserclaw/blob/main/images/1.png?raw=true"/>
 
 ### Tools Management
 Integrated with uv, you can easily pull tools that are published on PyPi.
 
-<img src="https://github.com/hafidzip/clawtaskbar/blob/main/images/2.png?raw=true"/>
+<img src="https://github.com/hafidzip/openbrowserclaw/blob/main/images/2.png?raw=true"/>
 
 ### Task Scheduler 
 You can schedule a task at a specific interval or trigger it via a tool.
 
-<img src="https://github.com/hafidzip/clawtaskbar/blob/main/images/3.png?raw=true"/>
-<img src="https://github.com/hafidzip/clawtaskbar/blob/main/images/4.png?raw=true"/>
+<img src="https://github.com/hafidzip/openbrowserclaw/blob/main/images/3.png?raw=true"/>
+<img src="https://github.com/hafidzip/openbrowserclaw/blob/main/images/4.png?raw=true"/>
 
 
