@@ -21,7 +21,8 @@ function die(msg)  { console.error(`\x1b[31m[build]\x1b[0m ${msg}`); process.exi
  */
 function copyDirSync(src, dest, skipNames = new Set()) {
   if (!fs.existsSync(src)) {
-    warn(`Source not found, skipping: ${src}`);
+    warn(`Source not found, creating empty directory: ${dest}`);
+    fs.mkdirSync(dest, { recursive: true });
     return;
   }
 
