@@ -18,20 +18,21 @@ jobs:
           - os: windows-latest
             arch: x64
             uv_zip: uv-x86_64-pc-windows-msvc.zip
-          - os: windows-11-arm
-            arch: arm64
-            uv_zip: uv-aarch64-pc-windows-msvc.zip
-          - os: macos-latest
-            arch: arm64
-            uv_zip: uv-aarch64-apple-darwin.tar.gz
-          - os: ubuntu-24.04
-            arch: x64
-            uv_zip: uv-x86_64-unknown-linux-musl.tar.gz
-            appimage_arch: x86_64
-          - os: ubuntu-24.04-arm
-            arch: arm64
-            uv_zip: uv-aarch64-unknown-linux-musl.tar.gz
-            appimage_arch: aarch64
+          # -- temporarily disabled while validating windows x64 --
+          # - os: windows-11-arm
+          #   arch: arm64
+          #   uv_zip: uv-aarch64-pc-windows-msvc.zip
+          # - os: macos-latest
+          #   arch: arm64
+          #   uv_zip: uv-aarch64-apple-darwin.tar.gz
+          # - os: ubuntu-24.04
+          #   arch: x64
+          #   uv_zip: uv-x86_64-unknown-linux-musl.tar.gz
+          #   appimage_arch: x86_64
+          # - os: ubuntu-24.04-arm
+          #   arch: arm64
+          #   uv_zip: uv-aarch64-unknown-linux-musl.tar.gz
+          #   appimage_arch: aarch64
     runs-on: ${{ matrix.os }}
 
     steps:
