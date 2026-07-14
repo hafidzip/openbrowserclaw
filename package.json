@@ -50,6 +50,10 @@
     "vite-plugin-splash-screen": "^0.2.2",
     "vite-tsconfig-paths": "^6.1.1"
   },
+  "overrides": {
+    "@types/react": "$@types/react",
+    "@types/react-dom": "$@types/react-dom"
+  },
   "engines": {
     "node": ">=18.17.0"
   }
