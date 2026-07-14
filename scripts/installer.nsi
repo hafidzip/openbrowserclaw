@@ -10,7 +10,8 @@
 !define APP_NAME       "OpenBrowser"
 !define APP_EXE        "OpenBrowser.exe"
 !define PUBLISHER      "OpenBrowser"
-!define INSTALL_DIR    "$PROGRAMFILES64\${APP_NAME}"
+; 1. Changed to $LOCALAPPDATA
+!define INSTALL_DIR    "$LOCALAPPDATA\${APP_NAME}"
 !define UNINSTALL_KEY  "Software\Microsoft\Windows\CurrentVersion\Uninstall\${APP_NAME}"
 
 !ifndef APP_ARCH
@@ -27,8 +28,10 @@ OutFile "OpenBrowser-v${APP_VERSION}-windows-${APP_ARCH}-setup.exe"
 ; ── General settings ──────────────────────────────────────────────────────────
 Name              "${APP_NAME} ${APP_VERSION}"
 InstallDir        "${INSTALL_DIR}"
-InstallDirRegKey  HKLM "Software\${APP_NAME}" "InstallDir"
-RequestExecutionLevel admin
+; 4a. Switched Registry root to HKCU
+InstallDirRegKey  HKCU "Software\${APP_NAME}" "InstallDir"
+; 3. Lowered execution level to user (no admin rights needed for AppData)
+RequestExecutionLevel user
 SetCompressor     /SOLID lzma
 Unicode           True
 
@@ -51,7 +54,7 @@ Unicode           True
 
 ; Installer pages
 !insertmacro MUI_PAGE_WELCOME
-!insertmacro MUI_PAGE_DIRECTORY
+; 2. REMOVED MUI_PAGE_DIRECTORY to prevent the user from changing the path
 !insertmacro MUI_PAGE_INSTFILES
 !define MUI_FINISHPAGE_RUN          "$INSTDIR\${APP_EXE}"
 !define MUI_FINISHPAGE_RUN_TEXT     "Launch ${APP_NAME}"
@@ -65,6 +68,9 @@ Unicode           True
 
 ; ── Install section ───────────────────────────────────────────────────────────
 Section "Install"
+  ; Set context to Current User (ensures shortcuts and AppData use user-specific folders)
+  SetShellVarContext current
+
   SetOutPath "$INSTDIR"
 
   ; Copy all contents of Release/ into the install directory
@@ -81,19 +87,22 @@ Section "Install"
   ; Write uninstaller binary
   WriteUninstaller "$INSTDIR\Uninstall.exe"
 
-  ; Register in Add/Remove Programs
-  WriteRegStr   HKLM "Software\${APP_NAME}" "InstallDir" "$INSTDIR"
-  WriteRegStr   HKLM "${UNINSTALL_KEY}" "DisplayName"     "${APP_NAME}"
-  WriteRegStr   HKLM "${UNINSTALL_KEY}" "DisplayVersion"  "${APP_VERSION}"
-  WriteRegStr   HKLM "${UNINSTALL_KEY}" "Publisher"       "${PUBLISHER}"
-  WriteRegStr   HKLM "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
-  WriteRegStr   HKLM "${UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
-  WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoModify"        1
-  WriteRegDWORD HKLM "${UNINSTALL_KEY}" "NoRepair"        1
+  ; 4b. Register in Add/Remove Programs (HKCU instead of HKLM)
+  WriteRegStr   HKCU "Software\${APP_NAME}" "InstallDir" "$INSTDIR"
+  WriteRegStr   HKCU "${UNINSTALL_KEY}" "DisplayName"     "${APP_NAME}"
+  WriteRegStr   HKCU "${UNINSTALL_KEY}" "DisplayVersion"  "${APP_VERSION}"
+  WriteRegStr   HKCU "${UNINSTALL_KEY}" "Publisher"       "${PUBLISHER}"
+  WriteRegStr   HKCU "${UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr   HKCU "${UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\Uninstall.exe"'
+  WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoModify"        1
+  WriteRegDWORD HKCU "${UNINSTALL_KEY}" "NoRepair"        1
 SectionEnd
 
 ; ── Uninstall section ─────────────────────────────────────────────────────────
 Section "Uninstall"
+  ; Set context to Current User for uninstallation as well
+  SetShellVarContext current
+
   ; Remove all installed files and directories
   RMDir /r "$INSTDIR"
 
@@ -105,7 +114,7 @@ Section "Uninstall"
   ; Remove Desktop shortcut
   Delete "$DESKTOP\${APP_NAME}.lnk"
 
-  ; Remove registry entries
-  DeleteRegKey HKLM "${UNINSTALL_KEY}"
-  DeleteRegKey HKLM "Software\${APP_NAME}"
+  ; 4c. Remove registry entries from HKCU
+  DeleteRegKey HKCU "${UNINSTALL_KEY}"
+  DeleteRegKey HKCU "Software\${APP_NAME}"
 SectionEnd
