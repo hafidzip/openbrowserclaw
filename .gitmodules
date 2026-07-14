@@ -3,4 +3,4 @@
 	url = https://github.com/openchad/openchad-webview
 [submodule "monaco"]
 	path = monaco
-	url = https://github.com/openchad/monaco
+	url = https://github.com/hafidzip/monaco
