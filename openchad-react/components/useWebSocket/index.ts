@@ -4,8 +4,8 @@ import type { UseWebSocketReturn } from "./useWebSocket";
 import { useWebSocketSingleton, useWebSocketEvent as useWebSocketEventImpl } from "./useWebSocket";
 
 export function useWebSocket<T>(): UseWebSocketReturn<T> {
-    const [url, setUrl] = useState(typeof window !== 'undefined' ? `ws${window.location.protocol === 'https:' ? 's' : ''}://${(window as any).BASE_URL}/ws` : "ws://localhost:3000/ws");
-    
+    const [url, setUrl] = useState<string | null>(null);
+
     useEffect(() => {
         const handler = (e: any) => {
             setUrl(e.detail);
