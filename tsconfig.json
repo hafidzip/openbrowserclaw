@@ -21,6 +21,7 @@
     "noEmit": true,
     /* Linting */
     "strict": true,
+    "typeRoots": ["./node_modules/@types"],
     "baseUrl": ".",
     "paths": {
       "monaco": [
@@ -41,5 +42,11 @@
     "src",
     "openchad-react",
     "monaco"
+  ],
+  "exclude": [
+    "monaco/node_modules",
+    "openchad-react/node_modules",
+    "**/*.spec.ts",
+    "**/*.spec.tsx"
   ]
 }

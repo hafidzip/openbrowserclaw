@@ -2803,8 +2803,8 @@ def main() -> int:
     os.environ["BASE_URL"] = base_url
     logger.info("[STEP 1] BASE_URL set to: %s", base_url)
 
-    frontend_dist = f"http://localhost:{VITE_PORT}"
-    tauri_config = {"build": {"frontendDist": frontend_dist}} if DEV_MODE else "./frontend"
+    frontend_dist = f"http://localhost:{VITE_PORT}" if DEV_MODE else "./frontend"
+    tauri_config = {"build": {"frontendDist": frontend_dist}}
 
     # ── Step 2: Resolve builder/context factories ─────────────────────────────
     logger.info("[STEP 2] Resolving builder_factory and context_factory ...")

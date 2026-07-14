@@ -62,26 +62,6 @@ def remove_uninstalled_from_pyproject(python_runtime: str, python_dir: str) -> N
         with open(pyproject_path, "w", encoding="utf-8") as f:
             f.write(content)
 
-def check_for_updates(uv_path, python_dir, env):
-    """
-    Attempt: update by synching the venv.
-    Gracefully fails if no internet or other issues occur.
-    """
-    print("Checking for updates...")
-    try:
-        subprocess.run(
-            [uv_path, "sync", "--upgrade-package", "openchadpy"],
-            cwd=python_dir,
-            env=env,
-            capture_output=True,
-            timeout=15,
-            check=False,
-        )
-        print("Update check complete.")
-    except Exception as e:
-        # Gracefully ignore any errors (offline, timeout, etc.)
-        print(f"Skipping update: {e}")
-
 def _tee(src, *dests):
     for line in src:
         for d in dests:
@@ -119,8 +99,6 @@ def main():
     env["UV_PYTHON_AUTO_INSTALL"] = "0"
     # Remove optional packages from pyproject.toml if not installed, BEFORE uv sync.
     remove_uninstalled_from_pyproject(python_runtime, python_dir)
-    # Check for updates (runs uv sync) after the pyproject cleanup.
-    check_for_updates(uv_path, python_dir, env)
     # Command to run: uv run python/main.py
     cmd = [uv_path, "run", "python/main.py"]
     try:

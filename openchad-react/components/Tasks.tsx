@@ -9,7 +9,7 @@ import { Spinner } from "./ui/spinner";
 import clsx from "clsx";
 import { useGlobal } from "./useGlobal";
 import { useDatabaseImpl } from "./useDatabase";
-import { generateIdFromString, MessageState, useAvailableAgents, useSnapshot } from "../index";
+import { generateIdFromString, type MessageState, useAvailableAgents, useSnapshot } from "../index";
 import { Button } from "./ui";
 import type { Model } from "../utils/utils";
 import { INTERVAL_OPTIONS } from "./composer";
