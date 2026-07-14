@@ -484,6 +484,8 @@ export default function Container({ Apps }: { Apps: Project }) {
 
   useEffect(() => {
     (async () => {
+      mainWindowRef.current = await getCurrentWindow();
+      mainWindowRef.current.setFocus();
       await checkModel()
       await startTask()
       if (!(await isRegistered("CmdOrCtrl+Shift+I"))) {
