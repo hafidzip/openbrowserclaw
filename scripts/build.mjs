@@ -29,7 +29,24 @@ function copyDirSync(src, dest) {
     const srcPath  = path.join(src,  entry.name);
     const destPath = path.join(dest, entry.name);
 
-    if (entry.isDirectory()) {
+    if (entry.isSymbolicLink()) {
+      try {
+        const target = fs.readlinkSync(srcPath);
+        try {
+          fs.unlinkSync(destPath);
+        } catch (_) {}
+        const resolvedTarget = path.resolve(src, target);
+        let type = "file";
+        try {
+          if (fs.statSync(resolvedTarget).isDirectory()) {
+            type = "dir";
+          }
+        } catch (_) {}
+        fs.symlinkSync(target, destPath, type);
+      } catch (err) {
+        warn(`Failed to copy symbolic link: ${srcPath} -> ${destPath} (${err.message})`);
+      }
+    } else if (entry.isDirectory()) {
       copyDirSync(srcPath, destPath);
     } else {
       try {
