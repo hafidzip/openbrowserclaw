@@ -26,6 +26,7 @@ dependencies = [
   "types-requests>=2.33.0.20260712",
   "types-aiofiles>=25.1.0.20260518",
   "numpy>=2.5.1",
+  "litellm>=1.92.0",
 ]
 [tool.uv.sources]
 openchad-webview = { path = '../openchad-webview/dist/openchad_webview-0.8.0-cp313-cp313-win_amd64.whl' }
