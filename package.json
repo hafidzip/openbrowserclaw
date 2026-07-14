@@ -6,11 +6,12 @@
   "scripts": {
     "dev": "python scripts/pre_sync.py && uv sync --directory ./python && node scripts/dev.mjs",
     "pre": "uv build ./openchadpy && uv sync ./python",
-    "build": "npm run build:ui && tsc -b && vite build && uv build ./openchadpy && node scripts/build.mjs",
+    "build": "npm run removeduplicate && npm run build:ui && tsc -b && vite build && uv build ./openchadpy && node scripts/build.mjs",
     "build:ui": "vite build --config vite.config.ts",
     "build:openchad-react": "npm run build --prefix openchad-react",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "removeduplicate": "node -e \"const fs = require('fs'); const p = 'openchad-react/node_modules/@tauri-apps'; if (fs.existsSync(p)) { fs.rmSync(p, { recursive: true, force: true }); console.log('Cleaned up duplicate @tauri-apps from openchad-react/node_modules') }\""
   },
   "dependencies": {
     "@monaco-editor/loader": "^1.7.0",
@@ -52,7 +53,13 @@
   },
   "overrides": {
     "@types/react": "$@types/react",
-    "@types/react-dom": "$@types/react-dom"
+    "@types/react-dom": "$@types/react-dom",
+    "@tauri-apps/api": "$@tauri-apps/api",
+    "@tauri-apps/plugin-clipboard-manager": "$@tauri-apps/plugin-clipboard-manager",
+    "@tauri-apps/plugin-dialog": "$@tauri-apps/plugin-dialog",
+    "@tauri-apps/plugin-fs": "$@tauri-apps/plugin-fs",
+    "@tauri-apps/plugin-global-shortcut": "$@tauri-apps/plugin-global-shortcut",
+    "@tauri-apps/plugin-opener": "$@tauri-apps/plugin-opener"
   },
   "engines": {
     "node": ">=18.17.0"
