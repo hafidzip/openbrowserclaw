@@ -28,11 +28,11 @@ jobs:
           # - os: ubuntu-24.04
           #   arch: x64
           #   uv_zip: uv-x86_64-unknown-linux-musl.tar.gz
-          #   appimage_arch: x86_64
+          #   deb_arch: amd64
           # - os: ubuntu-24.04-arm
           #   arch: arm64
           #   uv_zip: uv-aarch64-unknown-linux-musl.tar.gz
-          #   appimage_arch: aarch64
+          #   deb_arch: arm64
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -221,36 +221,52 @@ jobs:
           cd Release && zip -r "../OpenBrowser-${TAG}-macos-${{ matrix.arch }}.zip" . && cd ..
 
       # ─────────────────────────────────────────────────────────────────────────
-      # Linux — AppImage + ZIP
+      # Linux — .deb + ZIP
       # ─────────────────────────────────────────────────────────────────────────
-      - name: Build AppImage (Linux)
+      - name: Build .deb package (Linux)
         if: matrix.os == 'ubuntu-24.04' || matrix.os == 'ubuntu-24.04-arm'
         env:
           TAG: ${{ github.ref_name }}
         run: |
-          # Download appimagetool (native binary matching the runner's architecture)
-          curl -L -o appimagetool \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${{ matrix.appimage_arch }}.AppImage
-          chmod +x appimagetool
+          VERSION=${TAG#v}
+          PKG="openbrowser_${VERSION}_${{ matrix.deb_arch }}"
 
-          # Build AppDir — copy Release/ contents into it
-          mkdir -p AppDir
-          cp -r Release/. AppDir/
+          # --- deb directory tree ---
+          mkdir -p "${PKG}/DEBIAN"
+          mkdir -p "${PKG}/opt/openbrowser"
+          mkdir -p "${PKG}/usr/share/applications"
+          mkdir -p "${PKG}/usr/share/icons/hicolor/256x256/apps"
 
-          # Add required AppImage metadata files
-          cp scripts/AppRun AppDir/AppRun
-          chmod +x AppDir/AppRun
-          cp scripts/openbrowser.desktop AppDir/openbrowser.desktop
+          # Copy Release/ contents into /opt/openbrowser
+          cp -r Release/. "${PKG}/opt/openbrowser/"
+          chmod +x "${PKG}/opt/openbrowser/OpenBrowser" 2>/dev/null || true
 
-          # Copy icon (AppImage requires one at root level matching the desktop entry Icon=openbrowser)
+          # Desktop entry
+          cat > "${PKG}/usr/share/applications/openbrowser.desktop" <<'EOF'
+          [Desktop Entry]
+          Name=OpenBrowser
+          Exec=/opt/openbrowser/OpenBrowser
+          Icon=openbrowser
+          Type=Application
+          Categories=Network;WebBrowser;
+          EOF
+
+          # Icon
           if [ -f icons/icon.png ]; then
-            cp icons/icon.png AppDir/openbrowser.png
-          elif [ -f icon.ico ]; then
-            cp icon.ico AppDir/.DirIcon
+            cp icons/icon.png "${PKG}/usr/share/icons/hicolor/256x256/apps/openbrowser.png"
           fi
 
-          # Package into AppImage
-          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=${{ matrix.appimage_arch }} ./appimagetool AppDir "OpenBrowser-${TAG}-linux-${{ matrix.arch }}.AppImage"
+          # DEBIAN/control
+          cat > "${PKG}/DEBIAN/control" <<EOF
+          Package: openbrowser
+          Version: ${VERSION}
+          Architecture: ${{ matrix.deb_arch }}
+          Maintainer: OpenBrowser <noreply@openbrowser.app>
+          Description: OpenBrowser — AI-driven browser built with OpenChad
+          EOF
+
+          # Build the .deb
+          dpkg-deb --build "${PKG}" "OpenBrowser-${TAG}-linux-${{ matrix.arch }}.deb"
 
       - name: Zip Release contents (Linux)
         if: matrix.os == 'ubuntu-24.04' || matrix.os == 'ubuntu-24.04-arm'
@@ -272,7 +288,7 @@ jobs:
             OpenBrowser-*-windows-*.zip
             OpenBrowser-*-macos-*.dmg
             OpenBrowser-*-macos-*.zip
-            OpenBrowser-*-linux-*.AppImage
+            OpenBrowser-*-linux-*.deb
             OpenBrowser-*-linux-*.zip
           if-no-files-found: ignore
 
@@ -304,5 +320,5 @@ jobs:
             dist/OpenBrowser-*-windows-*.zip
             dist/OpenBrowser-*-macos-*.dmg
             dist/OpenBrowser-*-macos-*.zip
-            dist/OpenBrowser-*-linux-*.AppImage
+            dist/OpenBrowser-*-linux-*.deb
             dist/OpenBrowser-*-linux-*.zip
