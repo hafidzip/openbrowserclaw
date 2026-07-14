@@ -484,10 +484,13 @@ export default function Container({ Apps }: { Apps: Project }) {
 
   useEffect(() => {
     (async () => {
-      mainWindowRef.current = await getCurrentWindow();
-      mainWindowRef.current.setFocus();
-      await checkModel()
-      await startTask()
+      if (!(window as any).__startup) {
+        (window as any).__startup = true;
+        mainWindowRef.current = await getCurrentWindow();
+        mainWindowRef.current.setFocus();
+        await checkModel()
+        await startTask()
+      }
       if (!(await isRegistered("CmdOrCtrl+Shift+I"))) {
         await register([
           "CmdOrCtrl+Shift+I",
@@ -522,7 +525,7 @@ export default function Container({ Apps }: { Apps: Project }) {
         data = await res.json();
       }
       (window as any).BASE_URL = data.BASE_URL;
-      
+
       window.dispatchEvent(new CustomEvent('websocket-url-change', { detail: data.BASE_URL }));
 
       (window as any).PROJECT_ROOT = data.PROJECT_ROOT;
