@@ -78,41 +78,15 @@ fs.mkdirSync(RELEASE_DIR, { recursive: true });
 
 // 3. Resolve uv / uvx executable
 /**
- * Resolution order:
- *   1. `uvx` on PATH  (standard install)
- *   2. `uv`  on PATH  (run as: uv tool run pyinstaller …)
- *   3. Standalone `uv` / `uvx` inside project/python/
- *      Tries: uv.exe, uv, uvx.exe, uvx  (Windows-first, then POSIX)
+ * Resolution:
+ *   Uses ONLY the standalone `uv` / `uvx` executable located inside the project/python/ directory.
+ *   Tries: uv.exe, uv, uvx.exe, uvx  (Windows-first, then POSIX)
  */
 function resolveUvx() {
-  // Helper: return true if the command is found on PATH
-  function onPath(bin) {
-    try {
-      const flag = process.platform === "win32" ? `where ${bin}` : `which ${bin}`;
-      execSync(flag, { stdio: "pipe" });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  // 1. prefer `uvx` directly on PATH
-  if (onPath("uvx")) {
-    log("uv: using system uvx from PATH.");
-    return { bin: "uvx", args: ["pyinstaller"] };
-  }
-
-  // 2. fall back to `uv tool run` on PATH
-  if (onPath("uv")) {
-    log("uv: using system uv (tool run) from PATH.");
-    return { bin: "uv", args: ["tool", "run", "pyinstaller"] };
-  }
-
-  // 3. look for a standalone uv / uvx inside project/python/
   const pythonDir = path.join(PROJECT_ROOT, "python");
   const candidates = process.platform === "win32"
-    ? ["uvx.exe", "uvx", "uv.exe", "uv"]
-    : ["uvx", "uv"];
+    ? ["uv.exe", "uv", "uvx.exe", "uvx"]
+    : ["uv", "uvx"];
 
   for (const candidate of candidates) {
     const full = path.join(pythonDir, candidate);
@@ -126,9 +100,8 @@ function resolveUvx() {
   }
 
   die(
-    "Could not find uv or uvx.\n" +
-    "  • Install uv globally: https://docs.astral.sh/uv/getting-started/installation/\n" +
-    `  • Or place a standalone uv/uvx binary in: ${pythonDir}`
+    `Could not find uv or uvx inside project/python/.\n` +
+    `  • Please place a standalone uv/uvx binary in: ${pythonDir}`
   );
 }
 
