@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "python scripts/pre_sync.py && uv sync --directory ./python && node scripts/dev.mjs",
     "pre": "uv build ./openchadpy && uv sync ./python",
-    "build": "npm run removeduplicate && npm run build:ui && tsc -b && vite build && uv build ./openchadpy && node scripts/build.mjs",
+    "build": "npm run removeduplicate && npm run build:ui && tsc -b && uv build ./openchadpy && node scripts/build.mjs",
     "build:ui": "cross-env NODE_OPTIONS=--max-old-space-size=4096 vite build --config vite.config.ts",
     "build:openchad-react": "npm run build --prefix openchad-react",
     "lint": "eslint .",
