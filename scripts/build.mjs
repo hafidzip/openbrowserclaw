@@ -138,8 +138,11 @@ const { bin: uvBin, args: uvArgs } = resolveUvx();
 const launcherPath = path.join(PROJECT_ROOT, "launcher.py");
 if (!fs.existsSync(launcherPath)) die(`launcher.py not found at: ${launcherPath}`);
 
-const iconPath = path.join(PROJECT_ROOT, "icon.ico");
-if (!fs.existsSync(iconPath)) warn("icon.ico not found — building without icon.");
+// macOS requires .icns; Windows/Linux use .ico
+const isMac = process.platform === "darwin";
+const iconFilename = isMac ? "icon.icns" : "icon.ico";
+const iconPath = path.join(PROJECT_ROOT, iconFilename);
+if (!fs.existsSync(iconPath)) warn(`${iconFilename} not found — building without icon.`);
 
 const iconFlag = fs.existsSync(iconPath) ? `--icon "${iconPath}"` : "";
 

@@ -15,8 +15,6 @@ from datetime import datetime
 from .backend_registry import BackendRegistry
 from PIL import Image
 from pathlib import Path
-import psutil
-from .vram_checker import check_vram
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
@@ -131,25 +129,6 @@ class ModelManager:
         if model and model.pricing:
             return model.pricing
         return None
-
-    def _check_resources(self) -> Tuple[bool, Optional[str]]:
-        """Check if system has enough available memory (RAM and VRAM)."""
-        try:
-            # 1. Check RAM (require at least 500MB free)
-            mem = psutil.virtual_memory()
-            min_free_ram = 500 * 1024 * 1024  # 500MB
-            if mem.available < min_free_ram:
-                return False, f"System RAM critically low ({mem.available // (1024*1024)} MB available)"
-            # 2. Check VRAM
-            vram_ok, vram_error, free_vram_mb = check_vram()
-            if not vram_ok:
-                return False, vram_error
-            if free_vram_mb > 0:
-                logger.debug(f"VRAM check passed: {free_vram_mb:.0f} MB free")
-            return True, None
-        except Exception as e:
-            logger.warning(f"Failed to check system resources: {e}")
-            return True, None  # Fail open if check fails
 
     def _resolve_path(self, path: Optional[str]) -> Optional[str]:
         """

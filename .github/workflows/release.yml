@@ -138,6 +138,22 @@ jobs:
           npm install --prefix openchad-react
           npm install --prefix monaco
 
+      - name: Generate icon.icns from icon.png (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          mkdir -p icon.iconset
+          sips -z 16   16   icons/icon.png --out icon.iconset/icon_16x16.png
+          sips -z 32   32   icons/icon.png --out icon.iconset/icon_16x16@2x.png
+          sips -z 32   32   icons/icon.png --out icon.iconset/icon_32x32.png
+          sips -z 64   64   icons/icon.png --out icon.iconset/icon_32x32@2x.png
+          sips -z 128  128  icons/icon.png --out icon.iconset/icon_128x128.png
+          sips -z 256  256  icons/icon.png --out icon.iconset/icon_128x128@2x.png
+          sips -z 256  256  icons/icon.png --out icon.iconset/icon_256x256.png
+          sips -z 512  512  icons/icon.png --out icon.iconset/icon_256x256@2x.png
+          sips -z 512  512  icons/icon.png --out icon.iconset/icon_512x512.png
+          sips -z 1024 1024 icons/icon.png --out icon.iconset/icon_512x512@2x.png
+          iconutil -c icns icon.iconset -o icon.icns
+
       - name: Build
         run: npm run build
 
@@ -157,6 +173,8 @@ jobs:
         env:
           TAG: ${{ github.ref_name }}
         run: |
+          # choco install doesn't refresh the current session's PATH, so add it explicitly
+          $env:PATH = "C:\Program Files (x86)\NSIS;$env:PATH"
           $version = $env:TAG -replace '^v', ''
           makensis /DAPP_VERSION=$version /DAPP_ARCH=${{ matrix.arch }} scripts/installer.nsi
 
