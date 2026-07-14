@@ -42,12 +42,12 @@ Unicode           True
 !define MUI_UNICON "..\icon.ico"
 
 ; ── Optional: header banner image (150×57 px BMP, shown top-right of each page)
-; !define MUI_HEADERIMAGE
-; !define MUI_HEADERIMAGE_BITMAP "..\icons\installer_header.bmp"  ; 150×57 px
-; !define MUI_HEADERIMAGE_RIGHT
+!define MUI_HEADERIMAGE
+!define MUI_HEADERIMAGE_BITMAP "..\icons\installer_header.bmp"
+!define MUI_HEADERIMAGE_RIGHT
 
 ; ── Optional: sidebar image on Welcome & Finish pages (164×314 px BMP)
-; !define MUI_WELCOMEFINISHPAGE_BITMAP "..\icons\installer_sidebar.bmp"  ; 164×314 px
+!define MUI_WELCOMEFINISHPAGE_BITMAP "..\icons\installer_sidebar.bmp"
 
 ; Installer pages
 !insertmacro MUI_PAGE_WELCOME
